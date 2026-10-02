@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
-from zordon import assets, paths
+from zordon import assets, paths, prereqs
 from zordon.config import Config
 
 Ask = Callable[[str], str]
@@ -276,24 +276,21 @@ def _ask_agent(d: Detected, ask: Ask, out: TextIO, c: Choices) -> None:
         out.write(f"  [{i}] {AGENT_LINES.get(k, k):<75} {state}\n")
     if not (installed - {"generic"}):
         out.write(
-            "\n  No coding agent found on this machine. Zordon drives one; install it first:\n"
-            + "".join(f"    {v}\n" for v in INSTALL_LINES.values())
-            + "  You can finish setup now and come back; `zordon doctor` will keep reminding you.\n"
+            "\n  No coding agent found on this machine. Pick the one you want; the prerequisites step\n"
+            "  offers to install it (or shows the command if you would rather do it yourself).\n"
         )
-        if not _yes(ask, "Continue setup anyway?", default=True):
-            raise SetupAborted("no coding agent installed")
     default = keys.index(c.agent) + 1 if c.agent in keys else 1
     pick = _pick(ask, out, "", default, len(keys))
     c.agent = keys[pick - 1]
     if c.agent != "generic" and c.agent not in installed:
-        out.write(f"  {c.agent} is not installed yet: {INSTALL_LINES.get(c.agent, '')}\n")
+        out.write(f"  {c.agent} is not installed yet; the prerequisites step will offer to install it.\n")
     if c.agent == "generic":
         out.write("  After `zordon serve`, use Attach in the web page with the pane target shown by `tmux list-panes -a`.\n")
 
 
 def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = None) -> Choices:
     c = defaults or recommend(d)
-    out.write("\nZordon setup. Five questions; Enter takes the default in brackets.\n")
+    out.write("\nZordon setup. A few questions; Enter takes the default in brackets.\n")
     out.write(_summary(d))
     _ask_agent(d, ask, out, c)
 
@@ -312,10 +309,7 @@ def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = Non
     c.normalizer = {1: "ollama", 2: "anthropic", 3: "claude-cli", 4: "passthrough"}[norm]
     if c.normalizer == "ollama":
         if not d.ollama_binary and not d.ollama_server:
-            out.write("  Ollama is not installed.\n")
-            c.install_ollama = _yes(ask, "Run the official installer now (curl -fsSL https://ollama.com/install.sh | sh)?", default=False)
-            if not c.install_ollama:
-                out.write("  Install it later from https://ollama.com, then run `zordon setup` again.\n")
+            out.write("  Ollama is not installed; the prerequisites step will offer to install it.\n")
         has = any(m.startswith(c.ollama_model) for m in d.ollama_models)
         c.pull_ollama_model = not has
         if d.gpu and _yes(ask, f"GPU detected ({d.gpu}). Use the larger qwen2.5:14b-instruct (9 GB, better wording)?", default=False):
@@ -340,6 +334,61 @@ def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = Non
     return c
 
 
+PREREQ_TEXT = """
+5. Prerequisites: Zordon assumes nothing about this machine. Missing pieces for the
+   choices above, with the exact command for your package manager. Each one is
+   installed only if you say yes; sudo will ask for your password as usual.
+"""
+
+
+def prerequisites(
+    c: Choices,
+    ask: Ask,
+    out: TextIO,
+    *,
+    env: prereqs.Environment | None = None,
+    runner: Callable[..., Any] = subprocess.run,
+    assume_yes: bool = False,
+) -> list[str]:
+    """Offer to install everything the chosen path needs. Returns what is still missing."""
+    want_agents = (c.agent,) if c.agent != "generic" else ()
+    env = env or prereqs.detect(want_agents=want_agents, want_ollama=(c.normalizer == "ollama"))
+    missing = env.missing(required_only=True)
+    if not missing:
+        return []
+    out.write(PREREQ_TEXT)
+    if env.package_manager:
+        out.write(f"  Package manager: {env.package_manager}\n")
+    else:
+        out.write("  No known package manager found (apt, dnf, pacman, zypper, apk, brew); commands are shown for you to adapt.\n")
+    still: list[str] = []
+    for p in missing:
+        out.write(f"\n  {p.label}: {p.why}.\n")
+        if p.detail:
+            out.write(f"    {p.detail}\n")
+        if not p.command:
+            still.append(f"{p.label}: install it by hand ({p.detail or 'no command known for this system'})")
+            continue
+        out.write(f"    $ {p.command}\n")
+        blocked = [b for b in (env.get(n) for n in p.needs) if b is not None and b.present is None]
+        if blocked:
+            out.write(f"    needs {', '.join(b.label for b in blocked)} first\n")
+        if assume_yes or not _yes(ask, f"Install {p.label} now?", default=False):
+            still.append(f"{p.label}: {p.command}" + (f"; then {p.after}" if p.after else ""))
+            continue
+        ok, msg = prereqs.install(p, env, run=runner)
+        out.write(f"    {msg}\n")
+        if ok:
+            p.present = p.binary
+            if p.after:
+                out.write(f"    Next: {p.after}\n")
+            if prereqs.login_command(p.key) and _yes(ask, f"Open {p.label} now to log in (exit it when done)?", default=True):
+                prereqs.open_for_login(p.key, run=runner)
+        else:
+            still.append(f"{p.label}: {p.command}" + (f"; then {p.after}" if p.after else ""))
+    return still
+
+
 def _summary(d: Detected) -> str:
     rows = [
         ("tmux", d.tmux or "MISSING (install tmux)"),
@@ -358,14 +407,6 @@ def _summary(d: Detected) -> str:
 def run_actions(c: Choices, cfg: Config, out: TextIO, *, runner: Callable[..., Any] = subprocess.run) -> list[str]:
     """Do the downloads and pulls the choices imply. Returns human-readable problems."""
     problems: list[str] = []
-    if c.install_ollama:
-        out.write("\nInstalling Ollama (official installer)...\n")
-        try:
-            res = runner(["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"], check=False)
-            if getattr(res, "returncode", 1) != 0:
-                problems.append("Ollama installer exited with an error; install from https://ollama.com")
-        except (OSError, subprocess.SubprocessError) as e:
-            problems.append(f"could not run the Ollama installer: {e}")
     if c.normalizer == "ollama" and c.pull_ollama_model:
         binary = shutil.which("ollama")
         if binary:
@@ -445,7 +486,13 @@ def run(
         c = interview(d, ask, out)
     apply(c, cfg)
     cfg.save()
-    problems = run_actions(c, cfg, out) if do_actions else []
+    problems: list[str] = []
+    if do_actions:
+        problems += prerequisites(c, ask, out, assume_yes=assume_yes)
+        d = detect(cfg.providers.ollama_url)  # re-detect: installs above may have changed the picture
+        if c.normalizer == "ollama":
+            c.pull_ollama_model = not any(m.startswith(c.ollama_model) for m in d.ollama_models)
+        problems += run_actions(c, cfg, out)
     out.write(next_steps(c, cfg))
     if problems:
         out.write("\nStill to do:\n" + "".join(f"  - {p}\n" for p in problems))

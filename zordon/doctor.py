@@ -146,10 +146,23 @@ def check_python() -> Check:
     return Check("python", FAIL, have, f"install Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer")
 
 
+def _prereq_fix(key: str, fallback: str) -> str:
+    """The exact install command for this machine, or a generic hint."""
+    try:
+        from zordon import prereqs  # noqa: PLC0415
+
+        p = prereqs.detect(want_agents=("claude-code", "codex"), want_ollama=True).get(key)
+        if p is not None and p.command:
+            return f"{p.command}  (or run `zordon setup`)"
+    except Exception:  # noqa: BLE001
+        pass
+    return fallback + " (or run `zordon setup`)"
+
+
 def check_tmux(which: Which = shutil.which, run: Run = subprocess.run) -> Check:
     binary = which("tmux")
     if not binary:
-        return Check("tmux", FAIL, "not found on PATH", "install tmux 3.2 or newer (apt install tmux / brew install tmux)")
+        return Check("tmux", FAIL, "not found on PATH", _prereq_fix("tmux", "install tmux 3.2 or newer"))
     out = _run_text(run, [binary, "-V"], TMUX_TIMEOUT)
     if out is None:
         return Check("tmux", FAIL, f"{binary} did not answer -V", "reinstall tmux")
@@ -164,7 +177,7 @@ def check_tmux(which: Which = shutil.which, run: Run = subprocess.run) -> Check:
 def check_claude(which: Which = shutil.which, run: Run = subprocess.run) -> Check:
     binary = which("claude")
     if not binary:
-        return Check("claude", FAIL, "not found on PATH", "install Claude Code and log in (https://claude.com/claude-code)")
+        return Check("claude", FAIL, "not found on PATH", _prereq_fix("claude-code", "install Claude Code and log in"))
     out = _run_text(run, [binary, "--version"], CLAUDE_TIMEOUT)
     if out is None:
         return Check("claude", WARN, f"{binary} did not answer --version", "run `claude --version` by hand")
@@ -233,7 +246,7 @@ def check_curl(which: Which = shutil.which) -> Check:
         "curl",
         WARN,
         "not found on PATH; Claude Code hook signals are disabled (prompt detection falls back to the pane regexes only)",
-        "install curl",
+        _prereq_fix("curl", "install curl"),
     )
 
 

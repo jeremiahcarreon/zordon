@@ -56,6 +56,11 @@ rendered pane. See `docs/architecture.md` and `docs/decisions/` for the reasonin
 
 ## Requirements
 
+Zordon assumes nothing about your machine. The setup wizard checks each item below, shows
+the exact install command for your package manager (apt, dnf, pacman, zypper, apk or brew),
+runs it only when you say yes (sudo prompts as usual), and offers to open the agent for its
+first login. `zordon doctor` prints the same commands as fixes.
+
 - Linux or macOS, Python 3.12 or newer (the local Kokoro TTS needs 3.12 or 3.13; `kokoro-onnx` has no 3.14 build yet)
 - `tmux` 3.2 or newer
 - `curl` (Claude Code's hook handlers use it to tell Zordon about prompts; without it only pane detection runs)
@@ -86,6 +91,8 @@ installed it stops there, prints the install commands, and lets you finish later
 The questions:
 
 0. **Agent**: Claude Code, Codex, or attach to any tmux pane.
+   After the questions, a **prerequisites** step offers to install anything missing for your
+   choices: tmux, curl, Node.js and npm, the agent itself, Ollama.
 1. **Speech**: local (Kokoro + faster-whisper, private, one download) or cloud (OpenAI,
    ElevenLabs, Groq; lowest latency, pay per use, needs keys).
 2. **Spoken English**: who rewrites Claude Code's terse output for speech. A local Ollama model

@@ -75,10 +75,10 @@ def test_interview_cloud_and_keys_and_tunnel():
 def test_interview_ollama_without_install_offers_installer_and_14b():
     out = io.StringIO()
     d = detected(gpu="RTX 4090")
-    c = wiz.interview(d, scripted("", "1", "1", "n", "y", "1", "1"), out)
-    assert c.normalizer == "ollama" and c.install_ollama is False and c.pull_ollama_model is True
+    c = wiz.interview(d, scripted("", "1", "1", "y", "1", "1"), out)
+    assert c.normalizer == "ollama" and c.pull_ollama_model is True
     assert c.ollama_model == "qwen2.5:14b-instruct"
-    assert "Install it later from https://ollama.com" in out.getvalue()
+    assert "prerequisites step will offer to install it" in out.getvalue()
 
 
 def test_apply_never_writes_bypass_and_validates():
@@ -104,13 +104,7 @@ def test_actions_pull_and_installer_need_consent(monkeypatch, tmp_path):
     assert problems == [] and calls == [["/usr/bin/ollama", "pull", "qwen2.5:3b-instruct"]]
 
     calls.clear()
-    c.install_ollama = True
-    wiz.run_actions(c, Config.default(), io.StringIO(), runner=runner)
-    assert calls[0][0] == "sh" and "ollama.com/install.sh" in calls[0][2]
-
-    calls.clear()
     monkeypatch.setattr(wiz.shutil, "which", lambda name: None)
-    c.install_ollama = False
     problems = wiz.run_actions(c, Config.default(), io.StringIO(), runner=runner)
     assert calls == [] and any("ollama pull" in p for p in problems)
 
@@ -152,22 +146,99 @@ def test_recommend_agent_prefers_claude_then_any_installed_then_generic():
     assert wiz.recommend(detected(agents={"claude-code": None, "codex": None, "generic": ""})).agent == "generic"
 
 
-def test_interview_stops_when_no_agent_is_installed_unless_told_to_continue():
+def test_interview_without_any_agent_points_at_the_prerequisites_step():
     out = io.StringIO()
     d = detected(claude=None, agents={"claude-code": None, "codex": None, "generic": ""})
-    with pytest.raises(wiz.SetupAborted):
-        wiz.interview(d, scripted("n"), out)
+    c = wiz.interview(d, scripted("1", "", "", "", ""), out)
     text = out.getvalue()
-    assert "No coding agent found" in text and "npm install -g @anthropic-ai/claude-code" in text
-    # Continue anyway: generic is the default, the rest of the interview proceeds on Enter.
-    c = wiz.interview(d, scripted("y", "", "", "", "", ""), io.StringIO())
-    assert c.agent == "generic"
+    assert "No coding agent found" in text and "prerequisites step" in text
+    assert c.agent == "claude-code"
 
 
 def test_interview_agent_choice_and_install_hint_for_missing_pick():
     out = io.StringIO()
     d = detected(agents={"claude-code": "/x/claude", "codex": None, "generic": ""})
     c = wiz.interview(d, scripted("2", "", "", "", ""), out)
-    assert c.agent == "codex" and "npm install -g @openai/codex" in out.getvalue()
+    assert c.agent == "codex" and "prerequisites step will offer to install it" in out.getvalue()
     c = wiz.interview(d, scripted("3", "", "", "", ""), io.StringIO())
     assert c.agent == "generic"
+
+
+# ---- prerequisites ------------------------------------------------------------------------
+
+from zordon import prereqs  # noqa: E402
+
+
+def fake_env(missing: set[str], pm: str = "apt-get") -> prereqs.Environment:
+    which = lambda name: None if name in missing else f"/usr/bin/{name}"  # noqa: E731
+
+    class R:
+        returncode = 0
+        stdout = "v20.1.0"
+
+    env = prereqs.detect(which=which, run=lambda *a, **k: R(), want_agents=("claude-code",), want_ollama=True)
+    return env
+
+
+def test_prereqs_detect_commands_per_package_manager():
+    env = fake_env({"tmux", "claude", "ollama"})
+    assert env.package_manager == "brew"  # brew is first in detection order when every binary "exists"
+    tm = env.get("tmux")
+    assert tm.present is None and tm.command == "brew install tmux"
+    assert env.get("claude-code").command == "npm install -g @anthropic-ai/claude-code" and env.get("claude-code").needs == ("node",)
+    assert env.get("ollama").required is True
+    which = lambda n: "/usr/bin/apt-get" if n == "apt-get" else None  # noqa: E731
+    env2 = prereqs.detect(which=which, run=lambda *a, **k: None, want_agents=("codex",))
+    assert env2.get("tmux").command == "sudo apt-get install -y tmux"
+    assert env2.get("node").command == "sudo apt-get install -y nodejs npm" and env2.get("node").present is None
+    assert env2.get("codex").required and not env2.get("claude-code").required
+    missing = {p.key for p in env2.missing(required_only=True)}
+    assert missing == {"tmux", "node", "codex"}
+
+
+def test_prereqs_install_runs_only_the_shown_command_and_respects_needs():
+    env = fake_env({"tmux", "claude", "npm"})
+    calls = []
+
+    class R:
+        returncode = 0
+
+    ok, msg = prereqs.install(env.get("tmux"), env, run=lambda cmd, **k: (calls.append(cmd), R())[1])
+    assert ok and calls == [["sh", "-c", "brew install tmux"]]
+    ok, msg = prereqs.install(env.get("claude-code"), env, run=lambda cmd, **k: (calls.append(cmd), R())[1])
+    assert not ok and "needs Node.js" in msg and len(calls) == 1  # node missing: never runs npm
+
+
+def test_wizard_prerequisites_step_asks_per_item_and_reports_the_rest():
+    env = fake_env({"tmux", "claude"})
+    out = io.StringIO()
+    calls = []
+
+    class R:
+        returncode = 0
+
+    runner = lambda cmd, **k: (calls.append(cmd), R())[1]  # noqa: E731
+    c = wiz.Choices(agent="claude-code", normalizer="ollama")
+    # yes to tmux, no to Claude Code
+    still = wiz.prerequisites(c, scripted("y", "n"), out, env=env, runner=runner)
+    text = out.getvalue()
+    assert "$ brew install tmux" in text and "$ npm install -g @anthropic-ai/claude-code" in text
+    assert calls == [["sh", "-c", "brew install tmux"]]
+    assert len(still) == 1 and still[0].startswith("Claude Code: npm install -g @anthropic-ai/claude-code; then run `claude` once")
+    # --yes never installs anything, it only lists
+    still = wiz.prerequisites(wiz.Choices(agent="claude-code"), scripted(), io.StringIO(), env=fake_env({"tmux"}), runner=runner, assume_yes=True)
+    assert len(calls) == 1 and still and still[0].startswith("tmux:")
+
+
+def test_wizard_prerequisites_offers_login_after_installing_an_agent(monkeypatch):
+    env = fake_env({"claude"})
+    calls = []
+
+    class R:
+        returncode = 0
+
+    runner = lambda cmd, **k: (calls.append(cmd), R())[1]  # noqa: E731
+    monkeypatch.setattr(prereqs.shutil, "which", lambda n: "/usr/bin/claude")
+    still = wiz.prerequisites(wiz.Choices(agent="claude-code"), scripted("y", "y"), io.StringIO(), env=env, runner=runner)
+    assert still == []
+    assert calls[0] == ["sh", "-c", "npm install -g @anthropic-ai/claude-code"] and calls[1] == ["claude"]

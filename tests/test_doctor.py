@@ -84,7 +84,7 @@ def test_claude_check_with_fake_binary(fake_bin: Path):
     assert "prompts verified against claude-code-2.1.287" in c.detail
     (fake_bin / "claude").unlink()
     c = doctor.check_claude()
-    assert c.status == FAIL and "install Claude Code" in c.fix
+    assert c.status == FAIL and ("npm install -g @anthropic-ai/claude-code" in c.fix or "install Claude Code" in c.fix)
 
 
 def test_claude_check_warns_on_prompts_version_mismatch():

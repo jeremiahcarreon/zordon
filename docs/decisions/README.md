@@ -20,6 +20,7 @@ and what it leaves open.
 | [0011](0011-ollama-normalizer.md) | A local Ollama model normalizes per sentence with no key; 3b default with a padding guard; the Ollama router is opt-in only | Zero-key streaming |
 | [0012](0012-guided-setup.md) | `pipx install zordon` then `zordon serve`; a terminal wizard asks four questions and does the downloads | Install path |
 | [0013](0013-agent-adapters.md) | Everything agent-specific sits behind an `AgentAdapter` with six slots; a generic pane adapter attaches to any tmux pane; Claude Code stays the default | Other coding agents |
+| [0014](0014-prerequisites.md) | Setup detects the package manager and installs missing system pieces (tmux, curl, Node, the agent, Ollama) one explicit yes at a time | Install path |
 
 ## Writing one
 
