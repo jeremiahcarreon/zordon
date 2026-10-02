@@ -425,7 +425,7 @@ def run_actions(c: Choices, cfg: Config, out: TextIO, *, runner: Callable[..., A
             from zordon.doctor import DoctorOptions, model_checks  # noqa: PLC0415
 
             for chk in model_checks(cfg, DoctorOptions(download=True)):
-                if chk.level not in ("OK", "SKIP"):
+                if chk.status not in ("OK", "SKIP"):
                     problems.append(f"{chk.name}: {chk.detail}")
         except Exception as e:  # noqa: BLE001
             problems.append(f"model download failed: {e}")

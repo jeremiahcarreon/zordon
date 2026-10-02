@@ -253,3 +253,16 @@ def test_prereqs_drop_sudo_for_root_or_without_sudo():
     env = prereqs.detect(which=no_sudo, run=lambda *a, **k: None, want_agents=(), want_ollama=True, root=True)
     assert env.get("tmux").command == "apt-get install -y tmux"
     assert env.get("ollama").needs == ("curl",)
+
+
+def test_run_actions_reports_model_checks_by_status(monkeypatch):
+    """Doctor checks carry .status; a FAIL lands in the problems list, OK does not."""
+    from zordon import doctor
+
+    def fake_model_checks(cfg, opts, downloader=None):
+        return [doctor.Check("model a", doctor.OK, "present"), doctor.Check("model b", doctor.FAIL, "download failed: 403", "retry")]
+
+    monkeypatch.setattr(doctor, "model_checks", fake_model_checks)
+    c = wiz.Choices(speech="local", download_models=True, normalizer="passthrough")
+    problems = wiz.run_actions(c, Config.default(), io.StringIO(), runner=lambda *a, **k: None)
+    assert problems == ["model b: download failed: 403"]
