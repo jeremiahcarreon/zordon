@@ -1,0 +1,86 @@
+{"utterance": "mute", "expected": "shim_command", "command": "mute", "state": "working", "notes": "bare command"}
+{"utterance": "be quiet", "expected": "shim_command", "command": "mute", "state": "working", "notes": "alias from commands.py"}
+{"utterance": "unmute", "expected": "shim_command", "command": "unmute", "state": "working", "notes": ""}
+{"utterance": "you can talk again", "expected": "shim_command", "command": "unmute", "state": "idle", "notes": "alias from commands.py"}
+{"utterance": "stop", "expected": "shim_command", "command": "stop", "state": "working", "notes": "bare stop interrupts Claude Code; pair with 'stop retrying on 500s'"}
+{"utterance": "cancel that", "expected": "shim_command", "command": "stop", "state": "working", "notes": ""}
+{"utterance": "repeat that", "expected": "shim_command", "command": "repeat", "state": "idle", "notes": ""}
+{"utterance": "say that again", "expected": "shim_command", "command": "repeat", "state": "idle", "notes": ""}
+{"utterance": "status", "expected": "shim_command", "command": "status", "state": "working", "notes": ""}
+{"utterance": "are you still working", "expected": "shim_command", "command": "status", "state": "working", "notes": ""}
+{"utterance": "set verbosity to technical", "expected": "shim_command", "command": "set_verbosity", "argument": "technical", "state": "idle", "notes": ""}
+{"utterance": "be more verbose", "expected": "shim_command", "command": "set_verbosity", "argument": "more", "state": "working", "notes": "relative level"}
+{"utterance": "less detail", "expected": "shim_command", "command": "set_verbosity", "argument": "less", "state": "working", "notes": "relative level"}
+{"utterance": "turn on tool chatter", "expected": "shim_command", "command": "set_tool_chatter", "argument": "on", "state": "idle", "notes": ""}
+{"utterance": "stop telling me about tool calls", "expected": "shim_command", "command": "set_tool_chatter", "argument": "off", "state": "working", "notes": "contains 'stop' but is a toggle"}
+{"utterance": "switch to the API session", "expected": "shim_command", "command": "focus", "argument": "api", "state": "idle", "notes": "session name resolved against ctx.session_names"}
+{"utterance": "focus the zordon session", "expected": "shim_command", "command": "focus", "argument": "zordon", "state": "idle", "notes": ""}
+{"utterance": "what sessions are there", "expected": "shim_command", "command": "list_sessions", "state": "idle", "notes": ""}
+{"utterance": "list sessions", "expected": "shim_command", "command": "list_sessions", "state": "idle", "notes": ""}
+{"utterance": "switch to plan mode", "expected": "shim_command", "command": "set_permission_mode", "argument": "plan", "state": "idle", "notes": ""}
+{"utterance": "back to default permissions", "expected": "shim_command", "command": "set_permission_mode", "argument": "default", "state": "idle", "notes": ""}
+{"utterance": "delete the session", "expected": "shim_command", "command": "delete", "state": "idle", "notes": "needs spoken confirmation"}
+{"utterance": "kill this session", "expected": "shim_command", "command": "delete", "state": "idle", "notes": ""}
+{"utterance": "detach", "expected": "shim_command", "command": "detach", "state": "working", "notes": ""}
+{"utterance": "leave this session running", "expected": "shim_command", "command": "detach", "state": "working", "notes": ""}
+{"utterance": "what did you just change", "expected": "transcript_query", "state": "idle", "notes": "pair with 'change what you did'"}
+{"utterance": "what file did it just change", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what was the commit message", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "did the tests pass", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what did it say about the migration", "expected": "transcript_query", "state": "working", "notes": ""}
+{"utterance": "how many lines did it edit", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what was the error", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "which files did you touch", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what did it say", "expected": "transcript_query", "state": "working", "notes": ""}
+{"utterance": "did it commit", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what was the last thing it said", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what just happened", "expected": "transcript_query", "state": "working", "notes": ""}
+{"utterance": "which test failed", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "where did you put the config file", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what did claude run", "expected": "transcript_query", "state": "working", "notes": ""}
+{"utterance": "did the build pass", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "what did you fix", "expected": "transcript_query", "state": "idle", "notes": ""}
+{"utterance": "add retry logic to the upload handler", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "run the tests again", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "change what you did", "expected": "claude_code", "state": "idle", "notes": "pair with 'what did you just change'; a work request"}
+{"utterance": "change what you did in auth.py", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "stop retrying on 500s", "expected": "claude_code", "state": "idle", "notes": "pair with bare 'stop'; an instruction, not an interrupt"}
+{"utterance": "yes", "expected": "claude_code", "state": "idle", "notes": "in idle a bare yes is an answer for Claude Code, not a permission gate"}
+{"utterance": "no, use the other approach", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "undo that last edit", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "explain why the build is failing", "expected": "claude_code", "state": "idle", "notes": "needs reasoning, not a transcript readback"}
+{"utterance": "use the second approach", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "go ahead and commit it", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "rename the function to parse_config", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "stop the server before running the migration", "expected": "claude_code", "state": "idle", "notes": "contains 'stop'"}
+{"utterance": "write a test for the login flow", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "make the error message clearer", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "switch to using tabs instead of spaces", "expected": "claude_code", "state": "idle", "notes": "'switch to' but not a session"}
+{"utterance": "focus on the error handling first", "expected": "claude_code", "state": "idle", "notes": "'focus on' but not a session"}
+{"utterance": "delete the old migration files", "expected": "claude_code", "state": "idle", "notes": "'delete' but not the session"}
+{"utterance": "mute the logger in the tests", "expected": "claude_code", "state": "idle", "notes": "'mute' but a code change"}
+{"utterance": "repeat the request with a longer timeout", "expected": "claude_code", "state": "idle", "notes": "'repeat' but a code change"}
+{"utterance": "what's the best way to structure this module", "expected": "claude_code", "state": "idle", "notes": "a question for Claude Code, not about the transcript"}
+{"utterance": "can you check if the tests pass now", "expected": "claude_code", "state": "idle", "notes": "asks to run tests; pair with 'did the tests pass'"}
+{"utterance": "tell me what you changed and then revert it", "expected": "claude_code", "state": "idle", "notes": "contains a transcript-like clause but asks for work"}
+{"utterance": "set the log level to debug", "expected": "claude_code", "state": "idle", "notes": "'set ... level' but not verbosity"}
+{"utterance": "list the files in the src directory", "expected": "claude_code", "state": "idle", "notes": "'list' but not sessions"}
+{"utterance": "switch the database to postgres", "expected": "claude_code", "state": "idle", "notes": ""}
+{"utterance": "kill the dev server on port 3000", "expected": "claude_code", "state": "working", "notes": "'kill' but not the session"}
+{"utterance": "yeah go ahead", "expected": "claude_code", "state": "idle", "notes": "affirmative in idle goes to the pane"}
+{"utterance": "what does this function do", "expected": "claude_code", "state": "idle", "notes": "explanation request"}
+{"utterance": "um", "expected": "unclear", "state": "idle", "notes": "filler only"}
+{"utterance": "hold on", "expected": "unclear", "state": "working", "notes": "not addressed to anyone; claude_code is also acceptable"}
+{"utterance": "hey can you grab the", "expected": "unclear", "state": "idle", "notes": "fragment"}
+{"utterance": "[inaudible]", "expected": "unclear", "state": "idle", "notes": ""}
+{"utterance": "uh so", "expected": "unclear", "state": "idle", "notes": "fragment"}
+{"utterance": "yes", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "yes", "notes": ""}
+{"utterance": "yeah go ahead", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "yes", "notes": ""}
+{"utterance": "sure", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "yes", "notes": ""}
+{"utterance": "no", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "no", "notes": ""}
+{"utterance": "nope don't", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "no", "notes": ""}
+{"utterance": "cancel", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "no", "notes": ""}
+{"utterance": "yeah I guess, actually no", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "mixed; must be read back"}
+{"utterance": "always allow", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "forbidden by voice"}
+{"utterance": "yes and don't ask again", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "forbidden by voice"}
+{"utterance": "run the tests first", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "not an answer"}
