@@ -59,7 +59,7 @@ class ServerConfig:
 class ProvidersConfig:
     stt: str = "faster-whisper"  # faster-whisper | openai | groq
     tts: str = "kokoro"  # kokoro | elevenlabs | openai
-    normalizer: str = "anthropic"  # anthropic | passthrough
+    normalizer: str = "auto"  # auto | anthropic | claude-cli | passthrough
     router: str = "jev"  # jev | anthropic | keyword
     keys: dict[str, str] = field(default_factory=lambda: {k: "" for k in ENV_KEYS})
 
@@ -71,6 +71,9 @@ class ProvidersConfig:
     normalizer_model: str = "claude-haiku-4-5"
     router_model: str = "claude-haiku-4-5"
     normalizer_timeout_seconds: float = 1.5
+    # Headless Claude Code normalizer (no API key): model alias and per-turn timeout.
+    claude_cli_model: str = "claude-haiku-4-5"
+    claude_cli_timeout_seconds: float = 30.0
 
     def key(self, name: str) -> str:
         """Config value first, environment second, empty string if neither."""

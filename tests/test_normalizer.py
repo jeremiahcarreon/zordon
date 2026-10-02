@@ -342,6 +342,7 @@ class TestCredentials:
         with pytest.raises(ProviderNotConfigured):
             norm.make_client("")
         cfg = Config()
+        cfg.providers.normalizer = "anthropic"
         assert isinstance(make_normalizer(cfg), PassthroughNormalizer)
 
     def test_client_settings(self):
@@ -424,7 +425,8 @@ class TestFactory:
     def test_anthropic_without_key_falls_back_with_warning(self, caplog):
         caplog.set_level(logging.WARNING, logger="zordon.output.normalizer")
         cfg = Config()
-        assert cfg.providers.normalizer == "anthropic"
+        assert cfg.providers.normalizer == "auto"
+        cfg.providers.normalizer = "anthropic"  # explicit: no key means passthrough, with a warning
         n = make_normalizer(cfg)
         assert isinstance(n, PassthroughNormalizer)
         assert any("passthrough" in r.getMessage() for r in caplog.records)

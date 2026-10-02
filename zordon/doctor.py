@@ -265,6 +265,9 @@ def required_keys(cfg: Config) -> dict[str, str]:
     needs: dict[str, str] = {}
     if p.normalizer == "anthropic":
         needs["anthropic"] = "normalizer"
+    elif p.normalizer == "auto" and not p.key("anthropic"):
+        # Not required: without a key the normalizer runs headless Claude Code per turn.
+        pass
     if p.router == "anthropic":
         needs["anthropic"] = (needs.get("anthropic", "") + " router").strip()
     if p.router == "jev":
@@ -310,7 +313,7 @@ def required_modules(cfg: Config) -> list[str]:
         mods.append("kokoro_onnx")
     if p.router == "jev":
         mods.append("typesafe_sdk")
-    if p.normalizer == "anthropic" or p.router in ("anthropic", "jev"):
+    if p.normalizer in ("anthropic", "auto") or p.router in ("anthropic", "jev"):
         mods.append("anthropic")
     return mods
 

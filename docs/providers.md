@@ -11,7 +11,7 @@ while running. Local providers need model files; cloud providers need an API key
 | --- | --- | --- | --- | --- | --- |
 | Speech to text | `providers.stt` | `faster-whisper` | `openai`, `groq` | `STTProvider.transcribe(pcm16k) -> STTResult` | Turns one utterance (16 kHz float32) into text and a confidence where available |
 | Text to speech | `providers.tts` | `kokoro` | `openai`, `elevenlabs` | `TTSProvider.synthesize(text) -> Iterator[bytes]` | Turns one sentence into int16 PCM chunks at `sample_rate` |
-| Normalizer | `providers.normalizer` | `anthropic` | `passthrough` | `Normalizer.normalize(sentence, context) -> str` | Rewrites one pre-passed sentence as fluent spoken English; `passthrough` returns it unchanged |
+| Normalizer | `providers.normalizer` | `auto` (Anthropic key -> `anthropic`, else `claude-cli`, else `passthrough`) | `anthropic`, `claude-cli`, `passthrough` | `Normalizer.normalize(sentence, context) -> str` | Rewrites one pre-passed sentence as fluent spoken English; `passthrough` returns it unchanged |
 | Router | `providers.router` | `jev` | `anthropic`, `keyword` | `Router.route()`, `.yes_no()`, `.prompt_score()` | Decides whether an utterance goes to Claude Code, the transcript, or a shim command; the strict yes/no gate; the prompt second opinion |
 
 ### Speech to text
@@ -50,7 +50,8 @@ are untested.
 | Name | Model | Needs | Notes |
 | --- | --- | --- | --- |
 | `anthropic` | `normalizer_model`, default `claude-haiku-4-5` | `providers.keys.anthropic` or `ANTHROPIC_API_KEY` | One call per sentence, `max_tokens` 200, temperature 0 (sent as `extra_body`), `normalizer_timeout_seconds` (1.5 s) and no retries; on any failure the sentence is spoken as pre-passed. `claude-sonnet-5` also works; it rejects a temperature and runs adaptive thinking unless disabled, which the provider handles |
-| `passthrough` | none | nothing | Speaks the pre-passed text. Readable but terse. Automatic when no Anthropic key is configured |
+| `claude-cli` | `claude_cli_model`, default `claude-haiku-4-5` (`claude-sonnet-5` measured faster) | Claude Code installed and logged in; no key | Runs `claude -p --input-format stream-json --output-format stream-json --tools "" --setting-sources "" --no-session-persistence --max-turns 1` under the user's login. One fresh process per request (nothing carries over), one kept warm. Measured on 2.1.287: 4-7 s per request with `claude-haiku-4-5`, about 1.5 s API time with `claude-sonnet-5`; the process still carries Claude Code's own ~67k-token baseline prefix (only `--bare` removes it, and `--bare` is API-key only). Too slow per sentence, so the provider declares turn granularity: the pipeline collects a whole turn and normalizes it once it ends (or after a 6 s lull without a completion). Prompts and notices bypass this. `claude_cli_timeout_seconds` (30 s) bounds a request; on failure the turn is spoken pre-passed. The same process answers transcript questions |
+| `passthrough` | none | nothing | Speaks the pre-passed text. Readable but terse. Automatic when neither an Anthropic key nor the `claude` binary is available |
 
 Prompt caching: the normalizer prompt carries a `cache_control` marker, but Haiku
 4.5 only caches prefixes of 4,096 tokens or more and the prompt is a few hundred,
@@ -74,7 +75,7 @@ can execute. See decision 0006 for thresholds.
 [providers]
 stt = "faster-whisper"      # faster-whisper | openai | groq
 tts = "kokoro"              # kokoro | openai | elevenlabs
-normalizer = "anthropic"    # anthropic | passthrough
+normalizer = "auto"         # auto | anthropic | claude-cli | passthrough
 router = "jev"              # jev | anthropic | keyword
 
 stt_model = "small.en"
@@ -84,6 +85,8 @@ tts_speed = 1.0
 normalizer_model = "claude-haiku-4-5"
 router_model = "claude-haiku-4-5"
 normalizer_timeout_seconds = 1.5
+claude_cli_model = "claude-haiku-4-5"   # claude-cli normalizer model id
+claude_cli_timeout_seconds = 30.0
 
 [providers.keys]
 anthropic = ""

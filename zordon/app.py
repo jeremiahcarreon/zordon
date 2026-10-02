@@ -448,6 +448,13 @@ class Agent:
         self._events.put(None)
         if self._events_thread.is_alive():
             self._events_thread.join(_left(deadline))
+        for prov in (self.providers.normalizer, self.providers.tts):
+            close_prov = getattr(prov, "close", None)
+            if callable(close_prov):
+                try:
+                    close_prov()
+                except Exception:  # noqa: BLE001
+                    log.debug("provider close failed", exc_info=True)
         close = getattr(self.providers.tts, "close", None)
         if callable(close):
             try:
@@ -542,8 +549,11 @@ class Agent:
                 new = make_normalizer(self.config)
                 if name != "passthrough" and new.name == "passthrough":
                     raise ProviderNotConfigured(f"normalizer {name!r} is not configured")
+                old_close = getattr(self.providers.normalizer, "close", None)
                 self.providers.normalizer = new
                 self.pipeline.normalizer = new
+                if callable(old_close):
+                    old_close()
             else:
                 new = make_router(self.config)
                 self.providers.router = new

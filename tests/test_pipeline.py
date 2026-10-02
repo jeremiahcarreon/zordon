@@ -772,3 +772,73 @@ def test_stop_is_prompt(make):
     h.pipeline.join(timeout=3.0)
     assert not h.pipeline.is_alive()
     assert time.monotonic() - t0 < 2.0
+
+
+# ---- turn mode (headless Claude Code normalizer) -------------------------------------
+
+
+class FakeTurnNormalizer:
+    """Declares turn granularity: the pipeline hands it the whole turn in one call."""
+
+    name = "fake-turn"
+    granularity = "turn"
+    timeout = 2.0
+
+    def __init__(self) -> None:
+        self.turns: list[str] = []
+        self.fail = False
+
+    def normalize(self, sentence: str, context: list[str]) -> str:
+        raise AssertionError("per-sentence normalize must not be used in turn mode")
+
+    def normalize_turn(self, text: str) -> str:
+        self.turns.append(text)
+        if self.fail:
+            raise ProviderError("boom")
+        return "Spoken one. Spoken two. Spoken three."
+
+
+def test_turn_mode_normalizes_the_whole_turn_in_one_request(make):
+    h = make(verbosity="normal")
+    tn = FakeTurnNormalizer()
+    h.pipeline.normalizer = tn
+    h.jsonl("Edited auth.py, 8 lines changed. tests pass 42/42.")
+    h.jsonl("Bump deps. Done.")
+    time.sleep(0.3)
+    assert h.tts.calls == []  # nothing spoken before the turn ends
+    h.turn_end()
+    assert h.wait_synth(3)
+    assert tn.turns == ["Edited auth.py, 8 lines changed. tests pass 42/42. Bump deps. Done."]
+    assert h.tts.calls == ["Spoken one.", "Spoken two.", "Spoken three."]
+    tail = h.store.tail(SID, 10)
+    assert [r.text for r in tail] == h.tts.calls
+    assert h.pipeline.stats()["turn_requests"] == 1
+
+
+def test_turn_mode_failure_speaks_the_prepassed_sentences(make):
+    h = make(verbosity="normal")
+    tn = FakeTurnNormalizer()
+    tn.fail = True
+    h.pipeline.normalizer = tn
+    h.jsonl("First thing. Second thing.")
+    h.turn_end()
+    assert h.wait_synth(2)
+    assert h.tts.calls == ["First thing.", "Second thing."]
+
+
+def test_turn_mode_prompts_still_jump_the_queue(make):
+    h = make(verbosity="minimal")
+    h.pipeline.normalizer = FakeTurnNormalizer()
+    h.jsonl("Working on it. Still going.")
+    h.pipeline.speak_now("Claude Code wants to run a shell command. Yes or no?", SID, LineKind.PERMISSION_PROMPT)
+    assert h.wait_synth(1)
+    assert h.tts.calls[0].startswith("Claude Code wants")
+
+
+def test_turn_mode_flushes_after_a_long_lull_without_turn_end(make):
+    h = make(verbosity="normal")
+    h.pipeline.normalizer = FakeTurnNormalizer()
+    h.pipeline.turn_batch_max_wait = 0.3
+    h.line("● Pane prose without a completion row.")
+    assert h.wait_synth(1, timeout=3.0)
+    assert h.tts.calls[0] == "Spoken one."

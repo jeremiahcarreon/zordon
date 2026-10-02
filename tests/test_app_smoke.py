@@ -644,6 +644,7 @@ def test_degrades_when_every_factory_fails(cfg: Config, monkeypatch: pytest.Monk
     monkeypatch.setattr(A, "make_stt", nope)
     monkeypatch.setattr(A, "make_vad", nope)
     monkeypatch.setattr(A, "make_router", nope)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))  # no `claude` binary either
     a = A.Agent(cfg, tmux=FakeTmux(), claude_home=tmp_path / "ch")  # type: ignore[arg-type]
     try:
         names = a.providers.names()
@@ -661,8 +662,9 @@ def test_degrades_when_every_factory_fails(cfg: Config, monkeypatch: pytest.Monk
         a.stop()
 
 
-def test_default_config_without_keys_or_models_degrades_to_local(cfg: Config, tmp_path: Path):
+def test_default_config_without_keys_or_models_degrades_to_local(cfg: Config, tmp_path: Path, monkeypatch):
     """The real factories with an isolated home: no keys, no models, no crash."""
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))  # without `claude` on PATH too
     a = A.Agent(cfg, tmux=FakeTmux(), claude_home=tmp_path / "ch")  # type: ignore[arg-type]
     try:
         names = a.providers.names()

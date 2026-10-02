@@ -56,7 +56,7 @@ from zordon.output.prepass import (
     prepass_markdown,
     prepass_pane_line,
 )
-from zordon.output.sentences import SentenceBuffer
+from zordon.output.sentences import SentenceBuffer, split_sentences
 from zordon.output.tooldesc import describe_tool_result, describe_tool_use
 from zordon.output.verbosity import keep
 from zordon.providers import Normalizer, ProviderError, TTSProvider
@@ -84,6 +84,14 @@ class _Pending:
 
 
 @dataclass(slots=True)
+class _BatchItem:
+    text: str
+    kind: LineKind
+    raw_ids: list[int]
+    raw_texts: list[str]
+
+
+@dataclass(slots=True)
 class _Job:
     sentence: Sentence
     raw_texts: list[str]
@@ -93,6 +101,8 @@ class _Job:
     submitted_at: float = 0.0
     turn_end: bool = False  # marker: re-arm the prebuffer for this session
     bypass_mute: bool = False  # priority acknowledgement that must be heard while muted
+    batch: list[_BatchItem] | None = None  # turn mode: the whole turn, normalized in one request
+    timeout: float | None = None  # per-job normalizer wait; None = config default
 
 
 @dataclass
@@ -112,6 +122,7 @@ class _SessionCtx:
     context: deque[_Job] = field(default_factory=lambda: deque(maxlen=2))
     turn_open: bool = False
     prev_raw_text: str = ""
+    turn_batch: list[_BatchItem] = field(default_factory=list)
 
 
 class PipelineThread(threading.Thread):
@@ -145,6 +156,7 @@ class PipelineThread(threading.Thread):
         self._muted = muted
         self._focused_fn = focused_fn
         self.lull_seconds = lull_seconds
+        self.turn_batch_max_wait = 6.0  # seconds without lines before a turn batch is spoken anyway
         self.prebuffer_max_wait = prebuffer_max_wait
         self.prebuffer_quiet = prebuffer_quiet
         self.poll_timeout = poll_timeout
@@ -458,6 +470,7 @@ class PipelineThread(threading.Thread):
             self._enqueue(ctx, p.text, LineKind.SUMMARY, p.raw_ids, p.raw_texts)
             self._bump("kept")
 
+        self._flush_turn_batch(ctx)
         if ctx.turn_open:
             self._bump("turns")
         ctx.turn_open = False
@@ -546,6 +559,10 @@ class PipelineThread(threading.Thread):
     def _check_lulls(self) -> None:
         now = time.monotonic()
         for ctx in list(self._sessions.values()):
+            if ctx.turn_batch and now - ctx.last_line_ts >= self.turn_batch_max_wait:
+                # No turn_end arrived (pane source without a completion row): speak anyway.
+                ctx.last_line_ts = now
+                self._flush_turn_batch(ctx)
             if (
                 ctx.trailing or ctx.sentences.pending()
             ) and now - ctx.last_line_ts >= self.lull_seconds:
@@ -566,6 +583,17 @@ class PipelineThread(threading.Thread):
     ) -> None:
         text = text.strip()
         if not text:
+            return
+        if (
+            self.turn_mode
+            and not literal
+            and kind not in PRIORITY_KINDS
+            and kind is not LineKind.ERROR
+        ):
+            # Turn mode: the normalizer wants the whole turn at once (headless Claude
+            # Code is seconds per request). Collect, speak after turn_end.
+            ctx.turn_batch.append(_BatchItem(text, kind, [r for r in raw_ids if r], list(raw_texts)))
+            self._bump("batched")
             return
         sentence = Sentence(
             session_id=ctx.session_id,
@@ -601,6 +629,54 @@ class PipelineThread(threading.Thread):
             raise ProviderError("normalizer returned empty output")
         with self._cv:
             self._cv.notify_all()  # a prebuffer may now be satisfied
+        return out.strip()
+
+    @property
+    def turn_mode(self) -> bool:
+        """True when the current normalizer wants whole turns (``granularity == "turn"``)."""
+        return getattr(self.normalizer, "granularity", "sentence") == "turn" and callable(
+            getattr(self.normalizer, "normalize_turn", None)
+        )
+
+    def _flush_turn_batch(self, ctx: _SessionCtx) -> None:
+        items = ctx.turn_batch
+        if not items:
+            return
+        ctx.turn_batch = []
+        joined = " ".join(i.text for i in items)
+        raw_ids = [r for i in items for r in i.raw_ids]
+        raw_texts = [t for i in items for t in i.raw_texts]
+        sentence = Sentence(
+            session_id=ctx.session_id,
+            text=joined,
+            raw_text=joined,
+            raw_line_ids=raw_ids,
+            kind=LineKind.PROSE,
+        )
+        job = _Job(
+            sentence=sentence,
+            raw_texts=raw_texts,
+            generation=self.bus.generation,
+            enqueued_at=time.monotonic(),
+            batch=items,
+            timeout=float(getattr(self.normalizer, "timeout", 0) or 30.0),
+        )
+        job.submitted_at = time.monotonic()
+        try:
+            job.future = self._pool.submit(self._normalize_turn, joined)
+        except RuntimeError:
+            job.future = None
+        self._bump("turn_requests")
+        with self._cv:
+            self._jobs.append(job)
+            self._cv.notify_all()
+
+    def _normalize_turn(self, text: str) -> str:
+        out = self.normalizer.normalize_turn(text)  # type: ignore[attr-defined]
+        if not isinstance(out, str) or not out.strip():
+            raise ProviderError("normalizer returned empty output")
+        with self._cv:
+            self._cv.notify_all()
         return out.strip()
 
     @staticmethod
@@ -689,6 +765,9 @@ class PipelineThread(threading.Thread):
     def _process(self, job: _Job) -> None:
         if self._stopping.is_set():
             return  # the store may be closing; nothing is spoken after stop()
+        if job.batch is not None:
+            self._process_batch(job)
+            return
         sentence = job.sentence
         text = self._await_normalized(job)
         sentence.text = text
@@ -732,11 +811,44 @@ class PipelineThread(threading.Thread):
             return
         self._synthesize(sentence)
 
+    def _process_batch(self, job: _Job) -> None:
+        """Turn mode: one normalization for the whole turn, then speak it sentence by sentence."""
+        assert job.batch is not None
+        text = self._await_normalized(job)
+        normalized = text != job.sentence.raw_text
+        if normalized:
+            pieces = split_sentences(text) or [text]
+        else:
+            pieces = [i.text for i in job.batch]
+        n = len(pieces)
+        for idx, piece in enumerate(pieces):
+            if self._stopping.is_set():
+                return
+            if normalized:
+                kind = LineKind.INTENT if idx == 0 else (LineKind.SUMMARY if idx == n - 1 else LineKind.PROSE)
+                raw_ids, raw_texts = job.sentence.raw_line_ids, job.raw_texts
+            else:
+                item = job.batch[idx]
+                kind, raw_ids, raw_texts = item.kind, item.raw_ids, item.raw_texts
+            sub = _Job(
+                sentence=Sentence(
+                    session_id=job.sentence.session_id,
+                    text=piece,
+                    raw_text=piece,
+                    raw_line_ids=list(raw_ids),
+                    kind=kind,
+                ),
+                raw_texts=list(raw_texts),
+                generation=job.generation,
+                enqueued_at=job.enqueued_at,
+            )
+            self._process(sub)
+
     def _await_normalized(self, job: _Job) -> str:
         sentence = job.sentence
         if job.future is None:
             return sentence.text
-        timeout = float(self.config.providers.normalizer_timeout_seconds or 1.5)
+        timeout = float(job.timeout or self.config.providers.normalizer_timeout_seconds or 1.5)
         remaining = job.submitted_at + timeout - time.monotonic()
         try:
             deadline = time.monotonic() + max(0.0, remaining) + 0.05

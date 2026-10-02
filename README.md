@@ -83,8 +83,10 @@ for anything missing. `zordon token show` prints the token again.
 
 1. `zordon doctor --download`, then `zordon serve`. Serving works without models or keys too,
    but degraded: without the VAD model voice input is off, without a TTS provider nothing is
-   spoken, and without a normalizer key text is read as is; the startup warnings and
-   `zordon doctor` say what to fix.
+   spoken; the startup warnings and `zordon doctor` say what to fix. No API key is needed:
+   without one, output is normalized by Claude Code itself (headless, under your existing
+   login) once each response is complete; with an Anthropic key it is normalized sentence
+   by sentence as it streams.
 2. Open the page, paste the token. Nothing is spoken until a session is focused: the picker
    opens by itself; **Resume** a session or **Start** one in a directory.
 3. A brand-new directory shows Claude Code's trust dialog. Its highlighted default is
@@ -101,9 +103,21 @@ environment variable (`OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `GROQ_API_KEY`,
 [providers]
 stt = "openai"          # or groq
 tts = "elevenlabs"      # or openai
-normalizer = "anthropic"
+normalizer = "auto"     # anthropic key -> per sentence; else claude-cli -> per turn; else passthrough
 router = "jev"          # falls back to anthropic, then to a keyword router
 ```
+
+### Normalizing without an API key
+
+The default normalizer is `auto`. With no Anthropic key it runs `claude -p` (Claude Code's
+headless print mode) under the login you already have, so the subscription pays, not an API
+account. Each request is a fresh process, so nothing from one response is in the context of
+the next; one process is kept warm so start-up is hidden. It is slow per request (about 4-7 s
+with `claude-haiku-4-5`, about 1.5 s API time with `claude-sonnet-5` on Claude Code 2.1.287), so Zordon waits
+until a response is finished and normalizes the whole thing in one call instead of sentence
+by sentence. Permission prompts are never held back by this. Set
+`claude_cli_model = "claude-sonnet-5"` to trade subscription quota for speed, or add an Anthropic key
+for per-sentence normalization as text streams.
 
 See `docs/providers.md` for every slot, model, and cost note.
 
@@ -175,7 +189,7 @@ token = "generated-on-first-run"
 [providers]
 stt = "faster-whisper"      # or openai, groq
 tts = "kokoro"              # or elevenlabs, openai
-normalizer = "anthropic"    # or passthrough
+normalizer = "auto"         # or anthropic, claude-cli, passthrough
 router = "jev"              # or anthropic, keyword
 
 [providers.keys]
