@@ -16,6 +16,19 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(ch))
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "GROQ_API_KEY", "TYPESAFE_API_KEY"):
         monkeypatch.delenv(k, raising=False)
+    # A developer machine may run Ollama; unit tests must not depend on it. Calls to the
+    # real default URL fail as "no server"; tests that mock a server use another host.
+    from zordon.output.normalizer import ollama as _ollama
+    from zordon.providers import ProviderNotConfigured
+
+    real_server_models = _ollama.server_models
+
+    def guarded(url=_ollama.DEFAULT_URL, *a, **k):
+        if "127.0.0.1:11434" in url or "localhost:11434" in url:
+            raise ProviderNotConfigured("ollama: disabled in tests")
+        return real_server_models(url, *a, **k)
+
+    monkeypatch.setattr(_ollama, "server_models", guarded)
     return zh
 
 

@@ -191,6 +191,34 @@ def compare_prompts_version(version_line: str, prompts_version: str | None = Non
     )
 
 
+def check_ollama(cfg: Config) -> Check | None:
+    """Local Ollama: the zero-key per-sentence normalizer (and opt-in router). Only
+    reported when the config can use it (normalizer auto/ollama or router ollama)."""
+    p = cfg.providers
+    wants = p.normalizer in ("auto", "ollama") or p.router == "ollama"
+    if not wants:
+        return None
+    if p.normalizer == "auto" and p.key("anthropic"):
+        return None  # the API normalizer wins; Ollama is irrelevant
+    from zordon.output.normalizer.ollama import has_model, server_models  # noqa: PLC0415
+    from zordon.providers import ProviderNotConfigured  # noqa: PLC0415
+
+    required = p.normalizer == "ollama" or p.router == "ollama"
+    level = FAIL if required else WARN
+    try:
+        models = server_models(p.ollama_url)
+    except ProviderNotConfigured:
+        return Check(
+            "ollama",
+            level,
+            f"no server at {p.ollama_url}; the normalizer falls back to headless Claude Code (slower, per turn)",
+            "install Ollama (https://ollama.com), run `ollama serve`, then `ollama pull " + p.ollama_model + "`",
+        )
+    if not has_model(models, p.ollama_model):
+        return Check("ollama", level, f"server up, model {p.ollama_model!r} not pulled", f"ollama pull {p.ollama_model}")
+    return Check("ollama", OK, f"{p.ollama_model} at {p.ollama_url}")
+
+
 def check_curl(which: Which = shutil.which) -> Check:
     """The Notification/Stop hook handlers Zordon writes into a session's settings are
     ``curl`` command lines (decision 0009); without curl the second prompt signal is
@@ -567,6 +595,9 @@ def run_checks(
     checks.append(Check("providers", OK, ", ".join(f"{k}={getattr(cfg.providers, k)}" for k in ("stt", "tts", "normalizer", "router"))))
     checks.extend(check_keys(cfg))
     checks.extend(check_modules(cfg, find_spec))
+    ollama = check_ollama(cfg)
+    if ollama is not None:
+        checks.append(ollama)
     cuda = check_cuda(cfg, find_spec)
     if cuda is not None:
         checks.append(cuda)

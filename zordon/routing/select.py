@@ -97,7 +97,7 @@ class FallbackRouter:
 def make_router(config: Config) -> Router:
     """Build the router chain the config asks for. Never raises for a missing key."""
     pref = (config.providers.router or "jev").lower()
-    if pref not in ("jev", "anthropic", "keyword"):
+    if pref not in ("jev", "anthropic", "ollama", "keyword"):
         log.warning("unknown providers.router=%r; using the jev chain", pref)
         pref = "jev"
     chain: list[Router] = [KeywordRouter()]
@@ -110,6 +110,12 @@ def make_router(config: Config) -> Router:
         haiku = _try_haiku(config)
         if haiku is not None:
             chain.append(haiku)
+    if pref == "ollama":
+        # Explicit opt-in only: measured 50% (3b) / 87% (14b) on eval/router_set.jsonl with
+        # unsafe misroutes, below the design's bar, so it is never part of the auto chain.
+        local = _try_ollama(config)
+        if local is not None:
+            chain.append(local)
     if pref != "keyword" and len(chain) == 1:
         log.warning(
             "providers.router=%s but no provider is configured; shim commands and yes/no still work, "
@@ -144,4 +150,14 @@ def _try_haiku(config: Config) -> Router | None:
         )
     except ProviderNotConfigured as e:
         log.info("anthropic router not configured: %s", e)
+        return None
+
+
+def _try_ollama(config: Config) -> Router | None:
+    try:
+        from zordon.routing.ollama import OllamaRouter  # noqa: PLC0415
+
+        return OllamaRouter(config.providers.ollama_url, config.providers.ollama_model)
+    except ProviderNotConfigured as e:
+        log.info("ollama router not configured: %s", e)
         return None

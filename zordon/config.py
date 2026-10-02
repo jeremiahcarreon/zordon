@@ -59,8 +59,8 @@ class ServerConfig:
 class ProvidersConfig:
     stt: str = "faster-whisper"  # faster-whisper | openai | groq
     tts: str = "kokoro"  # kokoro | elevenlabs | openai
-    normalizer: str = "auto"  # auto | anthropic | claude-cli | passthrough
-    router: str = "jev"  # jev | anthropic | keyword
+    normalizer: str = "auto"  # auto | anthropic | ollama | claude-cli | passthrough
+    router: str = "jev"  # jev | anthropic | ollama | keyword
     keys: dict[str, str] = field(default_factory=lambda: {k: "" for k in ENV_KEYS})
 
     # Per-provider knobs. All have working defaults.
@@ -73,6 +73,9 @@ class ProvidersConfig:
     normalizer_timeout_seconds: float = 1.5
     # Headless Claude Code normalizer (no API key): model alias and per-turn timeout.
     claude_cli_model: str = "claude-haiku-4-5"
+    # Local Ollama server (no key): normalizer and router fallback.
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen2.5:3b-instruct"
     claude_cli_timeout_seconds: float = 30.0
 
     def key(self, name: str) -> str:

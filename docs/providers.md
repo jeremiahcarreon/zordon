@@ -11,7 +11,7 @@ while running. Local providers need model files; cloud providers need an API key
 | --- | --- | --- | --- | --- | --- |
 | Speech to text | `providers.stt` | `faster-whisper` | `openai`, `groq` | `STTProvider.transcribe(pcm16k) -> STTResult` | Turns one utterance (16 kHz float32) into text and a confidence where available |
 | Text to speech | `providers.tts` | `kokoro` | `openai`, `elevenlabs` | `TTSProvider.synthesize(text) -> Iterator[bytes]` | Turns one sentence into int16 PCM chunks at `sample_rate` |
-| Normalizer | `providers.normalizer` | `auto` (Anthropic key -> `anthropic`, else `claude-cli`, else `passthrough`) | `anthropic`, `claude-cli`, `passthrough` | `Normalizer.normalize(sentence, context) -> str` | Rewrites one pre-passed sentence as fluent spoken English; `passthrough` returns it unchanged |
+| Normalizer | `providers.normalizer` | `auto` (Anthropic key -> `anthropic`, else `ollama`, else `claude-cli`, else `passthrough`) | `anthropic`, `ollama`, `claude-cli`, `passthrough` | `Normalizer.normalize(sentence, context) -> str` | Rewrites one pre-passed sentence as fluent spoken English; `passthrough` returns it unchanged |
 | Router | `providers.router` | `jev` | `anthropic`, `keyword` | `Router.route()`, `.yes_no()`, `.prompt_score()` | Decides whether an utterance goes to Claude Code, the transcript, or a shim command; the strict yes/no gate; the prompt second opinion |
 
 ### Speech to text
@@ -50,6 +50,7 @@ are untested.
 | Name | Model | Needs | Notes |
 | --- | --- | --- | --- |
 | `anthropic` | `normalizer_model`, default `claude-haiku-4-5` | `providers.keys.anthropic` or `ANTHROPIC_API_KEY` | One call per sentence, `max_tokens` 200, temperature 0 (sent as `extra_body`), `normalizer_timeout_seconds` (1.5 s) and no retries; on any failure the sentence is spoken as pre-passed. `claude-sonnet-5` also works; it rejects a temperature and runs adaptive thinking unless disabled, which the provider handles |
+| `ollama` | `ollama_model`, default `qwen2.5:3b-instruct`; `ollama_url`, default `http://127.0.0.1:11434` | A running Ollama server with the model pulled; no key | Per sentence over `/api/chat`, temperature 0, `keep_alive` 30 min, `normalizer_timeout_seconds` (1.5 s). Length guard: a rewrite over 1.6x the input words is retried once, then the pre-passed sentence is spoken. Measured 2026-10-02 on an RTX 4090 over the 50-sample set: 1.5b 208 ms mean, lenient 24% (ignores formatting rules); 3b 219 ms, lenient 40%; 14b 565 ms, lenient 44%. The dominant failure for every size is a dropped fact, not padding (the guard fired once in 50). The same object answers transcript questions |
 | `claude-cli` | `claude_cli_model`, default `claude-haiku-4-5` (`claude-sonnet-5` measured faster) | Claude Code installed and logged in; no key | Runs `claude -p --input-format stream-json --output-format stream-json --tools "" --setting-sources "" --no-session-persistence --max-turns 1` under the user's login. One fresh process per request (nothing carries over), one kept warm. Measured on 2.1.287: 4-7 s per request with `claude-haiku-4-5`, about 1.5 s API time with `claude-sonnet-5`; the process still carries Claude Code's own ~67k-token baseline prefix (only `--bare` removes it, and `--bare` is API-key only). Too slow per sentence, so the provider declares turn granularity: the pipeline collects a whole turn and normalizes it once it ends (or after a 6 s lull without a completion). Prompts and notices bypass this. `claude_cli_timeout_seconds` (30 s) bounds a request; on failure the turn is spoken pre-passed. The same process answers transcript questions |
 | `passthrough` | none | nothing | Speaks the pre-passed text. Readable but terse. Automatic when neither an Anthropic key nor the `claude` binary is available |
 
@@ -64,6 +65,7 @@ so no cache hits occur on Haiku. The marker is harmless and does engage on
 | --- | --- | --- | --- |
 | `jev` | TypeSafe System One (`jev-latest`) | `pip install zordon[jev]`; `providers.keys.typesafe` or `TYPESAFE_API_KEY` | Classifier, not a language model: returns a probability per destination. Timeout 1.5 s, one retry. Falls back to `anthropic` for the utterance on any error, and for the whole process if the key is rejected at startup |
 | `anthropic` | `router_model`, default `claude-haiku-4-5` | `providers.keys.anthropic` or `ANTHROPIC_API_KEY` | Structured JSON output, `max_tokens` 100, 1.5 s, no retries. Falls back to `keyword` |
+| `ollama` | `ollama_model` / `ollama_url` (shared with the normalizer) | A running Ollama server with the model pulled; no key | Explicit opt-in only, never part of the automatic chain. Same prompts and JSON schema as `anthropic`, served locally in 300-600 ms. Measured 2026-10-02 on `eval/router_set.jsonl`: `qwen2.5:3b-instruct` 50% with 12 unsafe misroutes (work requests answered from the transcript); `qwen2.5:14b-instruct` 87% with 4. Both miss the design's bar (95%, zero unsafe), so use it knowingly: the keyword fast path still handles shim commands and yes/no |
 | `keyword` | none | nothing | Deterministic: shim commands by phrase table, yes/no by word list, everything else to Claude Code. No network; the last resort and the test default |
 
 Whatever the router answers, only command names in `zordon/routing/commands.py`
@@ -75,7 +77,7 @@ can execute. See decision 0006 for thresholds.
 [providers]
 stt = "faster-whisper"      # faster-whisper | openai | groq
 tts = "kokoro"              # kokoro | openai | elevenlabs
-normalizer = "auto"         # auto | anthropic | claude-cli | passthrough
+normalizer = "auto"         # auto | anthropic | ollama | claude-cli | passthrough
 router = "jev"              # jev | anthropic | keyword
 
 stt_model = "small.en"
@@ -86,6 +88,8 @@ normalizer_model = "claude-haiku-4-5"
 router_model = "claude-haiku-4-5"
 normalizer_timeout_seconds = 1.5
 claude_cli_model = "claude-haiku-4-5"   # claude-cli normalizer model id
+ollama_url = "http://127.0.0.1:11434"
+ollama_model = "qwen2.5:3b-instruct"    # ollama normalizer (and opt-in router) model
 claude_cli_timeout_seconds = 30.0
 
 [providers.keys]

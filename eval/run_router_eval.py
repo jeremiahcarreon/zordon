@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import statistics
 import sys
 import time
@@ -316,6 +317,11 @@ def build_router(name: str) -> Router:
         from zordon.routing.anthropic import HaikuRouter  # noqa: PLC0415
 
         return HaikuRouter(config.providers.key("anthropic"), model=config.providers.router_model)
+    if name == "ollama":
+        from zordon.routing.ollama import OllamaRouter  # noqa: PLC0415
+
+        model = os.environ.get("ZORDON_OLLAMA_MODEL") or config.providers.ollama_model
+        return OllamaRouter(config.providers.ollama_url, model, timeout=10.0)
     if name == "fallback":
         from zordon.routing.select import make_router  # noqa: PLC0415
 
@@ -325,7 +331,7 @@ def build_router(name: str) -> Router:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--router", choices=("keyword", "jev", "anthropic", "fallback"), default="keyword")
+    ap.add_argument("--router", choices=("keyword", "jev", "anthropic", "ollama", "fallback"), default="keyword")
     ap.add_argument("--set", type=Path, default=SET_PATH, help="path to the jsonl set")
     ap.add_argument("--threshold", type=float, default=None, help="router confidence threshold (default: config)")
     ap.add_argument("--verbose", action="store_true")

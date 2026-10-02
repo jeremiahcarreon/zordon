@@ -28,7 +28,6 @@ VOICES = (
     "ballad",
     "coral",
     "echo",
-    "fable",
     "nova",
     "onyx",
     "sage",

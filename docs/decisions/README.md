@@ -17,6 +17,7 @@ and what it leaves open.
 | [0008](0008-pane-capture-and-diffing.md) | 100 ms `capture-pane` polling holds with the spinner masked; the alternate screen has no history | capture-pane diffing question |
 | [0009](0009-notification-hook-second-signal.md) | A per-launch `--settings` Notification hook is the second prompt signal; the pane regex stays primary | Prompt detection backstop |
 | [0010](0010-headless-normalizer.md) | Without an Anthropic key, headless Claude Code normalizes each finished turn under the user's own login; one fresh process per request | Zero-key default |
+| [0011](0011-ollama-normalizer.md) | A local Ollama model normalizes per sentence with no key; 3b default with a padding guard; the Ollama router is opt-in only | Zero-key streaming |
 
 ## Writing one
 

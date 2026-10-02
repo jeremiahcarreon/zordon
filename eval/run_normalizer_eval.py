@@ -169,7 +169,17 @@ def lenient_reasons(sample: Sample, output: str) -> list[str]:
         reasons.append("not a single sentence")
     if has_markdown(output):
         reasons.append("markdown")
+    n_in, n_out = _words(sample.input), _words(output)
+    if n_in >= 4 and n_out > 1.6 * n_in + 2:
+        reasons.append(f"padded ({n_in} -> {n_out} words)")
     return reasons
+
+
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def _words(text: str) -> int:
+    return len(_WORD_RE.findall(text or ""))
 
 
 def score(sample: Sample, output: str, latency_ms: float = 0.0) -> Score:
@@ -274,14 +284,22 @@ def make_provider(name: str, model: str | None, timeout: float | None) -> Normal
             model=model or cfg.providers.normalizer_model,
             timeout=timeout or cfg.providers.normalizer_timeout_seconds,
         )
-    raise SystemExit(f"unknown provider {name!r}; use passthrough or anthropic")
+    if name == "ollama":
+        from zordon.output.normalizer.ollama import DEFAULT_MODEL, DEFAULT_URL, OllamaNormalizer
+
+        return OllamaNormalizer(DEFAULT_URL, model or DEFAULT_MODEL, timeout=timeout or 5.0)
+    if name == "claude-cli":
+        from zordon.output.normalizer.claude_cli import ClaudeCliNormalizer
+
+        return ClaudeCliNormalizer(model=model or "claude-haiku-4-5", timeout=timeout or 60.0)
+    raise SystemExit(f"unknown provider {name!r}; use passthrough, anthropic, ollama or claude-cli")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--provider", default="passthrough", help="passthrough (default) or anthropic")
+    ap.add_argument("--provider", default="passthrough", help="passthrough (default), anthropic, ollama or claude-cli")
     ap.add_argument("--model", default=None, help="model id for --provider anthropic")
     ap.add_argument("--timeout", type=float, default=None, help="per-call timeout in seconds")
     ap.add_argument("--set", type=Path, default=DEFAULT_SET, help="path to the jsonl set")

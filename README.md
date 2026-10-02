@@ -103,15 +103,28 @@ environment variable (`OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `GROQ_API_KEY`,
 [providers]
 stt = "openai"          # or groq
 tts = "elevenlabs"      # or openai
-normalizer = "auto"     # anthropic key -> per sentence; else claude-cli -> per turn; else passthrough
+normalizer = "auto"     # anthropic key -> per sentence; else ollama -> per sentence; else claude-cli -> per turn
 router = "jev"          # falls back to anthropic, then to a keyword router
 ```
 
 ### Normalizing without an API key
 
-The default normalizer is `auto`. With no Anthropic key it runs `claude -p` (Claude Code's
-headless print mode) under the login you already have, so the subscription pays, not an API
-account. Each request is a fresh process, so nothing from one response is in the context of
+The default normalizer is `auto`. With no Anthropic key it first looks for a local
+[Ollama](https://ollama.com) server with the configured model (default `qwen2.5:3b-instruct`,
+about 2 GB):
+
+```bash
+ollama pull qwen2.5:3b-instruct
+```
+
+Small instruct models rewrite a sentence in 150-300 ms on a desktop GPU, so this path streams
+sentence by sentence like the API path, with no key and no quota. Small models like to pad, so
+the provider asks for the same facts at the same length and speaks the pre-passed text when a
+rewrite grows past 1.6x the input. `ollama_model = "qwen2.5:14b-instruct"` is the higher-quality
+option when you have the memory (300-550 ms here).
+
+Without Ollama it runs `claude -p` (Claude Code's headless print mode) under the login you
+already have, so the subscription pays, not an API account. Each request is a fresh process, so nothing from one response is in the context of
 the next; one process is kept warm so start-up is hidden. It is slow per request (about 4-7 s
 with `claude-haiku-4-5`, about 1.5 s API time with `claude-sonnet-5` on Claude Code 2.1.287), so Zordon waits
 until a response is finished and normalizes the whole thing in one call instead of sentence
@@ -189,7 +202,7 @@ token = "generated-on-first-run"
 [providers]
 stt = "faster-whisper"      # or openai, groq
 tts = "kokoro"              # or elevenlabs, openai
-normalizer = "auto"         # or anthropic, claude-cli, passthrough
+normalizer = "auto"         # or anthropic, ollama, claude-cli, passthrough
 router = "jev"              # or anthropic, keyword
 
 [providers.keys]
