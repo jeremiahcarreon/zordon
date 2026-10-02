@@ -14,6 +14,7 @@ migration). Thread-safe through a lock; SQLite is opened with
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -21,7 +22,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from zordon.bus import TranscriptRow
-from zordon.transcript.redaction import redact
+from zordon.transcript.redaction import redact, redact_pair
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS raw (
@@ -73,17 +74,25 @@ class TranscriptStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
         self._conn.commit()
         self._row_ids = _Counter(self._max_row_id())
+        # Last unredacted raw line per session, so a key the TUI hard-wrapped across
+        # two pane lines is masked on the second line too (redact_pair).
+        self._last_raw: dict[str, str] = {}
 
     # ---- writes ----------------------------------------------------------------
 
     def add_raw(self, session_id: str, text: str, ts: float | None = None, source: str = "pane") -> int:
-        masked, hit = redact(text)
         with self._lock:
+            masked, hit = redact_pair(self._last_raw.get(session_id), text)
+            self._last_raw[session_id] = text
             cur = self._conn.execute(
                 "INSERT INTO raw(session_id, user, ts, source, text, redacted) VALUES (?,?,?,?,?,?)",
                 (session_id, self.user, ts or time.time(), source, masked, int(hit)),
@@ -211,8 +220,14 @@ class TranscriptStore:
             ).fetchone()
         return row[0] if row else None
 
+    def forget_session(self, session_id: str) -> None:
+        """Drop the per-session wrap memory (call on detach/delete)."""
+        with self._lock:
+            self._last_raw.pop(session_id, None)
+
     def close(self) -> None:
         with self._lock:
+            self._last_raw.clear()
             self._conn.close()
 
     def next_row_id(self) -> int:

@@ -1,0 +1,39 @@
+operator@hostname:~/Code/zordon$ env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --permission-mode default
+Permission deny rule (../../.claude/settings.json): Write(.env) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.env) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(.env.*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.env.*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(**/.env) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(**/.env.*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env.*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(/home/operator/.claude/settings.json) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/home/operator/.claude/settings.json) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(/home/operator/.claude/CLAUDE.md) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/home/operator/.claude/CLAUDE.md) instead (Edit rules cover all file-editing tools).
+
+Error: spawn EAGAIN
+    at ChildProcess.spawn (node:internal/child_process:420:11)
+operator@hostname:~/Code/zordon$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

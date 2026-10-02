@@ -218,14 +218,70 @@ def test_bargein_flushes_within_150ms_and_marks_sentence_unspoken(h: Harness):
     assert not h.thread.playback_active
     assert h.playback_states == [True, False]
 
-    # Late chunks of the old generation are dropped, new-generation chunks pass.
+    # While the user is still speaking nothing is forwarded, old or new generation
+    # (CONC-6): the new chunk stays queued instead of talking over the user.
     old = h.play(sentence_id=8, seconds=0.5, generation=gen0)
     new = h.play(sentence_id=9, seconds=0.5)
+    h.push_many(SPEECH, 5)
+    h.collector.none_match(lambda e: e is new or e is old)
+    assert h.gate.speaking and not h.thread.playback_active
+    # The utterance ends (700 ms of silence) and the hold lifts: the old chunk is dropped,
+    # the new one passes, after the Flush.
+    h.push_many(SILENCE, 40)
+    h.advance(0.2)
     h.collector.wait_for(lambda e: e is new)
     assert old not in h.collector.events
     assert h.thread.dropped_chunks >= 1
-    # The Flush precedes the new-generation chunk in the client stream.
     assert h.collector.events.index(flush) < h.collector.events.index(new)
+
+
+def test_no_playback_while_the_user_speaks_and_a_second_bargein_can_fire(h: Harness):
+    """CONC-6: after a barge-in, chunks of the new generation wait until the utterance
+    ends, so Claude does not talk over the user and the next sentence can be barged
+    into as well."""
+    first = h.play(sentence_id=1, seconds=2.0)
+    h.collector.wait_for(lambda e: e is first)
+    h.advance(0.3)
+    h.push_many(SPEECH, 5)
+    flush1 = h.collector.wait_for(is_flush)
+    assert flush1.interrupted_sentence_id == 1 and h.thread.bargein_count == 1
+    assert h.gate.speaking
+
+    # The pipeline keeps producing: a new-generation sentence lands while the user talks.
+    second = h.play(sentence_id=2, seconds=2.0)
+    h.push_many(SPEECH, 10)
+    h.collector.none_match(lambda e: e is second)
+    assert not h.thread.playback_active
+    assert h.thread.held_chunks > 0
+    assert h.bus.generation == flush1.generation  # no spurious second bump
+
+    # The user stops; after the end of the utterance plus the short grace the chunk plays.
+    h.push_many(SILENCE, 40)
+    h.advance(0.2)
+    h.collector.wait_for(lambda e: e is second)
+    assert h.thread.playback_active
+    utt = _wait_queue(h.bus.utterances)
+    assert utt.text
+
+    # The user speaks again over sentence 2: a second barge-in fires.
+    h.advance(0.3)
+    h.push_many(SPEECH, 8)
+    flushes = [e for e in h.collector.of(Flush)]
+    assert len(flushes) >= 2, "second barge-in did not fire"
+    assert flushes[-1].interrupted_sentence_id == 2
+    assert h.thread.bargein_count == 2
+    assert h.store.unspoken == [1, 2]
+
+
+def test_speech_without_playback_holds_new_chunks_until_the_utterance_ends(h: Harness):
+    h.push_many(SPEECH, 10)
+    assert h.gate.speaking
+    c = h.play(sentence_id=5, seconds=1.0)
+    h.push_many(SPEECH, 5)
+    h.collector.none_match(lambda e: e is c)
+    h.push_many(SILENCE, 40)
+    h.advance(0.2)
+    h.collector.wait_for(lambda e: e is c)
 
 
 def test_onset_without_playback_is_not_a_bargein(h: Harness):
@@ -312,6 +368,35 @@ def test_call_ended_resets_gate(h: Harness):
     assert h.stt.call_count == 0
 
 
+# ---- one caller at a time -----------------------------------------------------------------
+
+
+def test_second_client_cannot_join_the_call_or_reset_the_gate(h: Harness):
+    """CONC-9: client-a is in the call; client-b's start is refused and its end/pause/resume
+    do not touch the gate under client-a's utterance."""
+    assert h.thread.in_call and h.thread.client_id == "client-a"
+    assert h.thread.call_started("client-b") is False
+    assert h.thread.client_id == "client-a"
+    h.push_many(SPEECH, 25)
+    assert h.gate.speaking
+    h.thread.call_ended("client-b")
+    h.thread.call_paused("client-b")
+    h.thread.call_resumed("client-b")
+    time.sleep(0.05)
+    assert h.gate.speaking, "a non-caller reset the gate"
+    assert h.thread.in_call
+    # The caller's own utterance completes normally.
+    h.push_many(SILENCE, 40)
+    utt = _wait_queue(h.bus.utterances)
+    assert utt.client_id == "client-a"
+    # The caller may re-start (reconnect) and may end; then another client may join.
+    assert h.thread.call_started("client-a") is True
+    h.thread.call_ended("client-a")
+    assert not h.thread.in_call
+    assert h.thread.call_started("client-b") is True
+    assert h.thread.client_id == "client-b"
+
+
 # ---- echo guard -------------------------------------------------------------------
 
 
@@ -362,6 +447,8 @@ def test_stats_snapshot(h: Harness):
         "bargein_count",
         "bargein_histogram",
         "playback_active",
+        "held_chunks",
+        "in_call",
     }
     assert list(s["bargein_histogram"]) == [
         "<=5ms",

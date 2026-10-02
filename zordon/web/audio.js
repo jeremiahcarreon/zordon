@@ -32,6 +32,7 @@
   var CAPTURE_RATE = 16000;
   var FRAME_SAMPLES = 320;
   var SCHEDULE_LEAD_S = 0.03; // re-anchor 30 ms ahead of "now" after an underrun
+  var STOP_GATE_MS = 5000; // Stop button: how long to drop speech if no flush follows
   var MAX_QUEUE_S = 20; // more than this much audio queued is a sign of a stuck cursor
 
   function noop() {}
@@ -67,6 +68,12 @@
     this.lastFlushGeneration = 0;
     this.currentSentenceId = null;
     this.blockedReported = false;
+    // Sentence ids whose final chunk was scheduled (so a flush can tell which later
+    // sentences never finished).
+    this.finished = new Set();
+    // Local Stop: drop speech until the agent's own flush (a new generation) or hello
+    // arrives, at most STOP_GATE_MS, so playback does not resume mid-sentence.
+    this.stopGateUntil = 0;
 
     this.stats = {
       framesSent: 0,
@@ -85,23 +92,42 @@
     return typeof root.AudioContext === 'function' || typeof root.webkitAudioContext === 'function';
   };
 
-  // Create or resume the AudioContext. Call from inside a user gesture; safe to
-  // call again from any later gesture (recovers from 'suspended'/'interrupted').
-  ZordonAudio.prototype.unlock = function () {
+  // The one place an AudioContext is created, so every context gets the state
+  // handler that re-arms the "tap to enable audio" notice. Returns false when
+  // Web Audio is unavailable or construction failed.
+  ZordonAudio.prototype._createContext = function () {
     var self = this;
-    if (!self.ctx) {
-      var Ctor = root.AudioContext || root.webkitAudioContext;
-      if (!Ctor) return Promise.reject(new Error('Web Audio is not available in this browser'));
+    if (self.ctx) return true;
+    var Ctor = root.AudioContext || root.webkitAudioContext;
+    if (!Ctor) return false;
+    try {
       self.ctx = new Ctor({ latencyHint: 'interactive' }); // no sampleRate: device default
       self.gain = self.ctx.createGain();
       self.gain.gain.value = self.speakerMuted ? 0 : 1;
       self.gain.connect(self.ctx.destination);
-      self.ctx.onstatechange = function () {
-        self.log('audio context ' + self.ctx.state);
-        if (self.ctx.state === 'running') self.blockedReported = false;
-      };
+    } catch (_) {
+      self.ctx = null;
+      self.gain = null;
+      return false;
+    }
+    self.ctx.onstatechange = function () {
+      self.log('audio context ' + self.ctx.state);
+      if (self.ctx.state === 'running') self.blockedReported = false;
+    };
+    return true;
+  };
+
+  // Create or resume the AudioContext. Call from inside a user gesture; safe to
+  // call again from any later gesture (recovers from 'suspended'/'interrupted').
+  ZordonAudio.prototype.unlock = function () {
+    var self = this;
+    if (!self._createContext()) {
+      return Promise.reject(new Error('Web Audio is not available in this browser'));
     }
     var p = self.ctx.state !== 'running' ? self.ctx.resume() : Promise.resolve();
+    p = p.then(function () {
+      if (self.ctx.state === 'running') self.blockedReported = false;
+    });
     return p.then(function () {
       // Play one silent sample inside the gesture so iOS treats output as unlocked.
       try {
@@ -308,25 +334,20 @@
     },
   });
 
+  Object.defineProperty(ZordonAudio.prototype, 'stopGateActive', {
+    get: function () {
+      return this.stopGateUntil > Date.now();
+    },
+  });
+
   // Schedule one "speech" message. Returns true when it was queued for playback.
   ZordonAudio.prototype.onSpeech = function (msg) {
-    if (msg.generation < this.lastFlushGeneration) {
+    if (msg.generation < this.lastFlushGeneration || this.stopGateActive) {
       this.stats.chunksDropped++;
       return false;
     }
-    if (!this.ctx) {
-      // Create a context so it is ready; it will stay suspended until a gesture.
-      var Ctor = root.AudioContext || root.webkitAudioContext;
-      if (!Ctor) return false;
-      try {
-        this.ctx = new Ctor({ latencyHint: 'interactive' });
-        this.gain = this.ctx.createGain();
-        this.gain.gain.value = this.speakerMuted ? 0 : 1;
-        this.gain.connect(this.ctx.destination);
-      } catch (_) {
-        return false;
-      }
-    }
+    // Create a context so it is ready; it stays suspended until a gesture.
+    if (!this._createContext()) return false;
     if (this.ctx.state !== 'running') {
       this.stats.chunksBlocked++;
       if (!this.blockedReported) {
@@ -360,6 +381,7 @@
     var wasActive = this.scheduled.size > 0;
     this.scheduled.add(src);
     this.currentSentenceId = msg.sentence_id;
+    if (msg.final) this.finished.add(msg.sentence_id);
     this.stats.chunksPlayed++;
     src.onended = function () {
       self.scheduled.delete(src);
@@ -379,8 +401,10 @@
   // cut off (still scheduled at the time) and how long the flush took.
   ZordonAudio.prototype.flush = function (generation) {
     var t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    if (typeof generation === 'number' && generation > this.lastFlushGeneration) {
-      this.lastFlushGeneration = generation;
+    if (typeof generation === 'number') {
+      if (generation > this.lastFlushGeneration) this.lastFlushGeneration = generation;
+      // The agent's own flush arrived: whatever follows is a new generation.
+      this.stopGateUntil = 0;
     }
     var ids = [];
     var seen = {};
@@ -410,6 +434,28 @@
     this.stats.lastFlushMs = ms;
     if (hadAudio) this.onPlaybackChange(false);
     return { interrupted: ids, ms: ms, hadAudio: hadAudio };
+  };
+
+  // The Stop button: silence now and keep dropping speech of the current
+  // generation until the agent's flush (or hello) arrives, at most STOP_GATE_MS.
+  // Returns the same record as flush().
+  ZordonAudio.prototype.stopLocal = function (holdMs) {
+    var res = this.flush();
+    this.stopGateUntil = Date.now() + (typeof holdMs === 'number' ? holdMs : STOP_GATE_MS);
+    return res;
+  };
+
+  // True when the final chunk of this sentence was scheduled.
+  ZordonAudio.prototype.sentenceFinished = function (sentenceId) {
+    return this.finished.has(sentenceId);
+  };
+
+  // A new connection (hello): the agent's generation counter may have restarted,
+  // so forget the old gate; sentence ids may repeat, so forget them too.
+  ZordonAudio.prototype.resetGeneration = function () {
+    this.lastFlushGeneration = 0;
+    this.stopGateUntil = 0;
+    this.finished.clear();
   };
 
   // Time of audio still queued, in seconds (for the UI).

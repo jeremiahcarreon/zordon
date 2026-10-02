@@ -8,6 +8,12 @@ Two paths:
 * No credentials, or the call fails: a deterministic fallback that reads back
   the most recent transcript lines sharing content words with the question.
 
+The context is the recent *raw* transcript (every pre-passed line, including
+tool-call descriptions such as ``editing auth.py (Edit(/repo/auth.py))``) merged
+with the spoken sentences. At minimal verbosity the spoken tail holds only the
+intent and the outcome, so the raw lines are what make "what file did it just
+change?" answerable; see :func:`merge_context`.
+
 ``answer()`` never raises: a transcript question must always produce something
 to say, and the pane must never be touched on this path.
 """
@@ -29,6 +35,7 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 DEFAULT_TIMEOUT = 1.5
 MAX_TOKENS = 160
 TAIL_LINES = 12
+RAW_LINES = 40
 
 SYSTEM_PROMPT = (
     "You answer one spoken question about what a coding assistant (Claude Code) said recently, using ONLY "
@@ -76,6 +83,28 @@ _SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 NOTHING_YET = "I haven't heard anything from this session yet."
+
+
+def merge_context(tail: Sequence[str], raw: Sequence[str] | None) -> list[str]:
+    """The lines the answerer reads, oldest first: the last ``RAW_LINES`` raw transcript
+    lines, then any spoken sentence whose text is not already among them (the
+    normalizer may have rewritten it). Blank lines and exact repeats are dropped.
+    Without raw lines this is just the spoken tail, as before."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def push(line: str) -> None:
+        t = _clean(line)
+        if not t or t.lower() in seen:
+            return
+        seen.add(t.lower())
+        out.append(t)
+
+    for line in [t for t in (raw or []) if t and t.strip()][-RAW_LINES:]:
+        push(line)
+    for line in [t for t in tail if t and t.strip()][-TAIL_LINES:]:
+        push(line)
+    return out
 
 
 def fallback_answer(question: str, tail: Sequence[str]) -> str:
@@ -130,8 +159,8 @@ class TranscriptAnswerer:
     def uses_model(self) -> bool:
         return self.target is not None
 
-    def answer(self, question: str, tail: Sequence[str]) -> str:
-        return answer(question, tail, self.target, model=self.model, timeout=self.timeout)
+    def answer(self, question: str, tail: Sequence[str], raw: Sequence[str] | None = None) -> str:
+        return answer(question, tail, self.target, model=self.model, timeout=self.timeout, raw=raw)
 
 
 def answer(
@@ -141,14 +170,16 @@ def answer(
     *,
     model: str = DEFAULT_MODEL,
     timeout: float = DEFAULT_TIMEOUT,
+    raw: Sequence[str] | None = None,
 ) -> str:
-    """Answer ``question`` from ``tail``. Never raises.
+    """Answer ``question`` from ``tail`` (spoken sentences) and ``raw`` (recent raw
+    transcript lines, tool-call descriptions included). Never raises.
 
     ``normalizer_or_client`` may be an object with ``answer_transcript_query(question, tail)``,
     an Anthropic normalizer (anything with a ``.client``), a bare ``anthropic.Anthropic``
     client, or None for the deterministic fallback.
     """
-    tail = [t for t in tail if t and t.strip()][-TAIL_LINES:]
+    tail = merge_context(tail, raw)
     if not tail:
         return NOTHING_YET
     target = normalizer_or_client

@@ -36,9 +36,15 @@ class Asset:
     executable: bool = False
 
 
+# Pinned to the commit that added the v6.2 model (bfdc0193, 2025-11-06), not ``master``,
+# so the bytes can only change together with the sha256 below.
+SILERO_VAD_COMMIT = "bfdc0193023f"
 SILERO_VAD = Asset(
     name="silero_vad",
-    url="https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx",
+    url=(
+        f"https://raw.githubusercontent.com/snakers4/silero-vad/{SILERO_VAD_COMMIT}"
+        "/src/silero_vad/data/silero_vad.onnx"
+    ),
     filename="silero_vad.onnx",
     sha256="1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
     size=2_327_524,

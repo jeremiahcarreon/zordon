@@ -48,12 +48,40 @@ EXIT_MISSING = 3
 
 # Which optional distribution each provider needs, and the extra that installs it.
 OPTIONAL_MODULES: dict[str, tuple[str, str]] = {
-    "faster_whisper": ("faster-whisper", 'pip install "zordon[local]"'),
-    "kokoro_onnx": ("kokoro-onnx", 'pip install "zordon[local]"'),
-    "typesafe_sdk": ("typesafe-sdk", 'pip install "zordon[jev]"'),
-    "onnxruntime": ("onnxruntime", "pip install onnxruntime"),
-    "anthropic": ("anthropic", "pip install anthropic"),
+    "faster_whisper": ("faster-whisper", "local"),
+    "kokoro_onnx": ("kokoro-onnx", "local"),
+    "typesafe_sdk": ("typesafe-sdk", "jev"),
+    "onnxruntime": ("onnxruntime", ""),
+    "anthropic": ("anthropic", ""),
 }
+# What each extra pulls in, for the pipx hint.
+EXTRA_PACKAGES: dict[str, tuple[str, ...]] = {
+    "local": ("faster-whisper", "kokoro-onnx"),
+    "jev": ("typesafe-sdk",),
+}
+KOKORO_MAX_PYTHON = (3, 14)  # kokoro-onnx declares <3.14
+
+
+def installed_with_pipx(prefix: str | None = None, environ: dict[str, str] | None = None) -> bool:
+    """True when the running interpreter lives in a pipx-managed venv."""
+    prefix = prefix if prefix is not None else sys.prefix
+    env = os.environ if environ is None else environ
+    parts = Path(prefix).parts
+    if "pipx" in parts and "venvs" in parts:
+        return True
+    home = env.get("PIPX_HOME")
+    return bool(home) and Path(prefix).is_relative_to(Path(home))
+
+
+def install_hint(extra: str, package: str = "", *, pipx: bool | None = None) -> str:
+    """The command that installs ``extra`` (or ``package``) into the interpreter that
+    runs zordon: ``pipx inject`` for a pipx install, otherwise ``pip install``."""
+    pipx = installed_with_pipx() if pipx is None else pipx
+    if extra:
+        if pipx:
+            return "pipx inject zordon " + " ".join(EXTRA_PACKAGES.get(extra, (package,)))
+        return f'pip install "zordon[{extra}]"'
+    return f"pipx inject zordon {package}" if pipx else f"pip install {package}"
 
 Which = Callable[[str], str | None]
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -137,7 +165,70 @@ def check_claude(which: Which = shutil.which, run: Run = subprocess.run) -> Chec
     out = _run_text(run, [binary, "--version"], CLAUDE_TIMEOUT)
     if out is None:
         return Check("claude", WARN, f"{binary} did not answer --version", "run `claude --version` by hand")
-    return Check("claude", OK, out.strip().splitlines()[0] if out.strip() else binary)
+    line = out.strip().splitlines()[0] if out.strip() else binary
+    return compare_prompts_version(line)
+
+
+def compare_prompts_version(version_line: str, prompts_version: str | None = None) -> Check:
+    """OK when the installed Claude Code matches the release the prompt regexes were
+    captured from (``session/prompts.PROMPTS_VERSION``), WARN otherwise: most releases
+    do not change the prompt text, but a mismatch is the first thing to suspect when
+    prompts go undetected."""
+    if prompts_version is None:
+        from zordon.session.prompts import PROMPTS_VERSION  # noqa: PLC0415
+
+        prompts_version = PROMPTS_VERSION
+    installed = parse_version(version_line)
+    expected = parse_version(prompts_version)
+    detail = f"{version_line} (prompts verified against {prompts_version})"
+    if installed is None or expected is None or installed == expected:
+        return Check("claude", OK, detail)
+    return Check(
+        "claude",
+        WARN,
+        detail,
+        "prompt detection was verified against a different release; see docs/prompts-version.md if prompts go undetected",
+    )
+
+
+def check_curl(which: Which = shutil.which) -> Check:
+    """The Notification/Stop hook handlers Zordon writes into a session's settings are
+    ``curl`` command lines (decision 0009); without curl the second prompt signal is
+    silently absent."""
+    found = which("curl")
+    if found:
+        return Check("curl", OK, found)
+    return Check(
+        "curl",
+        WARN,
+        "not found on PATH; Claude Code hook signals are disabled (prompt detection falls back to the pane regexes only)",
+        "install curl",
+    )
+
+
+CUDA_MODULES = ("nvidia.cublas", "nvidia.cudnn")
+
+
+def check_cuda(cfg: Config, find_spec: FindSpec = importlib.util.find_spec) -> Check | None:
+    """Only when ``stt_device = "cuda"``: the pip-installed CUDA runtime libraries that
+    faster-whisper (CTranslate2) loads must be importable packages."""
+    if cfg.providers.stt_device != "cuda":
+        return None
+    missing = []
+    for mod in CUDA_MODULES:
+        try:
+            if find_spec(mod) is None:
+                missing.append(mod)
+        except (ImportError, ValueError):
+            missing.append(mod)
+    if missing:
+        return Check(
+            "cuda libraries",
+            FAIL,
+            "missing " + ", ".join(missing),
+            "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 (or set stt_device = \"cpu\")",
+        )
+    return Check("cuda libraries", OK, "cublas and cudnn packages present")
 
 
 def check_claude_home() -> Check:
@@ -227,7 +318,13 @@ def required_modules(cfg: Config) -> list[str]:
 def check_modules(cfg: Config, find_spec: FindSpec = importlib.util.find_spec) -> list[Check]:
     out: list[Check] = []
     for mod in required_modules(cfg):
-        dist, fix = OPTIONAL_MODULES.get(mod, (mod, f"pip install {mod}"))
+        dist, extra = OPTIONAL_MODULES.get(mod, (mod, ""))
+        fix = install_hint(extra, dist)
+        if mod == "kokoro_onnx" and sys.version_info[:2] >= KOKORO_MAX_PYTHON:
+            fix = (
+                "kokoro-onnx needs Python 3.12 or 3.13: install zordon with one of those, "
+                'or pick another tts provider ([providers] tts = "openai" or "elevenlabs")'
+            )
         try:
             found = find_spec(mod) is not None
         except (ImportError, ValueError):
@@ -318,12 +415,12 @@ def check_espeak(cfg: Config, find_spec: FindSpec = importlib.util.find_spec) ->
         return Check("espeak-ng data", SKIP, "only needed by kokoro")
     try:
         if find_spec("espeakng_loader") is None:
-            return Check("espeak-ng data", WARN, "espeakng_loader not installed", 'pip install "zordon[local]"')
+            return Check("espeak-ng data", WARN, "espeakng_loader not installed", install_hint("local"))
         import espeakng_loader  # noqa: PLC0415
 
         data = str(espeakng_loader.get_data_path())
     except Exception as e:  # noqa: BLE001
-        return Check("espeak-ng data", WARN, f"could not locate: {e}", 'reinstall with pip install "zordon[local]"')
+        return Check("espeak-ng data", WARN, f"could not locate: {e}", "reinstall with " + install_hint("local"))
     length = len(data.encode())
     if length < ESPEAK_PATH_LIMIT:
         return Check("espeak-ng data", OK, f"path is {length} characters")
@@ -349,16 +446,33 @@ def check_tunnel_binary(cfg: Config, opts: DoctorOptions, downloader: Callable[.
         return Check("ngrok", status, "not found", "install ngrok (https://ngrok.com/download) or set [tunnel] provider = \"cloudflared\"")
     if opts.download and opts.tunnel:
         try:
-            print("downloading cloudflared...", file=sys.stderr)
-            dest = downloader(assets.CLOUDFLARED)
-            dest = extract_cloudflared(dest)
-            found = assets.find_binary("cloudflared")
+            found = download_cloudflared(downloader)
         except Exception as e:  # noqa: BLE001
             return Check("cloudflared", FAIL, f"download failed: {e}", "retry, or install cloudflared yourself")
-        if found:
-            return Check("cloudflared", OK, found)
+        return Check("cloudflared", OK, found)
     status = FAIL if opts.tunnel else WARN
-    return Check("cloudflared", status, "not found", "`zordon doctor --download --tunnel`, only needed for `zordon serve --tunnel`")
+    return Check(
+        "cloudflared",
+        status,
+        "not found",
+        "`zordon serve --tunnel` downloads it on first use; `zordon doctor --download --tunnel` fetches it now",
+    )
+
+
+def download_cloudflared(downloader: Callable[..., Path] | None = None) -> str:
+    """Fetch cloudflared into ``paths.bin_dir()`` and return the executable's path.
+
+    Used by ``zordon doctor --download --tunnel`` and by ``zordon serve --tunnel`` on
+    first use. Raises ``OSError`` (or the downloader's error) when it cannot.
+    """
+    downloader = downloader or assets.download
+    print("downloading cloudflared...", file=sys.stderr)
+    dest = downloader(assets.CLOUDFLARED)
+    dest = extract_cloudflared(dest)
+    found = assets.find_binary("cloudflared")
+    if not found:
+        raise OSError(f"downloaded {dest} but cloudflared is still not runnable")
+    return found
 
 
 def extract_cloudflared(downloaded: Path) -> Path:
@@ -443,12 +557,16 @@ def run_checks(
     checks.append(check_python())
     checks.append(check_tmux(which, run))
     checks.append(check_claude(which, run))
+    checks.append(check_curl(which))
     checks.append(check_claude_home())
     checks.append(check_config_file(Path(cfg_path)))
     checks.append(check_token(cfg))
     checks.append(Check("providers", OK, ", ".join(f"{k}={getattr(cfg.providers, k)}" for k in ("stt", "tts", "normalizer", "router"))))
     checks.extend(check_keys(cfg))
     checks.extend(check_modules(cfg, find_spec))
+    cuda = check_cuda(cfg, find_spec)
+    if cuda is not None:
+        checks.append(cuda)
     checks.extend(model_checks(cfg, opts, downloader))
     checks.append(check_espeak(cfg, find_spec))
     checks.append(check_tunnel_binary(cfg, opts, downloader))

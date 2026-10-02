@@ -16,13 +16,22 @@ Turn structure:
   errors.
 * The first ``voice.prebuffer_sentences`` normalized sentences of a turn are
   held before audio is released, so a slow normalizer does not leave a gap
-  mid-speech. Turn end or a priority item releases early.
+  mid-speech. The hold only lasts while text is still arriving: once every
+  queued sentence is normalized, the sentence buffer is empty and no line has
+  arrived for ``prebuffer_quiet`` seconds (about 300 ms), the head is released.
+  Turn end or a priority item releases at once.
 
 Priority items (permission prompts, plan approvals, questions, errors, notices)
 arrive through ``speak_now`` from the session manager or dispatcher. They skip
 filtering, the sentence buffer, the normalizer and the prebuffer, and go to the
 head of the speaker queue. Muted still writes transcript rows; only TTS is
-skipped. Redaction happens before anything else sees a line.
+skipped (an acknowledgement such as "Muted." may ask to bypass the mute).
+
+Only the focused session is spoken: ``focused_fn`` names it, and an ordinary
+sentence from any other session gets its transcript row and is marked unspoken
+without synthesis. Priority items are spoken whichever session they belong to
+(background prompts reach the pipeline as "In <title>: ..." notices).
+Redaction happens before anything else sees a line.
 """
 
 from __future__ import annotations
@@ -51,7 +60,7 @@ from zordon.output.sentences import SentenceBuffer
 from zordon.output.tooldesc import describe_tool_result, describe_tool_use
 from zordon.output.verbosity import keep
 from zordon.providers import Normalizer, ProviderError, TTSProvider
-from zordon.transcript.redaction import redact
+from zordon.transcript.redaction import redact, redact_pair
 from zordon.transcript.store import TranscriptStore
 
 log = logging.getLogger("zordon.output.pipeline")
@@ -83,6 +92,7 @@ class _Job:
     future: Future[str] | None = None  # None: speak the text as is
     submitted_at: float = 0.0
     turn_end: bool = False  # marker: re-arm the prebuffer for this session
+    bypass_mute: bool = False  # priority acknowledgement that must be heard while muted
 
 
 @dataclass
@@ -101,6 +111,7 @@ class _SessionCtx:
     last_line_ts: float = field(default_factory=time.monotonic)
     context: deque[_Job] = field(default_factory=lambda: deque(maxlen=2))
     turn_open: bool = False
+    prev_raw_text: str = ""
 
 
 class PipelineThread(threading.Thread):
@@ -116,8 +127,10 @@ class PipelineThread(threading.Thread):
         muted: Callable[[], bool] | threading.Event | None = None,
         *,
         transcript_store: TranscriptStore | None = None,
+        focused_fn: Callable[[], str | None] | None = None,
         lull_seconds: float = 1.5,
         prebuffer_max_wait: float = 2.5,
+        prebuffer_quiet: float = 0.3,
         workers: int = 2,
         poll_timeout: float = 0.1,
     ) -> None:
@@ -130,8 +143,10 @@ class PipelineThread(threading.Thread):
             raise TypeError("PipelineThread needs a TranscriptStore (store= or transcript_store=)")
         self.store = store if store is not None else transcript_store
         self._muted = muted
+        self._focused_fn = focused_fn
         self.lull_seconds = lull_seconds
         self.prebuffer_max_wait = prebuffer_max_wait
+        self.prebuffer_quiet = prebuffer_quiet
         self.poll_timeout = poll_timeout
         self._stopping = threading.Event()
         self._pool = ThreadPoolExecutor(
@@ -161,6 +176,7 @@ class PipelineThread(threading.Thread):
             "priority": 0,
             "dropped_by_generation": 0,
             "muted_skips": 0,
+            "unfocused_skips": 0,
             "turns": 0,
             "kinds": {},
         }
@@ -173,12 +189,27 @@ class PipelineThread(threading.Thread):
             self._cv.notify_all()
         self._pool.shutdown(wait=False, cancel_futures=True)
 
+    def join(self, timeout: float | None = None) -> None:  # type: ignore[override]
+        """Join the pipeline thread and then the speaker thread, so a caller that
+        joins before closing the transcript store knows no write is in flight."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        super().join(timeout)
+        if self._speaker.is_alive() and self._speaker is not threading.current_thread():
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            self._speaker.join(left)
+
     def speak_now(
-        self, text: str, session_id: str, kind: LineKind = LineKind.PERMISSION_PROMPT
+        self,
+        text: str,
+        session_id: str,
+        kind: LineKind = LineKind.PERMISSION_PROMPT,
+        *,
+        bypass_mute: bool = False,
     ) -> int:
         """Speak ``text`` immediately: no filter, no sentence buffer, no prebuffer.
         Used for permission prompts, plan approvals, questions, errors and
-        notices. Returns the sentence id."""
+        notices. ``bypass_mute`` is for the one acknowledgement that must be heard
+        after the mute takes effect ("Muted."). Returns the sentence id."""
         masked, _ = redact(text)
         masked = masked.strip()
         sentence = Sentence(
@@ -194,6 +225,7 @@ class PipelineThread(threading.Thread):
             raw_texts=[],
             generation=self.bus.generation,
             enqueued_at=time.monotonic(),
+            bypass_mute=bypass_mute,
         )
         with self._cv:
             # Ahead of every ordinary job, behind priority jobs already waiting.
@@ -276,10 +308,22 @@ class PipelineThread(threading.Thread):
         self._bump("lines_in")
         ctx = self._ctx(line.session_id)
         ctx.last_line_ts = time.monotonic()
-        masked, _ = redact(line.text or "")
-        raw_id = self.store.add_raw(line.session_id, line.text or "", line.ts, line.source)
-
+        masked, _ = redact_pair(ctx.prev_raw_text, line.text or "")
+        ctx.prev_raw_text = line.text or ""
         block = line.block or ""
+
+        tool_tagged: Tagged | None = None
+        raw_text = line.text or ""
+        if block == "tool_use":
+            name = str(line.meta.get("name") or line.meta.get("tool_name") or masked or "tool")
+            inp = line.meta.get("input") or line.meta.get("tool_input") or {}
+            tool_tagged = describe_tool_use(name, inp if isinstance(inp, dict) else {})
+            # The raw row carries the description, not just the tool name, so a transcript
+            # query ("what file did it just change?") can be answered from the raw tail
+            # whatever the verbosity filter later does with the item.
+            raw_text = tool_call_raw_text(tool_tagged)
+        raw_id = self.store.add_raw(line.session_id, raw_text, line.ts, line.source)
+
         if block == "turn_end":
             self._turn_end(ctx)
             return
@@ -291,10 +335,8 @@ class PipelineThread(threading.Thread):
             return
 
         complete = False
-        if block == "tool_use":
-            name = str(line.meta.get("name") or line.meta.get("tool_name") or masked or "tool")
-            inp = line.meta.get("input") or line.meta.get("tool_input") or {}
-            tagged = [describe_tool_use(name, inp if isinstance(inp, dict) else {})]
+        if tool_tagged is not None:
+            tagged = [tool_tagged]
             complete = True
         elif block == "tool_result":
             tagged = [
@@ -315,6 +357,8 @@ class PipelineThread(threading.Thread):
                 ctx.block_raw_ids.append(raw_id)
                 ctx.block_raw_texts.append(masked)
 
+        if tool_tagged is not None:
+            masked, _ = redact(raw_text)
         for t in tagged:
             self._handle_tagged(ctx, t, raw_id, masked, complete)
 
@@ -397,11 +441,20 @@ class PipelineThread(threading.Thread):
 
         summary: list[_Pending] = list(ctx.trailing)
         ctx.trailing.clear()
+        already_dispatched = False
         if not summary and ctx.last_released and not any(kept for _, kept in ctx.last_released):
             # Released at a lull but never spoken (minimal verbosity): it is the outcome.
             summary = [p for p, _ in ctx.last_released]
+            already_dispatched = True
         ctx.last_released = []
-        for p in self._choose_summary(summary):
+        chosen = self._choose_summary(summary)
+        # Every trailing sentence is dispatched exactly once: the ones not chosen as the
+        # summary are ordinary prose (verbosity decides), the chosen ones are SUMMARY.
+        if not already_dispatched:
+            for p in summary:
+                if not any(p is c for c in chosen):
+                    self._dispatch_prose(ctx, p, LineKind.PROSE)
+        for p in chosen:
             self._enqueue(ctx, p.text, LineKind.SUMMARY, p.raw_ids, p.raw_texts)
             self._bump("kept")
 
@@ -573,7 +626,9 @@ class PipelineThread(threading.Thread):
                     continue
                 if job.sentence.priority:
                     self._prebuffering[job.sentence.session_id] = False
-                elif self._prebuffer_holds(job):
+                elif self._is_focused(job.sentence.session_id) and self._prebuffer_holds(job):
+                    # An unfocused session's sentence is never synthesized, so holding it
+                    # would only delay the focused session behind it in the queue.
                     self._cv.wait(0.05)
                     continue
                 self._jobs.popleft()
@@ -592,6 +647,7 @@ class PipelineThread(threading.Thread):
             self._prebuffering[sid] = False
             return False
         ready = 0
+        in_flight = 0
         for j in self._jobs:
             if j.sentence.session_id != sid:
                 continue
@@ -603,15 +659,41 @@ class PipelineThread(threading.Thread):
                 if ready >= n:
                     self._prebuffering[sid] = False
                     return False
-        if time.monotonic() - head.enqueued_at >= self.prebuffer_max_wait:
+            else:
+                in_flight += 1
+        now = time.monotonic()
+        if in_flight == 0 and self._session_quiet(sid, now):
+            # Nothing left to wait for: every queued sentence is normalized and no more
+            # text is arriving. Holding a lone sentence for the cap would only add delay.
+            self._prebuffering[sid] = False
+            return False
+        if now - head.enqueued_at >= self.prebuffer_max_wait:
             self._prebuffering[sid] = False
             return False
         return True
 
+    def _session_quiet(self, sid: str, now: float) -> bool:
+        """No partial sentence is buffered and no line arrived within ``prebuffer_quiet``.
+        Reads pipeline-thread state from the speaker thread; a stale read only delays
+        the release by one poll."""
+        ctx = self._sessions.get(sid)
+        if ctx is None:
+            return True
+        try:
+            if ctx.sentences.pending():
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        return now - ctx.last_line_ts >= self.prebuffer_quiet
+
     def _process(self, job: _Job) -> None:
+        if self._stopping.is_set():
+            return  # the store may be closing; nothing is spoken after stop()
         sentence = job.sentence
         text = self._await_normalized(job)
         sentence.text = text
+        if self._stopping.is_set():
+            return
         spoken_id = self.store.add_spoken(
             sentence.sentence_id,
             sentence.session_id,
@@ -634,7 +716,13 @@ class PipelineThread(threading.Thread):
                 spoken=None,
             )
         )
-        if self._is_muted():
+        if not sentence.priority and not self._is_focused(sentence.session_id):
+            # Another session is focused for voice: the transcript stays complete, nothing
+            # is spoken. (Background prompts arrive as priority notices and still play.)
+            self.store.mark_unspoken(sentence.sentence_id)
+            self._bump("unfocused_skips")
+            return
+        if self._is_muted() and not job.bypass_mute:
             self._bump("muted_skips")
             return
         if not sentence.priority and job.generation != self.bus.generation:
@@ -651,7 +739,18 @@ class PipelineThread(threading.Thread):
         timeout = float(self.config.providers.normalizer_timeout_seconds or 1.5)
         remaining = job.submitted_at + timeout - time.monotonic()
         try:
-            text = job.future.result(timeout=max(0.0, remaining) + 0.05)
+            deadline = time.monotonic() + max(0.0, remaining) + 0.05
+            while True:
+                # Wait in short slices so stop() interrupts the wait.
+                slice_left = deadline - time.monotonic()
+                if self._stopping.is_set():
+                    return sentence.raw_text
+                try:
+                    text = job.future.result(timeout=max(0.0, min(0.1, slice_left)))
+                    break
+                except FutureTimeout:
+                    if slice_left <= 0:
+                        raise
             self._bump("normalized")
             return text
         except FutureTimeout:
@@ -671,6 +770,8 @@ class PipelineThread(threading.Thread):
         rate = int(getattr(self.tts, "sample_rate", 24000))
         try:
             for pcm in self.tts.synthesize(sentence.text):
+                if self._stopping.is_set():
+                    return  # shutting down: do not touch the store or the playback queue
                 if self.bus.generation != gen:
                     self.store.mark_unspoken(sentence.sentence_id)
                     self._bump("dropped_by_generation")
@@ -688,7 +789,7 @@ class PipelineThread(threading.Thread):
             log.warning("tts failed on sentence %s: %s", sentence.sentence_id, e)
             self._bump("tts_failures")
             return
-        if held is None:
+        if held is None or self._stopping.is_set():
             return
         if self.bus.generation != gen:
             self.store.mark_unspoken(sentence.sentence_id)
@@ -720,6 +821,18 @@ class PipelineThread(threading.Thread):
         except Exception:  # noqa: BLE001
             return False
 
+    def _is_focused(self, session_id: str) -> bool:
+        """True when ``session_id`` is the session focused for voice. Without a
+        ``focused_fn`` every session is spoken; a sentence without a session id
+        (global notices, acknowledgements) always is."""
+        if self._focused_fn is None or not session_id:
+            return True
+        try:
+            return self._focused_fn() == session_id
+        except Exception:  # noqa: BLE001
+            log.exception("focused_fn failed; speaking the sentence")
+            return True
+
     def _bump(self, key: str, n: int = 1) -> None:
         with self._stats_lock:
             self._stats[key] = self._stats.get(key, 0) + n
@@ -728,3 +841,13 @@ class PipelineThread(threading.Thread):
         with self._stats_lock:
             kinds = self._stats["kinds"]
             kinds[kind.value] = kinds.get(kind.value, 0) + 1
+
+
+def tool_call_raw_text(tagged: Tagged) -> str:
+    """The transcript's raw row for a tool call: the spoken description plus the call
+    itself (``Edit(/path/to/file.py)``), so the file name survives at every verbosity."""
+    desc = (tagged.spoken or tagged.text or "").strip()
+    call = (tagged.raw or "").strip()
+    if desc and call and desc != call:
+        return f"{desc} ({call})"
+    return desc or call

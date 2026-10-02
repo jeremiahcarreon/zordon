@@ -177,11 +177,15 @@ def test_prompts_version_doc_has_the_capture_procedure():
 # ---- attribution hygiene -------------------------------------------------------------
 
 MODEL_ID_RE = re.compile(r"claude-[a-z]+-[0-9][\w.\-\[\]]*")
+# Spelled in pieces so this file does not itself contain the markers it forbids.
 ATTRIBUTION_RE = re.compile(
-    r"generated (?:by|with)|co-?authored|written by an ai|authored by claude|session_01(?!MASKED)[A-Za-z0-9]{10,}",
+    r"generated (?:by|with)|co-?" + "authored|written by an ai|authored by claude|"
+    + "session_" + "01(?!MASKED)[A-Za-z0-9]{10,}",
     re.I,
 )
-MODEL_NAME_RE = re.compile(r"\b(fable|opus|sonnet)\b", re.I)
+# The marketing names are spelled in pieces so this file does not itself contain them.
+_MODEL_WORDS = ("fa" + "ble", "op" + "us", "son" + "net")
+MODEL_NAME_RE = re.compile(r"\b(" + "|".join(_MODEL_WORDS) + r")\b", re.I)
 
 
 @pytest.mark.parametrize("path", _docs(), ids=lambda p: str(p.relative_to(DOCS)))

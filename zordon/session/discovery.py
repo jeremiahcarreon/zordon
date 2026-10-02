@@ -19,6 +19,14 @@ Verified against Claude Code ``STORE_FORMAT_VERSION`` (decision 0002):
 Safety: ``resume_command`` and ``new_session_command`` are the only places a
 ``claude`` argv is built. They accept modes from ``ALLOWED_MODES`` only and run
 ``validate_command`` so no refused flag and no bypass mode can ever be emitted.
+Both prefix the command with ``env -u NAME ...`` for every variable in
+``tmux.scrub_names()`` so provider keys and Claude Code's own nesting markers
+never reach the pane process even when the tmux server's environment has them.
+
+Hooks: the curl handler reads the shared secret from a 0600 curl config file
+(``-K <file>``) next to the settings file, so the secret is never on a command
+line (``/proc/<pid>/cmdline`` is world-readable). The POST goes to the address
+the server listens on (``hook_host``), not blindly to 127.0.0.1.
 """
 
 from __future__ import annotations
@@ -27,12 +35,15 @@ import json
 import logging
 import os
 import re
+import shlex
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from zordon.session.tmux import scrub_names
 
 log = logging.getLogger("zordon.session.discovery")
 
@@ -61,7 +72,11 @@ REFUSED_SETTINGS_KEYS: tuple[str, ...] = ("skipDangerousModePermissionPrompt",)
 
 HOOK_MATCHER = "permission_prompt|idle_prompt|agent_needs_input|elicitation_dialog"
 HOOK_EVENTS: tuple[str, ...] = ("Notification", "UserPromptSubmit", "Stop")
+HOOK_SECRET_HEADER = "X-Zordon-Hook-Secret"
+HOOK_DEFAULT_HOST = "127.0.0.1"
 _SECRET_RE = re.compile(r"^[A-Za-z0-9_\-]{16,}$")
+_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]+$|^\[[0-9A-Fa-f:.]+\]$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 # ---- paths ---------------------------------------------------------------------------
@@ -462,8 +477,45 @@ def normalize_mode(mode: str) -> str:
     return m
 
 
+def env_scrub_prefix(environ: Mapping[str, str] | None = None) -> list[str]:
+    """``["env", "-u", NAME, ...]`` for every name ``tmux.scrub_names`` reports.
+
+    ``env -u`` of a variable that is not set is a no-op, so the prefix is safe
+    whatever the pane's environment turns out to be.
+    """
+    argv = ["env"]
+    for name in scrub_names(environ):
+        argv += ["-u", name]
+    return argv
+
+
+def strip_env_prefix(argv: Sequence[str]) -> list[str]:
+    """``argv`` without a leading ``env -u NAME ...`` prefix; refuses any other ``env`` use.
+
+    Only unsets are allowed: an assignment (``NAME=value``) or an ``env`` option
+    other than ``-u`` could re-introduce a secret or a bypass setting.
+    """
+    argv = list(argv)
+    if not argv or argv[0] != "env":
+        return argv
+    i = 1
+    while i < len(argv) and argv[i] == "-u":
+        if i + 1 >= len(argv) or not _ENV_NAME_RE.match(argv[i + 1]):
+            raise ValueError("env -u needs a variable name")
+        i += 2
+    rest = argv[i:]
+    if not rest or rest[0] != "claude":
+        raise ValueError("only 'env -u NAME ...' may precede 'claude'")
+    return rest
+
+
 def validate_command(argv: Sequence[str]) -> None:
-    """Raise ValueError if ``argv`` would widen permissions or disable hooks."""
+    """Raise ValueError if ``argv`` would widen permissions or disable hooks.
+
+    A leading ``env -u NAME ...`` prefix (``env_scrub_prefix``) is allowed; the
+    rest must start with ``claude``.
+    """
+    argv = strip_env_prefix(argv)
     if not argv or argv[0] != "claude":
         raise ValueError("a claude command line must start with 'claude'")
     for i, arg in enumerate(argv):
@@ -507,28 +559,39 @@ def _base_command(settings_path: Path | None, permission_mode: str | None) -> li
 
 
 def resume_command(
-    session_id: str, settings_path: Path | None = None, permission_mode: str | None = None
+    session_id: str,
+    settings_path: Path | None = None,
+    permission_mode: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """``claude --resume <id> [--settings <file>] [--permission-mode <mode>]``.
+    """``env -u ... claude --resume <id> [--settings <file>] [--permission-mode <mode>]``.
 
     Never contains a bypass flag or mode. Without ``permission_mode`` Claude Code
-    restores the session's stored mode, except that a stored ``bypassPermissions``
-    restarts in the normal default, which is what Zordon wants.
+    restores the session's stored mode (or its own built-in default, which is
+    ``auto`` in 2.1.x), so the manager always passes one. The ``env -u`` prefix
+    comes from ``env_scrub_prefix``.
     """
     if not UUID_RE.match(session_id):
         raise ValueError(f"not a session id: {session_id!r}")
     argv = ["claude", "--resume", session_id] + _base_command(settings_path, permission_mode)
+    argv = env_scrub_prefix(environ) + argv
     validate_command(argv)
     return argv
 
 
 def new_session_command(
-    session_id: str, settings_path: Path | None = None, permission_mode: str | None = None
+    session_id: str,
+    settings_path: Path | None = None,
+    permission_mode: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """``claude --session-id <uuid> [...]`` so the id is known before the first record."""
+    """``env -u ... claude --session-id <uuid> [...]`` so the id is known before the first record."""
     if not UUID_RE.match(session_id):
         raise ValueError(f"not a session id: {session_id!r}")
     argv = ["claude", "--session-id", session_id] + _base_command(settings_path, permission_mode)
+    argv = env_scrub_prefix(environ) + argv
     validate_command(argv)
     return argv
 
@@ -536,27 +599,68 @@ def new_session_command(
 # ---- hook settings ----------------------------------------------------------------------------
 
 
-def hook_command(port: int, secret: str) -> str:
-    """The curl handler: always exits 0 and prints nothing, so it can never block Claude Code."""
+def validate_hook_secret(secret: str) -> str:
+    if not isinstance(secret, str) or not _SECRET_RE.match(secret):
+        raise ValueError("hook secret must be 16+ URL-safe characters")
+    return secret
+
+
+def hook_host(bind: str | None) -> str:
+    """The host the pane's curl must POST to for the server bound at ``bind``.
+
+    A wildcard bind (``0.0.0.0``, ``::``, empty) listens on loopback too, so
+    loopback is used; any other address is used as is (a server bound only to a
+    Tailscale or LAN address does not listen on 127.0.0.1). IPv6 is bracketed.
+    """
+    host = (bind or "").strip()
+    if host in ("", "0.0.0.0", "::", "[::]", "*"):
+        return HOOK_DEFAULT_HOST
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if not _HOST_RE.match(host):
+        raise ValueError(f"not a usable hook host: {bind!r}")
+    return host
+
+
+def hook_curl_config_text(secret: str) -> str:
+    """Body of the 0600 curl config file that carries the secret header."""
+    validate_hook_secret(secret)
+    return f'header = "{HOOK_SECRET_HEADER}: {secret}"\n'
+
+
+def hook_command(port: int, curl_config: Path | str, host: str = HOOK_DEFAULT_HOST) -> str:
+    """The curl handler: always exits 0 and prints nothing, so it can never block Claude Code.
+
+    The secret is read from ``curl_config`` (``curl -K``), never placed on the
+    command line.
+    """
     if not (1 <= int(port) <= 65535):
         raise ValueError("port out of range")
-    if not _SECRET_RE.match(secret):
-        raise ValueError("hook secret must be 16+ URL-safe characters")
+    host = hook_host(host)
+    path = str(curl_config)
+    if not path or "\n" in path:
+        raise ValueError("curl config path must be a single non-empty line")
     return (
         "curl -s -m 2 -X POST -H 'Content-Type: application/json' "
-        f"-H 'X-Zordon-Hook-Secret: {secret}' --data-binary @- "
-        f"http://127.0.0.1:{int(port)}/hooks/claude >/dev/null 2>&1 || true"
+        f"-K {shlex.quote(path)} --data-binary @- "
+        f"http://{host}:{int(port)}/hooks/claude >/dev/null 2>&1 || true"
     )
 
 
-def hook_settings_json(port: int, secret: str, events: Sequence[str] = HOOK_EVENTS) -> dict[str, Any]:
+def hook_settings_json(
+    port: int,
+    curl_config: Path | str,
+    events: Sequence[str] = HOOK_EVENTS,
+    host: str = HOOK_DEFAULT_HOST,
+) -> dict[str, Any]:
     """Settings for ``--settings``: command hooks that POST each event to Zordon.
 
     ``Notification`` is filtered to the prompt-related matchers; the other events
     have no matcher. No ``PermissionRequest`` hook is ever registered (it could
-    answer a prompt).
+    answer a prompt). The JSON contains no secret.
     """
-    handler = {"type": "command", "command": hook_command(port, secret), "timeout": 5, "async": True}
+    command = hook_command(port, curl_config, host)
+    handler = {"type": "command", "command": command, "timeout": 5, "async": True}
     hooks: dict[str, Any] = {}
     for event in events:
         if event == "PermissionRequest":
@@ -572,15 +676,48 @@ def hook_settings_path(zordon_home: Path, session_id: str) -> Path:
     return Path(zordon_home) / "hooks" / f"{session_id[:8]}.json"
 
 
-def write_hook_settings(path: Path, port: int, secret: str, events: Sequence[str] = HOOK_EVENTS) -> Path:
-    """Write the hooks JSON with mode 0600 (the secret must not be visible in ``ps``)."""
+def hook_curl_config_path(settings_path: Path) -> Path:
+    """The curl config file that belongs to ``settings_path`` (same directory, ``.curlrc``)."""
+    return Path(settings_path).with_suffix(".curlrc")
+
+
+def write_hook_settings(
+    path: Path,
+    port: int,
+    secret: str,
+    events: Sequence[str] = HOOK_EVENTS,
+    host: str = HOOK_DEFAULT_HOST,
+) -> Path:
+    """Write the hooks JSON and its curl config, both mode 0600; returns the JSON path.
+
+    The secret lives only in the curl config (``hook_curl_config_path(path)``);
+    the JSON references it by path, so neither the settings file nor ``ps`` shows it.
+    """
     path = Path(path)
+    curl_config = hook_curl_config_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
-    data = json.dumps(hook_settings_json(port, secret, events), indent=2) + "\n"
+    _write_private(curl_config, hook_curl_config_text(secret))
+    data = json.dumps(hook_settings_json(port, curl_config, events, host), indent=2) + "\n"
+    _write_private(path, data)
+    return path
+
+
+def remove_hook_settings(path: Path | None) -> None:
+    """Delete the hooks JSON and its curl config (missing files are fine)."""
+    if path is None:
+        return
+    for p in (Path(path), hook_curl_config_path(path)):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _write_private(path: Path, data: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -588,7 +725,6 @@ def write_hook_settings(path: Path, port: int, secret: str, events: Sequence[str
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     os.chmod(path, 0o600)
-    return path
 
 
 # ---- helpers ------------------------------------------------------------------------------------

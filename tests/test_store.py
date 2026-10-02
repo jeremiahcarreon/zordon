@@ -36,3 +36,24 @@ def test_survives_reopen(tmp_path: Path):
     s2 = TranscriptStore(p)
     assert s2.last_spoken("a") == "hello."
     assert s2.next_row_id() == 2
+
+
+def test_add_raw_masks_a_key_wrapped_across_two_pane_lines(tmp_path: Path):
+    """SEC-5: the second half of a hard-wrapped key must not be stored in clear."""
+    from zordon.transcript.redaction import MASK
+
+    s = TranscriptStore(tmp_path / "t.db")
+    key = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"
+    tail = "MNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz01234567890123456789abcdefghijklmnopqrstuvwxyzAA"
+    s.add_raw("sess", f"  export ANTHROPIC_API_KEY={key}", ts=1.0)
+    s.add_raw("sess", tail, ts=2.0)
+    # another session's line in between must not confuse the memory
+    s.add_raw("other", tail, ts=2.5)
+    s.add_raw("sess", "ran the tests", ts=3.0)
+    rows = s.raw_tail("sess")
+    assert rows == [f"  export ANTHROPIC_API_KEY={MASK}", MASK, "ran the tests"]
+    assert "MNOPQRSTUV" not in "".join(rows)
+    # the other session had no wrapped predecessor, so its line is plain
+    assert s.raw_tail("other") == [tail]
+    s.forget_session("sess")
+    s.close()

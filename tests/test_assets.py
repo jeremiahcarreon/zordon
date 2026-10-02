@@ -41,3 +41,11 @@ def test_download_verifies_hash(monkeypatch, tmp_path: Path):
     assert not assets.path_for(bad).exists()
     assert not list(assets.path_for(bad).parent.glob(".dl-*"))
     monkeypatch.setattr(assets.httpx, "stream", real_stream)
+
+
+def test_silero_url_is_pinned_to_a_commit_not_master():
+    """PKG-3: the sha256 is fixed, so the URL must be immutable too."""
+    assert "/master/" not in assets.SILERO_VAD.url
+    assert f"/{assets.SILERO_VAD_COMMIT}/" in assets.SILERO_VAD.url
+    assert assets.SILERO_VAD.url.endswith("/src/silero_vad/data/silero_vad.onnx")
+    assert assets.SILERO_VAD.sha256 == "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"

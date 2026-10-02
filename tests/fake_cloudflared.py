@@ -11,12 +11,15 @@ Modes (``FAKE_CLOUDFLARED_MODE``):
 * ``silent``: print nothing and sleep (lets a caller test the start timeout)
 
 The URL is ``FAKE_CLOUDFLARED_URL`` (default a fixed trycloudflare.com host).
+When ``FAKE_CLOUDFLARED_ENV_FILE`` is set, the fake writes its own environment as
+JSON to that path before printing anything, so a test can check what it inherited.
 Arguments are ignored except that the script refuses to run unless the first
 argument is ``tunnel`` so a wrong command line is noticed.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sys
@@ -60,6 +63,11 @@ def main(argv: list[str]) -> int:
     delay = float(os.environ.get("FAKE_CLOUDFLARED_DELAY", "0.1"))
 
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
+    env_file = os.environ.get("FAKE_CLOUDFLARED_ENV_FILE")
+    if env_file:
+        with open(env_file, "w", encoding="utf-8") as fh:
+            json.dump(dict(os.environ), fh)
 
     if mode == "silent":
         while True:

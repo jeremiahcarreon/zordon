@@ -11,13 +11,13 @@ update it when a release changes the screen.
 
 ```python
 # zordon/session/prompts.py
-PROMPTS_VERSION = "claude-code-2.1.x"
+PROMPTS_VERSION = "claude-code-2.1.287"
 ```
 
-The value names the Claude Code release line the regexes were captured from. It is
-shown by `zordon doctor` next to the installed `claude --version` and logged at
-startup; a mismatch is a warning, not an error, because most releases do not change
-the prompt text. When the patterns are re-verified against a new release the
+The value names the Claude Code release the regexes were captured from. `zordon
+doctor` shows it next to the installed `claude --version` and reports WARN when the
+two differ; a mismatch is a warning, not an error, because most releases do not
+change the prompt text. When the patterns are re-verified against a new release the
 constant is bumped, the fixtures are re-captured, and `eval/fixtures/pane/PROVENANCE.md`
 records the version and date.
 
@@ -106,9 +106,10 @@ if you approve a prompt).
    `=====FRAME N t=<ms>=====` separator.
 
 5. **Mask before committing.** Replace the model name in the banner and upsell
-   lines with `Model 0.0` / `Model 0.1`; replace the session id inside the `/rc`
-   hyperlink (`session_01` followed by 22 characters) with
-   `session_01MASKEDMASKEDMASKEDMAS` in the `.ansi.txt` files; grep every file for
+   lines with `Model 0.0` / `Model 0.1`; replace the whole URL inside the banner's
+   OSC 8 hyperlink with `https://example.invalid/session/<placeholder of the same
+   length>?from=cli` in the `.ansi.txt` files (see
+   `eval/fixtures/pane/PROVENANCE.md` for the exact placeholder); grep every file for
    `sk-`, `ghp_`, `AKIA`, `xox`, `Bearer`, `PRIVATE KEY`, `api_key=`, `token=`,
    `password=` and JWT shapes and expect zero hits. Your user name in paths is your
    call. Your own status line (the bottom rows) is machine-specific; leave it, the

@@ -330,3 +330,184 @@ def test_split_frames_shape():
     assert len(frames) == 36
     assert frames[0][:2] == (0, 0)
     assert all(len(lines) in (45, 46) for _, _, lines in frames)
+
+
+# ---- review regressions (one per finding; fixtures named in PROVENANCE.md) ---------------
+
+
+def test_rr1_status_mode_matches_both_glyph_forms():
+    assert load("status_auto_mode.txt").status_mode == "auto"
+    assert load("status_accept_edits.txt").status_mode == "accept edits"
+    assert load("tip_line_tmux.txt").status_mode == "auto"
+    assert S.STATUS_MODE.match("  ⏵⏵ accept edits on (shift+tab to cycle) · ← 3 agents").group("mode") == "accept edits"
+    assert S.STATUS_MODE.match("  ⏸ plan mode on (shift+tab to cycle) · ← 3 agents").group("mode") == "plan"
+    assert S.STATUS_MODE.match("  ⏵⏵ auto mode on (shift+tab to cycle)").group("mode") == "auto"
+    assert S.STATUS_MODE.match("  ⏸ manual mode on · ← 3 agents").group("mode") == "manual"
+
+
+@pytest.mark.parametrize("name", ["tip_line_tmux.txt", "tip_line_tmux_focus_events.txt"])
+def test_rr4_right_aligned_tmux_tip_is_ui_not_content(name: str):
+    scr = load(name)
+    assert scr.input_box is not None and scr.spinner is None
+    assert not any("tmux" in line and " · " in line for line in scr.content)
+    assert scr.last_content_line == "✻ Worked for 4s · done 11:01 PM"
+    assert scr.turn_ended
+    assert scr.idle_hint and not scr.effort_hint
+    tip = next(line for line in scr.lines if "tmux" in line and " · " in line)
+    assert S.TIP_LINE.match(tip) and S.is_ui_line(tip)
+    # The effort hint itself still counts as the idle hint.
+    assert load("idle.txt").idle_hint and load("idle.txt").effort_hint
+
+
+def test_rr5_notice_gutter_and_hidden_count_are_ui():
+    scr = load("startup_notice_gutter.txt")
+    assert scr.content == []
+    assert scr.input_box is not None and scr.input_box.looks_like_ghost
+    assert scr.turn_ended and scr.status_mode == "auto"
+    for line in scr.lines:
+        if line.startswith("▎") or "more notice" in line:
+            assert S.is_ui_line(line), line
+    assert S.NOTICE.match("▎ Auto mode is now Claude Code's default permission mode.")
+    assert S.NOTICE.match("  1 more notice hidden") and S.NOTICE.match("  3 more notices hidden")
+    assert diff_screens(None, scr) == []
+
+
+def test_pr9_reworded_notice_before_first_echo_is_preamble():
+    scr = load("idle_notice_reworded_no_hint.txt")
+    assert scr.content == []
+    assert scr.turn_ended and not scr.effort_hint
+    assert any("Try the new /voice command" in line for line in scr.lines)
+    # Content after the first echo is never treated as preamble, even when indented.
+    prose = load("prose_output.txt")
+    assert "  Client-server model: server hold sessions, clients attach." in prose.content
+    # Without a visible banner nothing is preamble: a scrolled screen keeps its indented first line.
+    scrolled = parse_screen(["  ⎿  $ touch probe.txt", "", "✻ Worked for 4s · done 8:33 PM", "", "─" * 160, "❯" + NBSP, "─" * 160])
+    assert scrolled.content[0] == "  ⎿  $ touch probe.txt"
+
+
+def test_pr10_input_box_without_nbsp_is_found_by_shape():
+    scr = load("idle_nbsp_to_space.txt")
+    assert scr.input_box is not None
+    assert scr.input_box.text == 'Try "write a test for <filepath>"'
+    assert scr.content == [] and scr.status_mode == "manual"
+    assert scr.turn_ended
+    # A "❯ text" line that is not framed by two rules is still a transcript echo.
+    echo = parse_screen(["─" * 160, "❯ build the thing", "● Working on it", "", "─" * 160, "❯" + NBSP, "─" * 160])
+    assert echo.input_box is not None and echo.input_box.text == ""
+    assert "❯ build the thing" in echo.content
+    # A bare "❯" status row below the lower rule does not steal the input box.
+    base = (PANE / "prose_output.txt").read_text(encoding="utf-8").split("\n")
+    rule_idx = max(i for i, line in enumerate(base) if S.RULE.match(line))
+    with_row = base[: rule_idx + 1] + ["❯"] + base[rule_idx + 1 :]
+    scr2 = parse_screen(with_row)
+    assert scr2.input_box is not None and scr2.input_box.text == ""
+    assert scr2.status_mode == "manual"
+
+
+@pytest.mark.parametrize(
+    "name,clock,secs",
+    [
+        ("done_line_24h.txt", "20:33", 1),
+        ("done_line_weekday.txt", "Tuesday 8:33 PM", 1),
+        ("done_line_suffix_messages_hidden.txt", "8:38 PM", 1),
+    ],
+)
+def test_pr5_done_line_clock_variants_end_the_turn(name: str, clock: str, secs: int):
+    scr = load(name)
+    assert scr.turn_ended, name
+    assert scr.done_line is not None and scr.done_line.clock == clock
+    assert scr.done_line.secs == secs
+    assert held_tail(scr) == []
+
+
+def test_pr5_done_line_regex_variants():
+    m = S.DONE_LINE.match("✻ Worked for 1h 2m 5s · done 8:33 PM")
+    assert m and m.group("dur") == "1h 2m 5s" and m.group("clock") == "8:33 PM"
+    assert S.DoneLine("Worked", "1h 2m 5s", "8:33 PM", "").secs == 3725
+    assert S.DONE_LINE.match("✻ Worked for 4s · done 8:33 pm").group("clock") == "8:33 pm"
+    assert S.DONE_LINE.match("✻ Worked for 4s · done 20:33Z").group("clock") == "20:33Z"
+    assert S.DONE_LINE.match("✻ Worked for 4s · done Monday, Sep 29, 8:33 PM").group("clock") == "Monday, Sep 29, 8:33 PM"
+    assert S.DONE_LINE.match("✻ Worked for 4s · done 8:33 PM · 1 still running").group("clock") == "8:33 PM"
+    assert S.DONE_LINE.match("✻ Worked for 4s").group("clock") is None  # clock hidden by settings
+    assert S.DONE_LINE.match("✻ Sautéed for 1s · done 8:36 PM").group("verb") == "Sautéed"
+    assert not S.DONE_LINE.match("✻ Thinking… (3s · ↓ 77 tokens)")
+    assert not S.DONE_LINE.match("  ✻ Worked for 4s · done 8:33 PM")
+    waiting = load("done_line_waiting_for_agents.txt")
+    assert waiting.turn_ended and S.is_terminator(waiting.last_content_line)
+    assert S.WAITING_LINE.match("✻ Waiting for 2 background agents to finish")
+
+
+def test_pr6_spinner_accepts_accented_hyphenated_verbs_and_new_glyphs():
+    for line in (
+        "✻ Sautéing… (3s · ↓ 1.1k tokens)",
+        "✻ Razzle-dazzling…",
+        "· Dilly-dallying… (12s)",
+        "✦ Flambéing… (1s · ↓ 5 tokens)",
+        "⠋ Topsy-turvying… (1s · ↓ 5 tokens · esc to interrupt)",
+        "* Sock-hopping… (esc to interrupt)",
+    ):
+        sp = S.parse_spinner(line)
+        assert sp is not None, line
+        assert S.SPINNER.match(line), line
+    sp = S.parse_spinner("✻ Sautéing… (3s · ↓ 1.1k tokens)")
+    assert (sp.glyph, sp.verb, sp.secs, sp.tokens, sp.extra) == ("✻", "Sautéing", 3, "1.1k", None)
+    sp = S.parse_spinner("⠋ Topsy-turvying… (1s · ↓ 5 tokens · esc to interrupt)")
+    assert (sp.secs, sp.tokens, sp.extra) == (1, "5", "esc to interrupt")
+    sp = S.parse_spinner("* Sock-hopping… (esc to interrupt)")
+    assert (sp.secs, sp.tokens, sp.extra) == (None, None, "esc to interrupt")
+    # Content bullets, echoes, tool results and markdown bullets are never spinners.
+    for line in ("● Running 1 shell command…", "● Thinking…", "❯ Thinking…", "  ⎿  Waiting…", "- Loading…", "  · Zesting…"):
+        assert not S.SPINNER.match(line), line
+
+
+def test_pr6_accented_spinner_frames_never_leak_into_the_transcript():
+    transcript, seen, last = _replay("spinner_verb_accent_frames.txt")
+    for line in transcript:
+        assert not S.SPINNER.match(line), line
+        assert "Sautéing" not in line, line
+    nonblank = [line for line in transcript if line.strip()]
+    assert len(nonblank) == len(set(nonblank))
+    frames = split_frames((PANE / "spinner_verb_accent_frames.txt").read_text(encoding="utf-8"))
+    spinners = [parse_screen(lines).spinner for _, _, lines in frames]
+    assert any(sp is not None and sp.verb == "Sautéing" for sp in spinners)
+    spinning = [s for s in (parse_screen(lines) for _, _, lines in frames) if s.spinner is not None]
+    assert spinning and all(s.spinner.raw not in s.content for s in spinning)
+
+
+def test_pr2_shell_prompt_is_exposed_when_claude_is_gone():
+    for name in ("exit_shell_only.txt", "exit_crash_no_resume_line.txt"):
+        scr = load(name)
+        assert scr.shell_prompt, name
+        assert scr.input_box is None and not scr.exited, name
+    ex = load("exit.txt")
+    assert ex.shell_prompt and ex.exited
+    for name in ("idle.txt", "prose_output.txt", "bash_permission.txt", "trust_dialog.txt", "working_no_spinner.txt"):
+        assert not load(name).shell_prompt, name
+    assert S.SHELL_PROMPT.match("user@host:~/proj$")
+    assert S.SHELL_PROMPT.match("root@box:/# ")
+    assert S.SHELL_PROMPT.match("$")
+    assert not S.SHELL_PROMPT.match("  $ touch probe.txt")
+    assert not S.SHELL_PROMPT.match("❯ ")
+
+
+def test_pr1_pr3_prompt_block_anchors_at_the_bottom():
+    for name in ("bash_permission_prose_question_above.txt", "bash_permission_prose_do_you_want_to_above.txt"):
+        scr = load(name)
+        assert scr.input_box is None, name
+        assert S.RULE.match(scr.prompt_block[0]) and scr.prompt_block[1] == " Bash command", name
+        assert sum(1 for line in scr.prompt_block if "Do you want to" in line) == 1, name
+        assert any("Do you want to proceed" in line for line in scr.content), name  # the prose stays content
+    bare = load("bash_permission_bare_command.txt")
+    assert bare.prompt_block[1] == " Bash command"
+    assert bare.content[-1] == "  ⎿  $ touch realrun_probe.txt"
+
+
+def test_pr8_block_extends_upward_when_the_opening_rule_is_off_screen():
+    trust = load("trust_dialog_rule_offscreen.txt")
+    assert trust.prompt_block[0].strip() == "Accessing workspace:"
+    ask = load("ask_user_question_rule_offscreen.txt")
+    assert ask.prompt_block[0].strip() == "☐ Indentation"
+    assert any("Do you prefer tabs or spaces" in line for line in ask.prompt_block)
+    # The AskUserQuestion pointer row "❯ 1. Tabs" is not a transcript echo boundary.
+    full = load("ask_user_question.txt")
+    assert full.prompt_block[1].strip() == "☐ Indentation"

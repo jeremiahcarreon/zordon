@@ -57,9 +57,13 @@ settings. Zordon reports that last case and does not change it.
   else. "Delete the session" asks for confirmation.
 * **Never sends keys to the client.** Provider API keys live in
   `~/.zordon/config.toml` (mode `0600`) or in environment variables, are passed to
-  the SDKs explicitly, and are never exported to child processes, logged, included
-  in the `hello` or `settings` messages, or stored in a transcript row. The browser
-  holds only a session cookie.
+  the SDKs explicitly, and are never logged, included in the `hello` or `settings`
+  messages, or stored in a transcript row. The browser holds only a session cookie.
+  Zordon never exports a key itself, and the tunnel child (cloudflared/ngrok) is
+  started with a scrubbed environment (`*_API_KEY`, `*_TOKEN`, `*_SECRET` and the
+  provider prefixes removed). Keys you supply through environment variables are
+  still visible to the tmux server and the Claude Code panes Zordon starts, as with
+  any child process; keep keys in `config.toml` if that matters to you.
 * **Never binds to the network without a token.** The server listens on
   `127.0.0.1` unless told otherwise and refuses to start on any other address
   without `server.token`. Under `--tunnel` the login rate limit (5 failures per
@@ -102,17 +106,17 @@ file names; add that directory to your `.gitignore`.
 
 The token is `server.token` in `~/.zordon/config.toml`. To replace it:
 
-1. Stop Zordon.
-2. Generate a new value, for example
-   `python -c "import secrets; print(secrets.token_urlsafe(24))"`.
-3. Edit `server.token` in `config.toml`.
-4. Start Zordon. Session cookies live in memory, so every logged-in browser is
-   logged out by the restart; `zordon token show` prints the new value to type on
-   the phone.
+```
+zordon token rotate
+```
+
+writes a new random value to `config.toml` and prints it. Restart Zordon afterwards:
+the running process still checks the old token, and session cookies live in memory,
+so every logged-in browser is logged out by the restart. `zordon token show` prints
+the new value to type on the phone.
 
 Deleting the `token` line is not a rotation: a file without a token only works on
-`127.0.0.1`, and the server refuses to bind anywhere else. There is no
-`zordon token rotate` command yet.
+`127.0.0.1`, and the server refuses to bind anywhere else.
 
 ## Reporting
 

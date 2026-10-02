@@ -27,7 +27,7 @@ This is a fresh repository. Nothing from the earlier Claude Voice prototype is c
 
 Zordon is one Python process on the user's machine, split into three threads with a strict ownership rule: each resource (mic, speaker, tmux pane, WebSocket) has exactly one owner, and threads talk only through queues. Claude Code runs in a tmux pane that Zordon attaches to; it is never embedded, imported, or wrapped.
 
-&#91;embedded content: Zordon architecture: browser, agent, Claude Code, speech providers\]
+The architecture diagram (browser, agent, Claude Code, speech providers) is the ASCII overview in `README.md`; `docs/architecture.md` maps it to modules.
 
 Audio never touches Claude Code and text never touches the speaker directly: everything crosses through the transport thread's queues, which is what makes barge-in and verbosity filtering possible without either side knowing about the other.
 

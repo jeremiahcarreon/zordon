@@ -205,6 +205,7 @@ class Harness:
         )
         self.store = TranscriptStore(tmp_path / "t.db")
         self.spoken: list[tuple[str, str, LineKind]] = []
+        self.bypassed_mute: list[str] = []  # texts spoken with bypass_mute=True
         self.settings = Settings()
         self.dispatcher = DispatcherThread(
             self.bus,
@@ -217,9 +218,11 @@ class Harness:
             answerer=TranscriptAnswerer(None),
         )
 
-    def speak(self, text: str, session_id: str, kind: LineKind) -> None:
+    def speak(self, text: str, session_id: str, kind: LineKind, *, bypass_mute: bool = False) -> None:
         assert isinstance(kind, LineKind)  # the pipeline's speak_now reads kind.value
         self.spoken.append((text, session_id, kind))
+        if bypass_mute:
+            self.bypassed_mute.append(text)
 
     def say(self, text: str, source: str = "voice") -> None:
         self.dispatcher.handle(Utterance(text=text, source=source))
@@ -280,6 +283,36 @@ def test_transcript_query_with_empty_transcript(h: Harness):
     assert h.sessions.called("send_text") == []
 
 
+def test_transcript_query_reads_raw_lines_with_tool_calls(h: Harness):
+    """DC-03: at minimal verbosity only intent and outcome are spoken, so the file name
+    lives in the raw transcript (the pipeline writes the tool-call description there).
+    The answer must still name the file, and the pane is never touched."""
+    h.store.add_raw("s1", "I'll add retry logic to the upload handler.", ts=1.0, source="jsonl")
+    h.store.add_raw("s1", "editing upload_handler.py (Edit(/home/me/code/api/upload_handler.py))", ts=2.0, source="jsonl")
+    h.store.add_raw("s1", "The file /home/me/code/api/upload_handler.py has been updated.", ts=3.0, source="jsonl")
+    h.store.add_raw("s1", "running: Run tests (Bash(pytest -q))", ts=4.0, source="jsonl")
+    h.store.add_raw("s1", "42 passed", ts=5.0, source="jsonl")
+    h.store.add_raw("s1", "Done, tests pass.", ts=6.0, source="jsonl")
+    h.store.add_spoken(1, "s1", "I'LL ADD RETRY LOGIC TO THE UPLOAD HANDLER.", "intent", "intent", ts=1.5)
+    h.store.add_spoken(2, "s1", "DONE, TESTS PASS.", "summary", "summary", ts=6.5)
+    h.router.routes["what file did it just change"] = RouteResult("transcript_query", 0.95)
+    h.say("what file did it just change")
+    assert h.sessions.called("send_text") == []
+    assert len(h.spoken) == 1
+    answer = h.spoken[0][0]
+    assert "upload_handler.py" in answer, answer
+    # The spoken tail alone cannot answer this; the router context still gets the spoken tail.
+    assert ("notice", answer) in h.events()
+
+
+def test_transcript_query_raw_tail_failure_falls_back_to_spoken(h: Harness):
+    h.store.add_spoken(1, "s1", "All tests pass.", "tests pass", "prose", ts=1.0)
+    h.store.raw_tail = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db gone"))  # type: ignore[method-assign]
+    h.router.routes["did the tests pass"] = RouteResult("transcript_query", 0.95)
+    h.say("did the tests pass")
+    assert "tests pass" in h.said()[-1]
+
+
 def test_text_source_takes_the_same_path(h: Harness):
     h.router.routes["what did it say"] = RouteResult("transcript_query", 0.95)
     h.say("what did it say", source="text")
@@ -310,8 +343,11 @@ def _shim(h: Harness, utterance: str, command: str, argument: str | None = None)
 def test_mute_unmute_stop_repeat(h: Harness):
     _shim(h, "mute", "mute")
     assert h.settings.muted is True and h.said()[-1] == "Muted."
+    # CONC-12: the ack is queued before the mute takes effect, so it asks to bypass it.
+    assert h.bypassed_mute == ["Muted."]
     _shim(h, "unmute", "unmute")
     assert h.settings.muted is False and h.said()[-1] == "Unmuted."
+    assert h.bypassed_mute == ["Muted."]  # only the mute ack bypasses
     _shim(h, "stop", "stop")
     assert h.sessions.called("send_escape") == [("s1",)]
     assert h.said()[-1] == "Stopped."

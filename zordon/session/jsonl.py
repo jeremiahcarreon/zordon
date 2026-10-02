@@ -9,7 +9,9 @@ the pane.
 
 Format facts (``JSONL_FORMAT_VERSION``, decision 0002): the assistant record's
 ``type`` is ``"message"`` in the bulk of the store and ``"assistant"`` in some
-fresh sessions, so both are accepted and the role is what counts; single lines can
+fresh sessions, so both are accepted and the role is what counts; an assistant
+record whose ``message.model`` is ``"<synthetic>"`` was written by Claude Code
+itself (``"No response requested."`` on resume) and is skipped; single lines can
 exceed 1 MB; the file is written asynchronously, so a poll may see a partial last
 line, which is kept until its newline arrives.
 """
@@ -38,6 +40,9 @@ MAX_READ_PER_POLL = 16 * 1024 * 1024
 MAX_PARTIAL_LINE = 64 * 1024 * 1024  # give up on a line this long: the file is not what we think
 
 ASSISTANT_TYPES = ("assistant", "message")
+# Claude Code writes an assistant record with this model name itself (for example
+# "No response requested." on --resume); it is not something Claude said.
+SYNTHETIC_MODEL = "<synthetic>"
 EVENT_KINDS = (
     "text",
     "tool_use",
@@ -89,6 +94,8 @@ def parse_record(
 
     out: list[JsonlEvent] = []
     if rtype in ASSISTANT_TYPES and msg.get("role") == "assistant":
+        if msg.get("model") == SYNTHETIC_MODEL:
+            return []
         for block in _blocks(msg.get("content")):
             btype = block.get("type")
             if btype == "text":

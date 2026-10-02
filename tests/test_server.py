@@ -38,6 +38,14 @@ def client(agent: FakeAgent, static_dir: Path):
         yield c
 
 
+@pytest.fixture
+def loop_client(agent: FakeAgent, static_dir: Path):
+    """A client whose TCP peer is loopback, like the pane's curl hook."""
+    app = S.create_app(agent, static_dir=static_dir)
+    with TestClient(app, client=("127.0.0.1", 40000)) as c:
+        yield c
+
+
 def login(client: TestClient, token: str = TOKEN):
     return client.post("/auth", json={"token": token})
 
@@ -81,7 +89,8 @@ def test_security_headers_present(client: TestClient):
     assert r.headers["referrer-policy"] == "no-referrer"
     csp = r.headers["content-security-policy"]
     assert "default-src 'self'" in csp
-    assert "script-src 'self' 'unsafe-inline'" in csp
+    assert "script-src 'self';" in csp
+    assert "unsafe-inline" not in csp.split("script-src", 1)[1].split(";", 1)[0]
     assert "connect-src 'self' ws://testserver wss://testserver" in csp
     assert "media-src 'self' data: blob:" in csp
     assert "frame-ancestors 'none'" in csp
@@ -116,6 +125,22 @@ def test_auth_tunnel_mode_cookie_is_secure(agent: FakeAgent, static_dir: Path):
         r = login(c)
         assert r.status_code == 200
         assert cookie_from(r)[A.COOKIE_NAME]["secure"]
+
+
+def test_auth_cookie_secure_behind_loopback_https_proxy(agent: FakeAgent, static_dir: Path):
+    """SEC-12: X-Forwarded-Proto: https from a loopback peer marks the cookie Secure
+    without --tunnel; the same header from a remote peer is ignored."""
+    app = S.create_app(agent, static_dir=static_dir)
+    with TestClient(app, client=("127.0.0.1", 5000)) as c:
+        r = c.post("/auth", json={"token": TOKEN}, headers={"X-Forwarded-Proto": "https"})
+        assert r.status_code == 200
+        assert cookie_from(r)[A.COOKIE_NAME]["secure"]
+        r = c.post("/auth", json={"token": TOKEN})
+        assert not cookie_from(r)[A.COOKIE_NAME]["secure"]
+    with TestClient(app, client=("198.51.100.9", 5000)) as remote:
+        r = remote.post("/auth", json={"token": TOKEN}, headers={"X-Forwarded-Proto": "https"})
+        assert r.status_code == 200
+        assert not cookie_from(r)[A.COOKIE_NAME]["secure"]
 
 
 def test_auth_empty_token_rejected(client: TestClient):
@@ -229,7 +254,8 @@ def test_ws_cross_origin_refused(client: TestClient):
 # ---- hooks ----------------------------------------------------------------------------------
 
 
-def test_hook_without_secret_403(client: TestClient, agent: FakeAgent):
+def test_hook_without_secret_403(loop_client: TestClient, agent: FakeAgent):
+    client = loop_client
     r = client.post("/hooks/claude", json={"hook_event_name": "Notification"})
     assert r.status_code == 403
     r = client.post(
@@ -241,7 +267,8 @@ def test_hook_without_secret_403(client: TestClient, agent: FakeAgent):
     assert agent.sessions.hook_events == []
 
 
-def test_hook_with_secret_calls_session_manager(client: TestClient, agent: FakeAgent):
+def test_hook_with_secret_calls_session_manager(loop_client: TestClient, agent: FakeAgent):
+    client = loop_client
     payload = {"hook_event_name": "Notification", "session_id": "sess-1", "message": "needs you"}
     r = client.post("/hooks/claude", json=payload, headers={"X-Zordon-Hook-Secret": agent.hook_secret})
     assert r.status_code == 200 and r.json() == {}
@@ -249,11 +276,43 @@ def test_hook_with_secret_calls_session_manager(client: TestClient, agent: FakeA
     assert ("hook_event", payload) in agent.sessions.calls
 
 
-def test_hook_bad_json_400(client: TestClient, agent: FakeAgent):
-    r = client.post(
+def test_hook_bad_json_400(loop_client: TestClient, agent: FakeAgent):
+    r = loop_client.post(
         "/hooks/claude", content=b"not json", headers={"X-Zordon-Hook-Secret": agent.hook_secret}
     )
     assert r.status_code == 400
+
+
+def test_hook_refuses_non_loopback_and_proxied_peers(agent: FakeAgent, static_dir: Path):
+    """SEC-11: a correct secret from the tunnel (non-loopback peer, or loopback with a
+    proxy header) is refused before the body is read."""
+    payload = {"hook_event_name": "Notification", "session_id": "sess-1"}
+    hdr = {"X-Zordon-Hook-Secret": agent.hook_secret}
+    app = S.create_app(agent, static_dir=static_dir)
+    with TestClient(app, client=("198.51.100.9", 1)) as remote:
+        assert remote.post("/hooks/claude", json=payload, headers=hdr).status_code == 403
+    with TestClient(app, client=("127.0.0.1", 1)) as proxied:
+        r = proxied.post("/hooks/claude", json=payload, headers={**hdr, "CF-Connecting-IP": "198.51.100.9"})
+        assert r.status_code == 403
+        r = proxied.post("/hooks/claude", json=payload, headers={**hdr, "X-Forwarded-For": "198.51.100.9"})
+        assert r.status_code == 403
+        assert proxied.post("/hooks/claude", json=payload, headers=hdr).status_code == 200
+    assert agent.sessions.hook_events == [payload]
+
+
+def test_hook_body_is_capped(loop_client: TestClient, agent: FakeAgent):
+    """SEC-11: the hook body is capped at 64 KB."""
+    hdr = {"X-Zordon-Hook-Secret": agent.hook_secret}
+    big = b'{"pad": "' + b"x" * (S.HOOK_MAX_BYTES + 100) + b'"}'
+    r = loop_client.post("/hooks/claude", content=big, headers={**hdr, "Content-Type": "application/json"})
+    assert r.status_code == 413
+    # a chunked body with no Content-Length is cut off while streaming too
+    def gen():
+        for _ in range(70):
+            yield b"x" * 1024
+    r = loop_client.post("/hooks/claude", content=gen(), headers=hdr)
+    assert r.status_code == 413
+    assert agent.sessions.hook_events == []
 
 
 # ---- upload --------------------------------------------------------------------------------
@@ -295,6 +354,59 @@ def test_upload_rejects_over_cap(client: TestClient, monkeypatch: pytest.MonkeyP
     assert r.status_code == 413
     small = client.post("/upload", files={"file": ("ok.bin", b"x" * 100, "application/octet-stream")})
     assert small.status_code == 200
+
+
+def test_upload_and_logout_refuse_foreign_origin(client: TestClient, agent: FakeAgent):
+    """SEC-14: the WebSocket's same-origin rule also guards POST /upload and /logout."""
+    login(client)
+    r = client.post(
+        "/upload",
+        content=b"csrf",
+        headers={"X-Zordon-Filename": "csrf.txt", "Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+    assert not (agent.upload_dir / "csrf.txt").exists()
+    assert client.post("/logout", headers={"Origin": "https://evil.example"}).status_code == 403
+    # still logged in: the matching origin works
+    r = client.post(
+        "/upload",
+        content=b"ok",
+        headers={"X-Zordon-Filename": "ok.txt", "Origin": "http://testserver"},
+    )
+    assert r.status_code == 200
+    assert client.post("/logout", headers={"Origin": "http://testserver"}).status_code == 200
+
+
+def test_upload_refuses_symlinked_directory(client: TestClient, agent: FakeAgent, tmp_path: Path):
+    """SEC-9: a planted ``.zordon/uploads`` (or ``.zordon``) symlink is never written through."""
+    login(client)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    agent.upload_dir.parent.mkdir(parents=True, exist_ok=True)
+    agent.upload_dir.symlink_to(victim, target_is_directory=True)
+    r = client.post("/upload", content=b"evil", headers={"X-Zordon-Filename": "authorized_keys"})
+    assert r.status_code == 403
+    assert list(victim.iterdir()) == []
+    # the parent being a symlink is refused too
+    agent.upload_dir.unlink()
+    agent.upload_dir = tmp_path / "link-parent" / "uploads"
+    (tmp_path / "link-parent").symlink_to(victim, target_is_directory=True)
+    r = client.post("/upload", content=b"evil", headers={"X-Zordon-Filename": "authorized_keys"})
+    assert r.status_code == 403
+    assert list(victim.iterdir()) == []
+
+
+def test_write_atomic_replaces_a_symlinked_file_not_its_target(tmp_path: Path):
+    folder = tmp_path / "uploads"
+    folder.mkdir()
+    target = tmp_path / "target.txt"
+    target.write_text("keep me")
+    (folder / "notes.txt").symlink_to(target)
+    S.write_atomic(folder / "notes.txt", b"new")
+    assert target.read_text() == "keep me"
+    assert not (folder / "notes.txt").is_symlink()
+    assert (folder / "notes.txt").read_bytes() == b"new"
+    assert (folder / "notes.txt").stat().st_mode & 0o777 == 0o600
 
 
 def test_upload_without_file_field_400(client: TestClient):

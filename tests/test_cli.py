@@ -187,15 +187,45 @@ def test_resolve_tunnel_provider():
     assert cli.resolve_tunnel(cfg, "cloudflared") == "cloudflared"
 
 
-def test_serve_tunnel_without_binary_exits_3(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+def test_serve_tunnel_without_binary_downloads_it_first(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    """DOC-03: `zordon serve --tunnel` fetches cloudflared on first use instead of refusing."""
     write_config()
-    from zordon import assets
+    from zordon import assets, doctor
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
     monkeypatch.setattr(assets, "find_binary", lambda name: None)
+    downloads: list[str] = []
+
+    def fake_download(downloader=None):
+        downloads.append("cloudflared")
+        return "/home/u/.zordon/bin/cloudflared"
+
+    served: list[str | None] = []
+    monkeypatch.setattr(doctor, "download_cloudflared", fake_download)
+    monkeypatch.setattr(cli, "serve", lambda cfg, *, tunnel_provider, warm_up: served.append(tunnel_provider) or 0)
+    assert cli.main(["serve", "--tunnel"]) == 0
+    assert downloads == ["cloudflared"] and served == ["cloudflared"]
+    assert "first use" in capsys.readouterr().err
+
+
+def test_serve_tunnel_download_failure_exits_3(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    write_config()
+    from zordon import assets, doctor
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
+    monkeypatch.setattr(assets, "find_binary", lambda name: None)
+
+    def fail(downloader=None):
+        raise OSError("network down")
+
+    monkeypatch.setattr(doctor, "download_cloudflared", fail)
     monkeypatch.setattr(cli, "serve", lambda *a, **k: pytest.fail("must not serve"))
     assert cli.main(["serve", "--tunnel"]) == 3
-    assert "cloudflared" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "cloudflared" in err and "network down" in err
+    # ngrok is never downloaded
+    assert cli.main(["serve", "--tunnel", "ngrok"]) == 3
+    assert "install ngrok" in capsys.readouterr().err
 
 
 # ---- sessions ------------------------------------------------------------------------------------
@@ -351,3 +381,36 @@ def test_doctor_json_through_the_cli(monkeypatch: pytest.MonkeyPatch, capsys: py
     assert cli.main(["doctor", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is True and data["checks"][0]["name"] == "python"
+
+
+def test_package_version_has_one_source():
+    """PKG-7: pyproject reads the version from zordon/__init__.py (hatch dynamic version)."""
+    import importlib.metadata
+    import tomllib
+
+    import zordon
+
+    root = Path(__file__).resolve().parent.parent
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+    assert "version" in pyproject["project"].get("dynamic", [])
+    assert pyproject["tool"]["hatch"]["version"]["path"] == "zordon/__init__.py"
+    try:
+        installed = importlib.metadata.version("zordon")
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("zordon is not installed in this interpreter")
+    assert installed == zordon.__version__
+
+
+def test_core_dependency_bounds():
+    """PKG-1 / PKG-8 / DOC-16: uvicorn must support ws='websockets-sansio' (0.35+); the
+    core package is not capped at <3.14 (only kokoro-onnx is); typesafe-sdk is pinned <0.8."""
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    uvicorn = next(d for d in project["dependencies"] if d.startswith("uvicorn"))
+    assert ">=0.35" in uvicorn
+    assert project["requires-python"] == ">=3.12"
+    local = project["optional-dependencies"]["local"]
+    assert any(d.startswith("kokoro-onnx") and "python_version < '3.14'" in d for d in local)
+    assert project["optional-dependencies"]["jev"] == ["typesafe-sdk>=0.7.2,<0.8"]

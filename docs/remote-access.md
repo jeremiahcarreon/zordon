@@ -33,14 +33,15 @@ in the terminal and sends it to connected clients as a `tunnel` message, so the
 session picker shows the same QR. Scan it, type the token once, done. The tunnel
 reaches the server over loopback, so the bind address stays `127.0.0.1`.
 
-If `cloudflared` is not on `PATH`, `zordon doctor --download` fetches the latest
-release into `~/.zordon/bin/` (Linux amd64/arm64, macOS as a `.tgz`), about 40 MB.
+If `cloudflared` is not on `PATH`, `zordon serve --tunnel` downloads the latest
+release into `~/.zordon/bin/` on first use (Linux amd64/arm64, macOS as a `.tgz`),
+about 40 MB; `zordon doctor --download --tunnel` fetches it ahead of time.
 
 What the tunnel gives you and does not:
 
 * The URL is random and changes every run. Quick tunnels have no uptime guarantee,
   allow 200 in-flight requests, and do not support Server-Sent Events (Zordon uses a
-  WebSocket, which is supported).
+  WebSocket, which is not listed as unsupported and works in practice).
 * `--tunnel ngrok` (or `[tunnel] provider = "ngrok"` in `config.toml`) runs
   `ngrok http 8765` instead and reads the public URL from ngrok's local API at
   `http://127.0.0.1:4040/api/tunnels`. ngrok needs its own account and binary.
@@ -56,10 +57,10 @@ off while `--tunnel` is active.
 
 | Requirement | Behaviour |
 | --- | --- |
-| Token required | The server refuses to start without `server.token`. |
-| Rate limit on failed logins | 5 failed token attempts per minute per client IP, then `429` with a `Retry-After` header for the rest of the minute. The right token is also refused while the IP is limited. Every failure is logged. Behind the tunnel the TCP peer is always `127.0.0.1`, so the client IP is read from `CF-Connecting-IP` (or `X-Forwarded-For`); those headers are trusted only in tunnel mode, where loopback is the only path to the socket. |
-| Idle disconnect | A WebSocket with no inbound message for 30 minutes (`server.idle_disconnect_minutes`) is closed with code 1000 and reason `idle`. Protocol-level pings do not count as activity; the client's own `ping` messages do. |
-| Secure cookie | The session cookie is set with `Secure` (in addition to `HttpOnly` and `SameSite=Lax`), so it is never sent over plain HTTP. |
+| Token required | `--tunnel` does not refuse to start without `server.token`, but `/auth` then refuses every login, so the public URL is unusable until `zordon token rotate` sets one; the startup log says so. |
+| Rate limit on failed logins | 5 failed token attempts per minute per client IP, then `429` with a `Retry-After` header for the rest of the minute. The right token is also refused while the IP is limited. Every failure is logged. Behind the tunnel the TCP peer is always `127.0.0.1`, so the client IP is read from `CF-Connecting-IP` (or `X-Forwarded-For`); those headers are trusted whenever the TCP peer is loopback (tunnel mode or not), never from any other peer. |
+| Idle disconnect | A WebSocket with no inbound message for 30 minutes (`server.idle_disconnect_minutes`) is closed with code 1000 and reason `idle`. Neither protocol-level pings nor the client's own `ping` keepalive count as activity; only audio, text, commands, calls and flush acks do. |
+| Secure cookie | The session cookie is set with `Secure` (in addition to `HttpOnly` and `SameSite=Lax`), so it is never sent over plain HTTP. Without `--tunnel` it is also `Secure` when the request arrived over HTTPS, including `X-Forwarded-Proto: https` from a proxy on loopback. |
 
 ### A stable URL
 
@@ -69,17 +70,19 @@ a DNS record pointing at the tunnel). That setup lives in Cloudflare's dashboard
 `cloudflared tunnel login` / `cloudflared tunnel create`, not in Zordon; run the
 named tunnel yourself against `http://127.0.0.1:8765` and start Zordon without
 `--tunnel`. Note that without `--tunnel` the rate limit and idle disconnect are the
-configured values rather than forced, and the cookie is only `Secure` when Zordon
-knows it is behind HTTPS; keep `server.token` set and consider lowering
+configured values rather than forced, and the cookie is `Secure` only when the
+request arrived over HTTPS (your proxy must send `X-Forwarded-Proto: https` and
+connect from loopback); keep `server.token` set and consider lowering
 `server.idle_disconnect_minutes`.
 
 ## 2. Tailscale: `zordon serve --bind tailscale`
 
 If the machine and the phone are both on your tailnet, bind to the machine's
-Tailscale address. `--bind tailscale` asks `tailscale ip -4` for the IPv4 address;
-if the `tailscale` CLI is not on `PATH`, it looks for an interface address in
-`100.64.0.0/10` and binds that. Either way the address is not loopback, so
-`server.token` must be set, and the server refuses to start otherwise.
+Tailscale address. `--bind tailscale` runs `tailscale ip -4` and binds the first
+address it prints; if the `tailscale` CLI is not on `PATH`, Zordon exits with
+status 3. Pass the address yourself with `--bind 100.x.y.z` in that case. Either way
+the address is not loopback, so `server.token` must be set, and the server refuses
+to start otherwise.
 
 The phone then opens `http://100.x.y.z:8765`, logs in with the token, and gets
 the transcript, text input and buttons, but **not the microphone**, because the
@@ -90,8 +93,8 @@ page is plain HTTP. Two ways to fix that:
   `127.0.0.1:8765` (the default), point `tailscale serve` at that port, and open
   the `https://<machine>.<tailnet>.ts.net` URL on the phone. See Tailscale's
   documentation for the exact `tailscale serve` syntax for your version. The
-  server itself still sees plain HTTP on loopback, so it relies on the proxy's
-  `X-Forwarded-Proto: https` header to mark the cookie `Secure`.
+  server itself still sees plain HTTP on loopback; it marks the cookie `Secure`
+  because the proxy connects from loopback and sends `X-Forwarded-Proto: https`.
 * **Use the tunnel for voice**, and the Tailscale address for a laptop browser.
 
 Tailscale traffic is encrypted end to end and the address is stable, so there is
@@ -121,7 +124,7 @@ other two.
 * **Backgrounding.** When the app goes to the background the page stops sending
   audio and keeps the socket; on return, tap Talk again if playback does not
   resume (iOS may report the audio context as `interrupted` after a call or Siri).
-  iOS suspends page networking after roughly 30 s in the background, so the
+  iOS reportedly suspends page networking after roughly 30 s in the background, so the
   WebSocket may drop; the client reconnects with its cookie, no new login.
 * **Phone calls and headsets** interrupt the audio context; the next tap resumes it.
 

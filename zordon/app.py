@@ -15,17 +15,22 @@ session's permission summary is spoken once when it is first focused, and
 ``Notice(speak=True)`` events from the manager are read out. These run on a
 small events thread fed by a tap on ``bus.publish`` so the publishing thread is
 never blocked.
+
+``AgentBus.publish`` also redacts ``PromptDetected`` (title, options, raw lines)
+and ``Notice`` text before any tap, log line or client sees them: those are
+built from raw pane captures and may hold a key that was on screen.
 """
 
 from __future__ import annotations
 
 import logging
 import queue
+import re
 import secrets
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +70,7 @@ from zordon.session.tmux import Tmux
 from zordon.speech.audio_thread import AudioThread
 from zordon.speech.stt import make_stt
 from zordon.speech.vad import FakeVAD, make_vad
+from zordon.transcript.redaction import redact
 from zordon.transcript.store import TranscriptStore
 from zordon.transport.protocol import Sessions, TunnelOut
 from zordon.transport.qr import svg_qr
@@ -75,7 +81,7 @@ log = logging.getLogger("zordon.app")
 
 PROVIDER_KINDS = ("stt", "tts", "normalizer", "router")
 UPLOAD_DIRNAME = ".zordon/uploads"
-KEEP_SETTINGS_QUESTION = "Do you want to keep these settings?"
+CALL_BUSY_TEXT = "Another device is already in the call. End it there first."
 MAX_SPOKEN_OPTIONS = 6
 
 # LineKind used for the transcript row of a spoken prompt, per prompt kind.
@@ -94,8 +100,10 @@ class AgentBus(Bus):
     """A ``Bus`` whose ``publish`` also hands every client event to registered taps.
 
     Taps run on the publishing thread and must return at once (the agent's tap
-    only enqueues). ``client_events`` still receives every event unchanged, so
-    the transport sees exactly what it would with a plain ``Bus``.
+    only enqueues). ``client_events`` receives every event as published, except
+    that ``PromptDetected`` and ``Notice`` are redacted first (see
+    :func:`redact_event`): they carry raw pane text, and the transport sends them
+    to the browser verbatim.
     """
 
     def __init__(self) -> None:
@@ -106,12 +114,29 @@ class AgentBus(Bus):
         self._taps.append(fn)
 
     def publish(self, event: Any) -> None:
+        event = redact_event(event)
         for fn in self._taps:
             try:
                 fn(event)
             except Exception:  # noqa: BLE001 - a broken tap must not lose the event
                 log.exception("bus tap failed")
         super().publish(event)
+
+
+def redact_event(event: Any) -> Any:
+    """Mask secrets in the events built from raw pane captures. Returns the event
+    itself when nothing matched, otherwise a redacted copy."""
+    if isinstance(event, PromptDetected):
+        title, hit_t = redact(event.title or "")
+        options = [redact(o or "")[0] for o in event.options]
+        raw_lines = [redact(ln or "")[0] for ln in event.raw_lines]
+        if hit_t or options != list(event.options) or raw_lines != list(event.raw_lines):
+            return replace(event, title=title, options=options, raw_lines=raw_lines)
+        return event
+    if isinstance(event, Notice):
+        text, hit = redact(event.text or "")
+        return replace(event, text=text) if hit else event
+    return event
 
 
 # ---- providers with graceful degradation ---------------------------------------------
@@ -149,6 +174,7 @@ class Providers:
             "tts": str(getattr(self.tts, "name", "?")),
             "normalizer": str(getattr(self.normalizer, "name", "?")),
             "router": str(getattr(self.router, "name", "?")),
+            "voice": str(getattr(self.tts, "voice", "") or ""),
         }
 
 
@@ -356,6 +382,7 @@ class Agent:
             self.providers.tts,
             self.store,
             muted=self._muted,
+            focused_fn=self.manager.focused,
         )
         self.audio = AudioThread(
             self.bus,
@@ -411,7 +438,9 @@ class Agent:
         self.dispatcher.stop()
         self.audio.stop(timeout=_left(deadline))
         self.pipeline.stop()
-        if self.pipeline.is_alive():
+        if self.pipeline.ident is not None:
+            # Joins the speaker thread too: no transcript write may be in flight when
+            # the store is closed below.
             self.pipeline.join(_left(deadline))
         if self.dispatcher.is_alive():
             self.dispatcher.join(_left(deadline))
@@ -525,6 +554,23 @@ class Agent:
         log.info("provider %s -> %s", kind, getattr(new, "name", name))
         self._publish_settings()
 
+    def set_voice(self, name: str) -> None:
+        """Change the TTS voice at runtime by rebuilding the TTS provider."""
+        name = (name or "").strip()
+        if not name or len(name) > 64 or not re.fullmatch(r"[A-Za-z0-9_\-]+", name):
+            raise ValueError("voice name is invalid")
+        previous = self.config.providers.tts_voice
+        self.config.providers.tts_voice = name
+        try:
+            new = make_tts(self.config)
+            self.providers.tts = new
+            self.pipeline.tts = new
+        except Exception:
+            self.config.providers.tts_voice = previous
+            raise
+        log.info("tts voice -> %s", name)
+        self._publish_settings()
+
     def _publish_sessions(self) -> None:
         """A voice-driven focus change reaches every client's picker, not just the caller."""
         try:
@@ -548,14 +594,19 @@ class Agent:
         self.bus.utterances.put(Utterance(text=text, source="text", client_id=client_id))
 
     def call_state(self, client_id: str, action: str) -> None:
+        """One client at a time is in the call. A second ``start`` is refused with an
+        error notice (the ``ErrorOut`` reaches the client as well), and ``end`` /
+        ``pause`` / ``resume`` from a client that is not the caller change nothing."""
         if action == "start":
-            self.audio.call_started(client_id)
+            if not self.audio.call_started(client_id):
+                log.info("call start from %s refused: %s is in the call", client_id, self.audio.client_id)
+                self.bus.publish(Notice(text=CALL_BUSY_TEXT, level="error"))
         elif action == "end":
-            self.audio.call_ended()
+            self.audio.call_ended(client_id)
         elif action == "pause":
-            self.audio.call_paused()
+            self.audio.call_paused(client_id)
         elif action == "resume":
-            self.audio.call_resumed()
+            self.audio.call_resumed(client_id)
         else:
             raise ValueError(f"unknown call action {action!r}")
 
@@ -568,6 +619,8 @@ class Agent:
         safe = sanitize_filename(filename)
         root = self._focused_directory() or paths.zordon_home()
         folder = Path(root) / UPLOAD_DIRNAME
+        if folder.is_symlink() or folder.parent.is_symlink():
+            raise PermissionError(f"{folder} is a symlink; refusing to upload there")
         paths.ensure_private_dir(folder)
         return folder / safe
 
@@ -576,10 +629,12 @@ class Agent:
     def transcript_tail(self, session_id: str, n: int = 30) -> list[TranscriptRow]:
         return self.store.tail(session_id, n)
 
-    def speak(self, text: str, session_id: str = "", kind: LineKind = LineKind.PROSE) -> int:
+    def speak(
+        self, text: str, session_id: str = "", kind: LineKind = LineKind.PROSE, *, bypass_mute: bool = False
+    ) -> int:
         """Speak ``text`` ahead of everything else (the pipeline's ``speak_now``)."""
         sid = session_id or self.manager.focused() or ""
-        return self.pipeline.speak_now(text, sid, kind)
+        return self.pipeline.speak_now(text, sid, kind, bypass_mute=bypass_mute)
 
     def set_tunnel_url(self, url: str | None) -> None:
         self.tunnel_url = url
@@ -679,7 +734,10 @@ class Agent:
             return
         if not summary:
             return
-        self.pipeline.speak_now(f"{_sentence(summary)} {KEEP_SETTINGS_QUESTION}", session_id, LineKind.SUMMARY)
+        # A statement, not a question: the summary already says how to change the mode
+        # ("say switch to ... mode to change it"). A question here would invite a yes/no
+        # that nothing owns and that the router would type into Claude Code.
+        self.pipeline.speak_now(_sentence(summary), session_id, LineKind.SUMMARY)
 
     # ---- helpers -------------------------------------------------------------------------
 
@@ -704,8 +762,10 @@ def _left(deadline: float) -> float:
 __all__ = [
     "Agent",
     "AgentBus",
+    "CALL_BUSY_TEXT",
     "Providers",
     "UnavailableSTT",
     "build_providers",
     "prompt_speech",
+    "redact_event",
 ]

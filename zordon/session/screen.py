@@ -24,15 +24,22 @@ Facts this module relies on (verified in ``eval/fixtures/pane``):
 
 * the idle input line is ``❯`` + U+00A0, while a transcript echo is ``❯`` + U+0020;
   trailing spaces must be stripped with ``rstrip(" ")`` so the NBSP survives;
+  when no NBSP form is on screen, a ``❯`` line framed by two rules is the box;
 * the spinner glyph cycles ``· ✢ * ✶ ✻ ✽`` every poll and the active tool call's
   ``●`` bullet blinks (alternates with a blank), so both are masked before any
-  comparison;
+  comparison; the verb list has accented and hyphenated entries;
 * content lands in whole paragraphs, but a line can appear partially rendered
   for one frame (``  -`` then ``  - ~/.config/tmux/tmux.conf``), so the last
   content line is held back while the session is still rendering;
 * the alternate screen has no scrollback: once it fills, content scrolls off
   the top, which the differ handles by aligning the previous content inside the
-  new one.
+  new one;
+* the completion row's clock follows the locale and ``timeFormat`` setting, the
+  status row uses ``⏸`` or ``⏵⏵`` (``accept edits on`` has no word "mode"), the
+  startup notices use a ``▎`` gutter, and the idle-hint slot above the input
+  rule can show a right-aligned tmux tip instead of the effort hint
+  (``done_line_24h``, ``status_auto_mode``, ``startup_notice_gutter``,
+  ``tip_line_tmux`` fixtures).
 """
 
 from __future__ import annotations
@@ -86,29 +93,50 @@ USER_ECHO = re.compile(r"^❯ (?P<text>\S.*)$")
 RULE = re.compile(r"^\s*─{20,}\s*$")
 DOTTED_RULE = re.compile(r"^\s*╌{20,}\s*$")
 TOP_RULE = re.compile(r"^\s*▔{20,}\s*$")
+# Spinner: one glyph at column 0 (the glyph set cycles and has changed between
+# releases, so any non-space glyph except the content bullets is accepted), one
+# capitalised verb ending in "…" (187 verbs in 2.1.287, some accented or
+# hyphenated: "Sautéing", "Razzle-dazzling") and an optional parenthesised tail.
 SPINNER = re.compile(
-    r"^(?P<glyph>[·✢*✶✻✽]) (?P<verb>[A-Z][a-z]+)…"
-    r"(?: \((?P<secs>\d+)s(?: · ↓ (?P<tokens>[\d.]+k?) tokens)?(?: · (?P<extra>[^)]*))?\))?\s*$"
+    r"^(?P<glyph>[^\s●❯⎿▎\-]) (?P<verb>[A-Z][^\s…(]+)…"
+    r"(?: \((?:(?P<secs>\d+)s(?: · ↓ (?P<tokens>[\d.]+k?) tokens)?(?: · (?P<extra>[^)]*))?|(?P<paren>[^)]*))\))?\s*$"
 )
+_SPINNER_TOKENS = re.compile(r"↓ (?P<tokens>[\d.]+k?) tokens")
 SPINNER_TIP = re.compile(r"^\s*⎿\s+Tip: ")
+# Completion row. The clock is locale/setting dependent ("8:33 PM", "20:33",
+# "8:33 pm", "Tuesday 8:33 PM", "Monday, Sep 29, 8:33 PM") and the row may carry
+# further " · " suffixes ("3 messages hidden (/focus to show)", "1 still running").
 DONE_LINE = re.compile(
-    r"^✻ (?P<verb>[A-Z][a-zé]+) for (?P<dur>\d+(?:m \d+)?s|\d+m) · done "
-    r"(?P<clock>\d{1,2}:\d{2} [AP]M)\s*$"
+    r"^✻ (?P<verb>\S+) for (?P<dur>\d+[dhms](?: \d+[dhms])*)"
+    r"(?: · done (?P<clock>(?:(?! · ).)+?))?(?: · .*)?\s*$"
 )
+# Shown in place of the completion row while background agents are pending.
+WAITING_LINE = re.compile(r"^✻ Waiting for .* to finish\s*$")
 INTERRUPTED = re.compile(r"^\s*⎿\s+Interrupted · What should Claude do instead\?\s*$")
 REJECTED_WRITE = re.compile(r"^\s*⎿\s+User rejected (?P<action>write|edit|update) to (?P<file>\S+)\s*$")
+# Status row: "⏸ manual mode on", "⏸ plan mode on (shift+tab to cycle)",
+# "⏵⏵ auto mode on (shift+tab to cycle)", "⏵⏵ accept edits on (shift+tab to cycle)".
 STATUS_MODE = re.compile(
-    r"^\s*⏸ (?P<mode>manual|plan|accept edits|auto|bypass permissions|don't ask|dont ask) mode on\b"
+    r"^\s*(?:⏸|⏵⏵) (?P<mode>manual|plan|accept edits|auto|bypass permissions|don't ask|dont ask)(?: mode)? on\b"
 )
 EXIT_RESUME = re.compile(
     r"^claude --resume (?P<sid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$"
 )
+# The normal screen after Claude Code has left (or never started): a shell prompt.
+SHELL_PROMPT = re.compile(r"^\S+@\S+:.*[$#%] ?$|^[$#%] ?$")
 EFFORT_HINT = re.compile(r"^\s*◐ \S+ · /effort\s*$")
+# Right-aligned hint/tip in the slot above the input rule ("tmux detected · scroll
+# with PgUp/PgDn · …", "tmux focus-events off · add …"): heavily indented, dotted.
+TIP_LINE = re.compile(r"^\s{20,}(?:tmux \S.*|[^\s●❯⎿✻]\S*.* · \S.*)$")
 BANNER = re.compile(r"^\s*[▐▛█▝▜▀]")
+# Startup notices: the known wordings, the "▎" notice gutter and the hidden-count
+# line. Anything notice-shaped between the banner and the first echo is preamble
+# too (see ``_extract_content``), so a reworded notice does not become content.
 NOTICE = re.compile(
     r"^\s{1,3}(?:Updated to latest\. Got \d+ features|code\.claude\.com/docs/en/changelog|"
-    r"Get to finished work sooner with )"
+    r"Get to finished work sooner with )|^▎|^\s+\d+ more notices? hidden\s*$"
 )
+NOTICE_GUTTER = re.compile(r"^▎")
 LONE_BULLET = re.compile(r"^●\s*$")
 ESC_TO_INTERRUPT = re.compile(r"esc to interrupt", re.IGNORECASE)
 # A notification popup overlays the right edge with a close glyph; the "/plan to
@@ -124,9 +152,11 @@ PROMPT_HEADERS = (
     re.compile(r"^\s*☐ \S"),
     re.compile(r"^\s*Accessing workspace:\s*$"),
 )
-# Prompt-block anchors: lines that only exist inside a prompt block.
+# Prompt-block anchors: lines that only exist inside a prompt block (a prose
+# "Do you want to …" line matches too; the search takes the LAST anchor and the
+# detectors then require a menu, so prose above a block is harmless).
 PROMPT_ANCHORS = (
-    re.compile(r"^\s*Do you want to .*\?\s*$"),
+    re.compile(r"^\s*Do you want to \S"),
     re.compile(r"^\s*Claude has written up a plan and is ready to execute\."),
     re.compile(r"^\s*Enter to select · ↑/↓ to navigate · Esc to cancel\s*$"),
     re.compile(r"^\s*Enter to confirm · Esc to cancel\s*$"),
@@ -134,6 +164,18 @@ PROMPT_ANCHORS = (
 )
 
 _BLINK = re.compile(r"^●(?=[  ]|$)")
+# Lines that never sit inside a prompt block: the block search stops at them. A
+# transcript echo is "❯ text" at column 0, but so is the pointer row of an
+# AskUserQuestion menu ("❯ 1. Tabs"), which is excluded.
+_BLOCK_BOUNDARY = (
+    re.compile(r"^❯ (?!\d{1,2}\. )\S"),
+    re.compile(r"^●"),
+    re.compile(r"^\s*⎿"),
+    BANNER,
+    TOP_RULE,
+)
+_INPUT_BOX_ANY = re.compile(r"^❯(?:[  ](?P<text>.*))?$")  # NBSP or U+0020 after the pointer
+_NOTICE_INDENT = re.compile(r"^\s{1,3}\S")
 
 
 # ---- dataclasses -------------------------------------------------------------
@@ -166,16 +208,16 @@ class Spinner:
 @dataclass(slots=True, frozen=True)
 class DoneLine:
     verb: str
-    duration: str  # "4s", "1m 12s", "3m"
-    clock: str  # "8:33 PM"
+    duration: str  # "4s", "1m 12s", "3m", "1h 2m 5s"
+    clock: str  # "8:33 PM", "20:33", "Tuesday 8:33 PM"; "" when the row has no clock
     raw: str
 
     @property
     def secs(self) -> int:
-        m = re.fullmatch(r"(?:(\d+)m)?\s*(?:(\d+)s)?", self.duration)
-        if not m:
-            return 0
-        return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+        total = 0
+        for num, unit in re.findall(r"(\d+)([dhms])", self.duration):
+            total += int(num) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[unit]
+        return total
 
 
 @dataclass(slots=True)
@@ -196,6 +238,8 @@ class Screen:
     interrupt_hint: bool = False  # "esc to interrupt" somewhere on screen
     effort_hint: bool = False  # the right-aligned "◐ <effort> · /effort" idle hint
     user_echoes: list[str] = field(default_factory=list)
+    idle_hint: bool = False  # effort hint OR a right-aligned tip in the same slot (tmux tips)
+    shell_prompt: bool = False  # no input box and the last non-blank line is a shell prompt
 
     @property
     def last_content_line(self) -> str | None:
@@ -224,7 +268,7 @@ def parse_screen(lines: Sequence[str], *, ansi: bool = False) -> Screen:
     prompt_block: list[str] = []
 
     if box_idx is not None:
-        m = INPUT_BOX.match(raw[box_idx])
+        m = _INPUT_BOX_ANY.match(raw[box_idx])
         input_box = InputBox(text=(m.group("text") if m else "") or "")
         content_end = box_idx - 1 if box_idx > 0 and RULE.match(raw[box_idx - 1]) else box_idx
         status_rows = _status_rows(raw, box_idx)
@@ -241,6 +285,8 @@ def parse_screen(lines: Sequence[str], *, ansi: bool = False) -> Screen:
     last = _last_nonblank(content)
     turn_ended = last is None or _is_terminator(last)
     exited = input_box is None and any(EXIT_RESUME.match(line) for line in raw)
+    last_raw = _last_nonblank(raw)
+    shell_prompt = input_box is None and last_raw is not None and bool(SHELL_PROMPT.match(last_raw))
     status_mode = None
     for row in status_rows:
         sm = STATUS_MODE.match(row)
@@ -263,6 +309,8 @@ def parse_screen(lines: Sequence[str], *, ansi: bool = False) -> Screen:
         interrupt_hint=any(ESC_TO_INTERRUPT.search(line) for line in raw),
         effort_hint=any(EFFORT_HINT.match(line) for line in raw[:content_end]),
         user_echoes=[m.group("text") for m in map(USER_ECHO.match, content) if m],
+        idle_hint=any(EFFORT_HINT.match(line) or TIP_LINE.match(line) for line in raw[:content_end]),
+        shell_prompt=shell_prompt,
     )
 
 
@@ -275,10 +323,29 @@ def parse_capture(text: str, *, ansi: bool = False) -> Screen:
 
 
 def _find_input_box(raw: list[str]) -> int | None:
+    """Index of the input-box line: ``❯`` + NBSP directly below a rule.
+
+    Fallback when no NBSP form exists (a release or terminal that renders a
+    plain space): a ``❯`` line directly below a rule with another rule within
+    five lines, a shape no transcript echo has. When several candidates exist
+    the one framed by two rules wins over a bare pointer in the status rows.
+    """
+    nbsp_candidate: int | None = None
     for i in range(len(raw) - 1, -1, -1):
-        if INPUT_BOX.match(raw[i]) and i > 0 and RULE.match(raw[i - 1]):
+        if i == 0 or not RULE.match(raw[i - 1]):
+            continue
+        if INPUT_BOX.match(raw[i]):
+            if _rule_follows(raw, i):
+                return i
+            if nbsp_candidate is None:
+                nbsp_candidate = i
+        elif _INPUT_BOX_ANY.match(raw[i]) and _rule_follows(raw, i):
             return i
-    return None
+    return nbsp_candidate
+
+
+def _rule_follows(raw: list[str], i: int) -> bool:
+    return any(RULE.match(raw[j]) for j in range(i + 1, min(len(raw), i + 6)))
 
 
 def _status_rows(raw: list[str], box_idx: int) -> list[str]:
@@ -289,20 +356,53 @@ def _status_rows(raw: list[str], box_idx: int) -> list[str]:
 
 
 def _find_prompt_block(raw: list[str]) -> int | None:
-    """Index of the rule that opens a prompt block, or None."""
-    anchor = next((i for i, line in enumerate(raw) if any(p.match(line) for p in PROMPT_ANCHORS)), None)
+    """Index of the line that opens the prompt block at the bottom, or None.
+
+    Prompt blocks sit at the bottom of the screen, so the search anchors on the
+    LAST anchor line and walks upward from it, stopping at the first line that
+    can never be inside a block (a transcript echo, a ``●`` bullet, a ``⎿`` tool
+    result, a completion/interruption row, a spinner, the banner). Within that
+    region the block starts at the rule above a known header, else at the
+    header line itself (its rule scrolled off), else at the top-most rule, else
+    at the region's first line (the opening rule and header are both off-screen).
+    """
+    anchor = next((i for i in range(len(raw) - 1, -1, -1) if any(p.match(raw[i]) for p in PROMPT_ANCHORS)), None)
     if anchor is None:
         return None
-    last_rule: int | None = None
-    for i in range(anchor):
-        if RULE.match(raw[i]):
-            last_rule = i
+    start = 0
+    for i in range(anchor - 1, -1, -1):
+        if _is_block_boundary(raw[i]):
+            start = i + 1
+            break
+    header_line: int | None = None
+    first_rule: int | None = None
+    for i in range(start, anchor + 1):
+        line = raw[i]
+        if RULE.match(line):
+            if first_rule is None:
+                first_rule = i
             nxt = _next_nonblank(raw, i + 1)
             if nxt is not None and any(h.match(raw[nxt]) for h in PROMPT_HEADERS):
                 return i
-    if last_rule is not None:
-        return last_rule
-    return anchor
+        elif header_line is None and any(h.match(line) for h in PROMPT_HEADERS):
+            header_line = i
+    if header_line is not None:
+        return header_line
+    if first_rule is not None:
+        return first_rule
+    region_start = _next_nonblank(raw, start)
+    return region_start if region_start is not None else anchor
+
+
+def _is_block_boundary(line: str) -> bool:
+    return bool(
+        any(p.match(line) for p in _BLOCK_BOUNDARY)
+        or SPINNER.match(line)
+        or DONE_LINE.match(line)
+        or WAITING_LINE.match(line)
+        or INTERRUPTED.match(line)
+        or REJECTED_WRITE.match(line)
+    )
 
 
 def _next_nonblank(raw: list[str], start: int) -> int | None:
@@ -316,19 +416,14 @@ def _extract_content(region: list[str]) -> tuple[list[str], Spinner | None]:
     spinner: Spinner | None = None
     out: list[str] = []
     after_spinner = False
+    preamble = False  # between the banner and the first content line: startup notices
     for line in region:
         line = POPUP_CLOSE.sub("", line)
-        sm = SPINNER.match(line)
+        sm = parse_spinner(line)
         if sm:
-            spinner = Spinner(
-                glyph=sm.group("glyph"),
-                verb=sm.group("verb"),
-                secs=int(sm.group("secs")) if sm.group("secs") else None,
-                tokens=sm.group("tokens"),
-                extra=sm.group("extra"),
-                raw=line,
-            )
+            spinner = sm
             after_spinner = True
+            preamble = False
             out.append("")
             continue
         if after_spinner and SPINNER_TIP.match(line):
@@ -336,19 +431,50 @@ def _extract_content(region: list[str]) -> tuple[list[str], Spinner | None]:
             continue
         if line.strip():
             after_spinner = False
+        if BANNER.match(line):
+            preamble = True
         if is_ui_line(line):
             out.append("")
             continue
+        if preamble and line.strip():
+            if _is_preamble_line(line):
+                out.append("")
+                continue
+            preamble = False
         out.append(line)
     return _collapse_blanks(out), spinner
 
 
+def _is_preamble_line(line: str) -> bool:
+    """A notice-shaped line (1-3 space indent or the ``▎`` gutter) before the first echo."""
+    if USER_ECHO.match(line) or _is_terminator(line):
+        return False
+    return bool(NOTICE_GUTTER.match(line) or _NOTICE_INDENT.match(line))
+
+
+def parse_spinner(line: str) -> Spinner | None:
+    """``Spinner`` for a spinner line (glyph, verb, optional secs/tokens/extra), else None."""
+    sm = SPINNER.match(line)
+    if not sm:
+        return None
+    secs = int(sm.group("secs")) if sm.group("secs") else None
+    tokens = sm.group("tokens")
+    extra = sm.group("extra") or None
+    paren = sm.group("paren")
+    if paren is not None:  # a tail that does not start with the elapsed seconds
+        tm = _SPINNER_TOKENS.search(paren)
+        tokens = tm.group("tokens") if tm else None
+        extra = paren.strip() or None
+    return Spinner(glyph=sm.group("glyph"), verb=sm.group("verb"), secs=secs, tokens=tokens, extra=extra, raw=line)
+
+
 def is_ui_line(line: str) -> bool:
-    """Banner, startup notices, rules, hints and empty bullets: never content."""
+    """Banner, startup notices, rules, hints/tips and empty bullets: never content."""
     return bool(
         BANNER.match(line)
         or NOTICE.match(line)
         or EFFORT_HINT.match(line)
+        or TIP_LINE.match(line)
         or RULE.match(line)
         or TOP_RULE.match(line)
         or LONE_BULLET.match(line)
@@ -383,16 +509,18 @@ def _last_done_line(content: list[str]) -> DoneLine | None:
     for line in reversed(content):
         m = DONE_LINE.match(line)
         if m:
-            return DoneLine(verb=m.group("verb"), duration=m.group("dur"), clock=m.group("clock"), raw=line)
+            return DoneLine(verb=m.group("verb"), duration=m.group("dur"), clock=m.group("clock") or "", raw=line)
     return None
 
 
 def _is_terminator(line: str) -> bool:
-    return bool(DONE_LINE.match(line) or INTERRUPTED.match(line) or REJECTED_WRITE.match(line))
+    return bool(
+        DONE_LINE.match(line) or WAITING_LINE.match(line) or INTERRUPTED.match(line) or REJECTED_WRITE.match(line)
+    )
 
 
 def is_terminator(line: str) -> bool:
-    """A done / interrupted / rejected line: the turn is over at this line."""
+    """A done / waiting / interrupted / rejected line: the turn is over at this line."""
     return _is_terminator(line)
 
 

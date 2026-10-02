@@ -9,7 +9,11 @@ the loop never blocks on it.
 Loop, each iteration (about 5 ms when idle):
 
 1. forward ``SpeechChunk`` from ``bus.playback`` to ``bus.client_events``, dropping
-   chunks whose generation is older than ``bus.generation``;
+   chunks whose generation is older than ``bus.generation``. While the gate
+   reports the user ``speaking`` (and for ``HOLD_AFTER_SPEECH_S`` after the
+   utterance ends) nothing is forwarded: chunks stay queued, so Claude does not
+   talk over the user after a barge-in, and once they are forwarded playback is
+   active again and a second barge-in can fire;
 2. take every waiting frame from ``bus.inbound_audio`` and feed the gate with
    the current ``playback_active`` flag;
    - ONSET while playback is active -> barge-in: bump the generation, drain
@@ -17,6 +21,11 @@ Loop, each iteration (about 5 ms when idle):
    - END -> hand the utterance to the STT worker;
 3. refresh ``playback_active`` and let the gate time out an utterance when frames
    stopped arriving (mute, pause).
+
+One client at a time is the caller: ``call_started`` returns False while another
+client is in the call, and ``call_ended`` / ``call_paused`` / ``call_resumed``
+from any other client are ignored, so a second tab closing cannot reset the gate
+under the caller's utterance.
 
 ``playback_active`` is an estimate of what the client is hearing: chunks are
 forwarded faster than real time, so the thread keeps a playback timeline
@@ -49,6 +58,7 @@ log = logging.getLogger("zordon.speech.audio_thread")
 
 IDLE_WAIT_S = 0.005
 MAX_FORWARD_PER_LOOP = 64
+HOLD_AFTER_SPEECH_S = 0.15  # keep holding playback briefly after the user's utterance ends
 LATENCY_BUCKETS_MS = (5.0, 10.0, 25.0, 50.0, 100.0, 150.0, float("inf"))
 
 
@@ -86,6 +96,10 @@ class AudioThread(threading.Thread):
         self._stop_event = threading.Event()
         self._reset_gate = threading.Event()
         self._client_id = ""
+        self._call_lock = threading.Lock()
+        self._in_call = False
+        self._speech_ended_at: float | None = None
+        self.held_chunks = 0  # forward attempts deferred because the user was speaking
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zordon-stt")
         # Playback estimate.
         self._playback_until = 0.0
@@ -111,18 +125,43 @@ class AudioThread(threading.Thread):
             self.join(timeout)
         self._executor.shutdown(wait=False)
 
-    def call_started(self, client_id: str) -> None:
-        self._client_id = client_id
+    def call_started(self, client_id: str) -> bool:
+        """Make ``client_id`` the caller. Returns False (and changes nothing) while a
+        different client is in the call; the same client may start again."""
+        with self._call_lock:
+            if self._in_call and self._client_id and self._client_id != client_id:
+                return False
+            self._client_id = client_id
+            self._in_call = True
+        self._reset_gate.set()
+        return True
+
+    def call_ended(self, client_id: str | None = None) -> None:
+        with self._call_lock:
+            if not self._is_caller(client_id):
+                return
+            self._in_call = False
         self._reset_gate.set()
 
-    def call_ended(self) -> None:
+    def call_paused(self, client_id: str | None = None) -> None:
+        with self._call_lock:
+            if not self._is_caller(client_id):
+                return
         self._reset_gate.set()
 
-    def call_paused(self) -> None:
+    def call_resumed(self, client_id: str | None = None) -> None:
+        with self._call_lock:
+            if not self._is_caller(client_id):
+                return
         self._reset_gate.set()
 
-    def call_resumed(self) -> None:
-        self._reset_gate.set()
+    def _is_caller(self, client_id: str | None) -> bool:
+        """Under ``_call_lock``. ``None`` (legacy callers) means the current caller."""
+        return client_id is None or not self._client_id or client_id == self._client_id
+
+    @property
+    def in_call(self) -> bool:
+        return self._in_call
 
     @property
     def playback_active(self) -> bool:
@@ -155,6 +194,9 @@ class AudioThread(threading.Thread):
             "utterances_sent": self.utterances_sent,
             "pending_transcriptions": self.pending_transcriptions,
             "playback_active": self._playback_active,
+            "held_chunks": self.held_chunks,
+            "in_call": self._in_call,
+            "client_id": self._client_id,
         }
 
     # ---- loop ---------------------------------------------------------------------
@@ -189,6 +231,13 @@ class AudioThread(threading.Thread):
     # ---- playback -----------------------------------------------------------------
 
     def _forward_playback(self) -> bool:
+        if self._user_speaking():
+            # Leave the chunks queued: forwarding now would talk over the user and leave
+            # no playback to barge into a second time. Stale generations are dropped when
+            # the hold lifts.
+            if not self.bus.playback.empty():
+                self.held_chunks += 1
+            return False
         did = False
         for _ in range(MAX_FORWARD_PER_LOOP):
             try:
@@ -212,6 +261,17 @@ class AudioThread(threading.Thread):
         self.bus.publish(chunk)
         self.forwarded_chunks += 1
         self._set_playback_active(True, now)
+
+    def _user_speaking(self) -> bool:
+        if self.gate.speaking:
+            return True
+        ended = self._speech_ended_at
+        if ended is None:
+            return False
+        if self._clock() - ended < HOLD_AFTER_SPEECH_S:
+            return True
+        self._speech_ended_at = None
+        return False
 
     def _refresh_playback_state(self) -> None:
         now = self._clock()
@@ -264,13 +324,16 @@ class AudioThread(threading.Thread):
             if self._playback_active:
                 self._barge_in(now, arrived)
         elif event.kind is GateKind.END:
+            self._speech_ended_at = now
             self._submit_transcription(event.utterance_pcm or b"", event.duration_s)
 
     def _tick_gate(self) -> None:
         if not self.gate.speaking:
             return
-        event = self.gate.tick(self._clock())
+        now = self._clock()
+        event = self.gate.tick(now)
         if event.kind is GateKind.END:
+            self._speech_ended_at = now
             self._submit_transcription(event.utterance_pcm or b"", event.duration_s)
 
     # ---- barge-in -----------------------------------------------------------------

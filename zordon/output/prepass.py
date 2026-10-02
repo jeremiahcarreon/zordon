@@ -337,7 +337,7 @@ _INPUT_BOX = re.compile(r"^❯(?: |$)")
 _USER_ECHO = re.compile(r"^❯ (?P<text>\S.*)$")
 _EXIT_LINES = re.compile(r"^\s*(?:Resume this session with:|claude --resume [0-9a-f-]{36})\s*$")
 _SHELL_PROMPT = re.compile(r"^[\w.\-]+@[\w.\-]+:\S*[$#](?:\s|$)")
-_SPINNER = re.compile(r"^\s*[·✢*✶✻✽] [A-Z][a-zé]+…(?: \(.*\))?\s*$")
+_SPINNER = re.compile(r"^\s*[^\s●❯⎿▎\-] [A-Z][^\s…(]+…(?: \(.*\))?\s*$")
 _DONE = re.compile(
     r"^\s*✻ (?P<verb>[A-Z][a-zé]+) for (?P<dur>\d+(?:m \d+)?s|\d+m) · done (?P<clock>\d{1,2}:\d{2} [AP]M)\s*$"
 )

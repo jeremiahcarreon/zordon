@@ -49,8 +49,10 @@ was written to the real `~/.claude`.
   `UserPromptSubmit` and `Stop`. Every handler exits 0 and prints nothing, so no
   hook can ever block or alter Claude Code's behaviour.
 * The secret is `AgentAPI.hook_secret`, generated per Zordon process and distinct
-  from the browser token; `POST /hooks/claude` accepts only loopback peers,
-  checks the header with a constant-time compare, and forwards the payload to
+  from the browser token; `POST /hooks/claude` accepts only direct loopback peers
+  (a request carrying `CF-Connecting-IP`/`X-Forwarded-For`, i.e. one that came
+  through the tunnel, is refused), caps the body at 64 KB, checks the header with a
+  constant-time compare, and forwards the payload to
   `SessionControl.hook_event()`, which matches it to a session by `session_id`.
 * Hook events are hints to the state machine: `permission_prompt` makes the next
   poll re-run prompt detection and, if the regex still finds nothing, raises the
@@ -68,7 +70,8 @@ was written to the real `~/.claude`.
 ## Open
 
 * Whether `Notification` accepts `type: "http"` was not tested; `command` + `curl`
-  is used regardless. `curl` becomes a soft dependency reported by `zordon doctor`.
+  is used regardless. `curl` is a soft dependency: `zordon doctor` reports WARN
+  ("hook signals are disabled") when it is missing.
 * The delay before `idle_prompt` fires is undocumented.
 * A `PermissionRequest` observer that exits 0 with empty stdout would be inert and
   would carry `tool_name` and `tool_input` for a richer spoken prompt. It is not

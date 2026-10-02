@@ -158,6 +158,7 @@ class Hello(_Strict):
     providers: dict[str, str]
     tts_sample_rate: int
     tunnel_url: str | None = None
+    muted: bool = False  # the agent's mute state, so a fresh client renders the toggle right
 
 
 class SessionSummary(_Strict):
@@ -190,6 +191,9 @@ class SpeechOut(_Strict):
 class FlushOut(_Strict):
     type: Literal["flush"] = "flush"
     generation: int
+    # The sentence that was playing when the barge-in happened, when known, so the
+    # client can mark it (and every unfinished sentence after it) as cut off.
+    sentence_id: int | None = None
 
 
 class TranscriptOut(_Strict):

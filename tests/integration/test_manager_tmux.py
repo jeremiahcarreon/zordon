@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import queue
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -331,3 +332,97 @@ def test_two_sessions_only_one_focused_and_delete_kills_pane(manager, private_tm
     assert mgr.sessions[a].target == ta
     with pytest.raises(Exception):  # noqa: B017 - UnknownSession or SessionError
         mgr.resume("11111111-2222-4333-8444-555555555555")
+
+
+SEEDED_ENV = {
+    "CLAUDECODE": "1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli",
+    "CLAUDE_CODE_SESSION_ID": "11111111-2222-4333-8444-555555555555",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID": "session_x",
+    "CLAUDE_CODE_MESSAGING_SOCKET": "/run/x.sock",
+    "CLAUDE_CODE_MESSAGING_TOKEN": "tok",
+    "CLAUDE_PID": "4242",
+    "CLAUDE_JOB_DIR": "/tmp/jobs",
+    "CLAUDE_CODE_CHILD_SESSION": "1",
+    "CLAUDE_CODE_EXECPATH": "/x/claude",
+    "ANTHROPIC_API_KEY": "sk-ant-integration-probe",
+    "OPENAI_API_KEY": "sk-openai-integration-probe",
+    "FOO_API_KEY": "foo",
+    "GITHUB_TOKEN": "ghp_probe",
+    "DEPLOY_SECRET": "s",
+}
+
+
+def _leaks(env: dict[str, str]) -> list[str]:
+    return sorted(
+        k for k in env if k in SEEDED_ENV or k.startswith(("CLAUDE_CODE", "CLAUDECODE")) or k.endswith("_API_KEY")
+    )
+
+
+def test_pane_environment_has_no_claude_markers_or_api_keys(
+    private_tmux: Tmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """RR-7 / SEC-2: with every secret and nesting marker set in the parent process, and even a
+    tmux server whose global environment already carries them, no Claude Code pane sees them."""
+    for k, v in SEEDED_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    t = private_tmux
+    # Start the private server from a *dirty* environment, bypassing Tmux.run's scrub, the way a
+    # user's pre-existing server (started from inside Claude Code) would look.
+    dirty = {**os.environ, **SEEDED_ENV}
+    subprocess.run(
+        [t.binary, "-L", t.socket, "new-session", "-d", "-s", "seed", "-x", "80", "-y", "20", "sleep 60"],
+        check=True, env=dirty, timeout=5,
+    )
+    server_env = t.run("show-environment", "-g")
+    assert "ANTHROPIC_API_KEY=" in server_env and "CLAUDECODE=" in server_env  # the hostile setup holds
+
+    claude_home = tmp_path / "claude-home"
+    (claude_home / "projects").mkdir(parents=True)
+    (claude_home / "sessions").mkdir()
+    project = tmp_path / "proj"
+    project.mkdir()
+    env_file = tmp_path / "pane-env.txt"
+    env_file2 = tmp_path / "pane-env-2.txt"
+
+    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None) -> list[str]:
+        jsonl = discovery.jsonl_path_for(str(project), session_id, claude_home)
+        # The real builders' scrub prefix in front of the fake TUI, which dumps its environment first.
+        return discovery.env_scrub_prefix() + [
+            "sh", "-c", f'env > {env_file}; exec "$0" "$@"', PYTHON, str(FAKE), str(jsonl),
+        ]
+
+    monkeypatch.setattr(discovery, "new_session_command", fake_command)
+    cfg = Config()
+    cfg.output.poll_interval_ms = 100
+    bus = Bus()
+    mgr = SessionManager(bus, cfg, t, claude_home=claude_home, zordon_home=tmp_path / "zh", tmux_session="zordon")
+    mgr.start_thread()
+    try:
+        sid = mgr.start(str(project))
+        target = mgr.sessions[sid].target
+        Events(bus).wait_state(sid, SessionState.IDLE, timeout=10)
+        assert "zordon" in t.run("list-sessions")
+        windows = [ln for ln in t.run("list-windows", "-t", "=zordon").splitlines() if ln.strip()]
+        assert len(windows) == 1  # RR-8: the Claude window is the session's first and only window
+
+        # Layer 3 (env -u on the command line): the pane process itself.
+        _wait(lambda: env_file.exists() and env_file.read_text().strip() != "", what="pane env dump")
+        pane_env = dict(line.partition("=")[::2] for line in env_file.read_text().splitlines() if "=" in line)
+        assert pane_env.get("PATH")
+        assert _leaks(pane_env) == []
+        assert pane_env.get("CLAUDE_CONFIG_DIR") == str(claude_home)  # kept: claude must find the store
+        live = t.pane_environment(target)
+        assert live.get("PATH") and _leaks(live) == []
+
+        # Layer 2 (set-environment -r on the session): a later window with no prefix at all.
+        probe = t.new_window("zordon", "probe", str(project), ["sh", "-c", f"env > {env_file2}; sleep 30"])
+        _wait(lambda: env_file2.exists() and env_file2.read_text().strip() != "", what="probe env dump")
+        probe_env = dict(line.partition("=")[::2] for line in env_file2.read_text().splitlines() if "=" in line)
+        assert probe_env.get("PATH") and _leaks(probe_env) == []
+        shown = t.run("show-environment", "-t", "=zordon")
+        assert "-ANTHROPIC_API_KEY" in shown.split() and "-CLAUDECODE" in shown.split()
+        t.kill_window(probe)
+    finally:
+        mgr.stop()

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests import fixtures_store as fs
+from zordon.session import permissions as P
 from zordon.session.permissions import (
     MODE_LABELS,
     TAP_SWITCHABLE,
@@ -43,12 +44,25 @@ def test_settings_paths_order(homes):
     assert settings_paths(claude_home, None) == [claude_home / "settings.json"]
 
 
-def test_no_files_gives_default_mode_and_no_rules(homes):
+def test_no_files_gives_unknown_mode_and_no_rules(homes):
+    """RR-2: Claude Code's built-in default differs between releases (2.1.x starts in
+    auto), so nothing names a mode when no settings file does."""
     claude_home, project = homes
     s = read_settings(claude_home, project)
-    assert s.default_mode == "default"
+    assert s.default_mode is None
+    assert P.BUILTIN_DEFAULT_MODE is None
     assert s.allow == [] and s.deny == [] and s.ask == []
     assert not s.bypass_configured and s.sources == [] and s.errors == []
+    sentence = summary_sentence(s, None)
+    assert sentence.startswith(P.UNKNOWN_MODE_TEXT)
+    assert "default mode" not in sentence and "auto mode" not in sentence
+    assert "no allow or deny rules" in sentence
+    assert "switch to default, accept edits or plan mode" in sentence
+    # The observed mode always wins over the configured one.
+    assert summary_sentence(s, "auto").startswith("This session is in auto mode with no allow or deny rules")
+    assert summary_sentence(s, "manual").startswith("This session is in default mode")
+    fs.write_settings(project / ".claude" / "settings.local.json", {"permissions": {"defaultMode": "plan"}})
+    assert summary_sentence(read_settings(claude_home, project), None).startswith("This session is in plan mode")
 
 
 def test_merge_scalars_later_wins_lists_concatenate(homes):

@@ -127,7 +127,7 @@ def stack(private_tmux: Tmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app = create_app(agent, static_dir=web)
     agent.start()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, client=("127.0.0.1", 40000)) as client:
             assert client.post("/auth", json={"token": TOKEN}).status_code == 200
             yield agent, client, project, claude_home
     finally:
@@ -236,7 +236,7 @@ def test_voice_interface_end_to_end(stack):
         # ---- opening burst: hello, sessions, no focused session yet
         hello = s.wait(lambda m: m["type"] == "hello", what="hello")
         assert hello["focused_session"] is None
-        assert hello["providers"] == {"stt": "fake", "tts": "silence", "normalizer": "passthrough", "router": "keyword"}
+        assert {k: hello["providers"][k] for k in ("stt", "tts", "normalizer", "router")} == {"stt": "fake", "tts": "silence", "normalizer": "passthrough", "router": "keyword"}
         assert hello["tts_sample_rate"] == 16000
         assert TOKEN not in json.dumps(hello)
         sessions = s.wait(lambda m: m["type"] == "sessions", what="sessions")
@@ -251,11 +251,12 @@ def test_voice_interface_end_to_end(stack):
         s.wait_state(sid, "working", since=mark)
         s.wait_state(sid, "idle", since=mark, timeout=15)
         summary = s.wait(
-            lambda m: m["type"] == "transcript" and m["kind"] == "spoken" and "keep these settings" in m["text"],
+            lambda m: m["type"] == "transcript" and m["kind"] == "spoken" and "say switch to" in m["text"],
             since=mark,
             what="permission summary",
         )
         assert summary["session_id"] == sid and "default mode" in summary["text"]
+        assert "?" not in summary["text"]  # a statement: nothing owns a yes/no answer here
         s.wait(lambda m: m["type"] == "speech" and m["sentence_id"] == summary["sentence_id"], since=mark, what="summary audio")
         jsonl = discovery.jsonl_path_for(str(project), sid, claude_home)
         _wait(lambda: agent.manager.sessions[sid].jsonl is not None, what="jsonl located")
@@ -335,6 +336,16 @@ def test_voice_interface_end_to_end(stack):
         assert settings["verbosity"] == "minimal"
         assert agent.settings()["muted"] is True
         s.wait(lambda m: m["type"] == "flush", since=mark, what="flush on mute")
+        # CONC-12: the acknowledgement is still heard, after the flush, under the new generation.
+        ack = s.wait(
+            lambda m: m["type"] == "transcript" and m["kind"] == "spoken" and m["text"] == "Muted.",
+            since=mark,
+            what="mute ack row",
+        )
+        ack_audio = s.wait(
+            lambda m: m["type"] == "speech" and m["sentence_id"] == ack["sentence_id"], since=mark, what="mute ack audio"
+        )
+        assert ack_audio["generation"] == agent.bus.generation
         time.sleep(0.3)
         assert user_records(jsonl) == before
 
@@ -350,7 +361,8 @@ def test_voice_interface_end_to_end(stack):
         assert answer["text"].strip()
         time.sleep(0.5)
         assert user_records(jsonl) == before
-        assert not any(m["type"] == "speech" for m in s.all()[mark:])  # muted: rows, no audio
+        # muted: rows, no audio (the "Muted." ack is the one sentence allowed through)
+        assert not any(m["type"] == "speech" and m["sentence_id"] != ack["sentence_id"] for m in s.all()[mark:])
 
         # ---- unmute, then barge in: speech frames during playback flush the queue
         mark = s.mark()
@@ -399,7 +411,8 @@ def test_hook_endpoint_feeds_the_session_manager(stack):
         assert settings_file is not None and settings_file.is_file()
         hooks = json.loads(settings_file.read_text())["hooks"]
         assert set(hooks) == {"Notification", "UserPromptSubmit", "Stop"}
-        assert agent.hook_secret in hooks["Stop"][0]["hooks"][0]["command"]
+        assert agent.hook_secret not in settings_file.read_text()
+        assert agent.hook_secret in discovery.hook_curl_config_path(settings_file).read_text()
         bad = client.post("/hooks/claude", json={"session_id": sid, "hook_event_name": "Stop"}, headers={"X-Zordon-Hook-Secret": "nope"})
         assert bad.status_code == 403
         ok = client.post(

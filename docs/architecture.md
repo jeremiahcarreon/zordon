@@ -12,7 +12,7 @@ One package, `zordon`, with a subpackage per concern. (Decision record:
 
 ```
 zordon/
-  cli.py                 zordon serve | doctor | token show | sessions
+  cli.py                 zordon serve | doctor | token show|rotate | sessions
   app.py                 Agent: builds config, bus, threads; start/stop
   config.py              config.toml dataclasses, first-run token, validation
   paths.py               ZORDON_HOME / CLAUDE_CONFIG_DIR resolution
@@ -122,8 +122,11 @@ class Tmux:
 def encode_project_dir(cwd: str) -> str
 def list_sessions(claude_home: Path, tmux: Tmux | None) -> list[SessionInfo]
 def find_session(session_id: str, ...) -> SessionInfo | None
-def resume_command(session_id: str, permission_mode: str | None) -> list[str]   # never contains a bypass flag
-def new_session_command(cwd: str, permission_mode: str | None) -> list[str]
+def resume_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None) -> list[str]   # never contains a bypass flag
+def new_session_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None) -> list[str]  # session_id is the UUID the new session gets; the pane's cwd is set by tmux
+def hook_settings_json(port: int, secret: str) -> str          # Notification/UserPromptSubmit/Stop hooks for --settings
+def hook_command(port: int, secret: str) -> str                # the curl line those hooks run
+def write_hook_settings(path: Path, port: int, secret: str) -> Path   # 0600 settings file per session
 
 # session/screen.py
 @dataclass class ScreenDiff: new_lines: list[str]; live_region: list[str]; changed: bool
@@ -131,7 +134,7 @@ def diff_captures(prev: list[str], curr: list[str], live_region_hint: int) -> Sc
 def strip_ansi(s: str) -> str
 
 # session/prompts.py
-PROMPTS_VERSION = "claude-code-2.1.x"
+PROMPTS_VERSION = "claude-code-2.1.287"
 @dataclass class PromptMatch: kind: PromptKind; title: str; options: list[str]; raw_lines: list[str]; confidence: float
 def detect_prompt(lines: list[str]) -> PromptMatch | None   # last ~25 pane lines
 def is_idle_prompt(lines: list[str]) -> bool                  # input box visible, no spinner
@@ -173,9 +176,12 @@ class DispatcherThread(threading.Thread): __init__(bus, config, router, session_
 class TranscriptStore: __init__(db_path); add_raw(session_id, text, ts, source) -> int; add_spoken(...) -> int; link(spoken_id, raw_ids); mark_unspoken(sentence_id); tail(session_id, n) -> list[TranscriptRow]; raw_for(sentence_id) -> list[str]
 # transcript/redaction.py
 def redact(text: str) -> tuple[str, bool]
+def redact_pair(prev: str | None, curr: str) -> tuple[str, bool]   # curr masked knowing the previous pane line (hard-wrapped keys)
 
 # transport/server.py
 def create_app(agent) -> FastAPI
+# transport/sanitize.py
+def sanitize_keystrokes(text: str) -> str    # strips C0/C1 controls and zero-width/bidi format characters before text reaches the manager
 # transport/tunnel.py
 class Tunnel: start() -> str (url); stop(); provider: cloudflared | ngrok
 ```
@@ -187,7 +193,10 @@ class Tunnel: start() -> str (url); stop(); provider: cloudflared | ngrok
 * `commands.COMMANDS` is the only set the router may select from; `dispatcher` rejects anything else.
 * Permission prompts are never filtered by verbosity and are always spoken.
 * In `AWAITING_PERMISSION`, only `yes_no()` at >= `voice.yes_no_confidence` moves the session; "always allow" wording is refused by voice.
-* Server refuses to start when `bind` is not loopback and no token is set; under `--tunnel` the idle disconnect and rate limit are forced on.
+* Server refuses to start when `bind` is not loopback and no token is set; under `--tunnel` the idle disconnect and rate limit are forced on (the idle timer counts only non-`ping` client messages).
+* The tunnel child never sees a provider key: `transport/tunnel.py` starts it with `*_API_KEY`, `*_TOKEN`, `*_SECRET` and provider-prefixed variables removed from the environment.
+* `POST /hooks/claude` accepts only direct loopback peers (no proxy headers) and at most 64 KB; `POST /upload` and `/logout` apply the same-origin check the WebSocket uses; uploads never follow a symlinked `.zordon` or `.zordon/uploads`.
+* WebSocket command handlers run on a worker thread (`run_in_executor`) with a timeout, so a blocking `SessionControl` call never stalls audio or flushes for any client.
 * API keys never appear in logs, in `hello`, in `settings` or in any transcript row.
 * Lines matching `transcript/redaction.py` patterns are masked before the normalizer, TTS or the client see them.
 
@@ -238,7 +247,8 @@ class AgentAPI(Protocol):
     def set_verbosity(self, level: str) -> None
     def set_tool_chatter(self, enabled: bool) -> None
     def set_muted(self, muted: bool) -> None
-    def set_provider(self, kind: str, name: str) -> None
+    def set_provider(self, kind: str, name: str) -> None    # stt|tts|normalizer|router
+    def set_voice(self, name: str) -> None                   # optional; the transport maps set_provider {kind: voice} to it
     def submit_text(self, text: str, client_id: str) -> None       # typed input -> bus.utterances (router)
     def call_state(self, client_id: str, action: str) -> None      # start/end/pause/resume
     def repeat_last(self) -> None

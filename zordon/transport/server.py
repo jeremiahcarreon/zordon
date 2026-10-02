@@ -6,12 +6,14 @@ Routes:
 * ``POST /auth`` token -> session cookie (rate limited per IP)
 * ``POST /logout``
 * ``GET /healthz`` (no auth)
-* ``POST /hooks/claude`` Claude Code Notification hook, guarded by a per-process secret
-* ``POST /upload`` (cookie) file for the focused session's ``.zordon/uploads``
+* ``POST /hooks/claude`` Claude Code Notification hook: loopback peers only, guarded by
+  a per-process secret, body capped at 64 KB
+* ``POST /upload`` (cookie, same origin) file for the focused session's ``.zordon/uploads``
 * ``WS /ws`` (cookie) the client protocol, see ``docs/protocol.md``
 
-Under ``--tunnel`` the cookie is Secure, the idle disconnect and the rate limiter
-are forced on. The app refuses to build when ``server.bind`` is not loopback and
+Under ``--tunnel`` the cookie is Secure (it is also Secure whenever the request
+arrived over HTTPS, including ``X-Forwarded-Proto: https`` from a loopback proxy),
+the idle disconnect and the rate limiter are forced on. The app refuses to build when ``server.bind`` is not loopback and
 no token is configured.
 """
 
@@ -25,7 +27,7 @@ import json
 import logging
 import os
 import re
-import tempfile
+import secrets
 import threading
 import time
 import unicodedata
@@ -46,6 +48,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from zordon import __version__
 from zordon.config import LOOPBACK, Config, ConfigError
 from zordon.transport.auth import (
+    LOOPBACK_PEERS,
+    PROXY_IP_HEADERS,
     RateLimiter,
     TokenAuth,
     client_ip,
@@ -59,6 +63,7 @@ log = logging.getLogger("zordon.transport.server")
 UPLOAD_FILENAME_HEADER = "x-zordon-filename"
 HOOK_SECRET_HEADER = "x-zordon-hook-secret"
 WS_MAX_SIZE = 4 * 1024 * 1024
+HOOK_MAX_BYTES = 64 * 1024
 DEFAULT_IDLE_MINUTES = 30
 DEFAULT_RATE_LIMIT = 5
 # Runs of anything outside the safe set (whitespace and control chars included) collapse to one "_".
@@ -125,7 +130,13 @@ def create_app(
         value = request.cookies.get(auth.cookie_name)
         if not auth.validate_cookie(value):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="not authenticated")
+        require_same_origin(request)
         return value or ""
+
+    def require_same_origin(request: Request) -> None:
+        if not same_origin(request.headers):
+            log.warning("%s origin mismatch ip=%s", request.url.path, client_ip(request))
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="bad origin")
 
     def require_cookie_ws(websocket: WebSocket) -> str:
         """Raised before ``accept`` this becomes HTTP 403 on the upgrade request."""
@@ -177,12 +188,13 @@ def create_app(
             path=spec.path,
             httponly=spec.httponly,
             samesite=spec.samesite,
-            secure=spec.secure,
+            secure=spec.secure or request_is_https(request),
         )
         return resp
 
     @app.post("/logout")
     async def logout(request: Request) -> Any:
+        require_same_origin(request)
         auth.revoke(request.cookies.get(auth.cookie_name))
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(auth.cookie_name, path="/")
@@ -190,12 +202,19 @@ def create_app(
 
     @app.post("/hooks/claude")
     async def hooks_claude(request: Request) -> Any:
+        # The only legitimate caller is the curl in the pane's hook settings, on this
+        # machine. Tunnel traffic arrives on loopback too but carries the proxy headers.
+        if not is_direct_loopback(request):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
         presented = request.headers.get(HOOK_SECRET_HEADER, "")
         expected = str(getattr(agent, "hook_secret", "") or "")
         if not expected or not hmac.compare_digest(presented.encode(), expected.encode()):
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > HOOK_MAX_BYTES:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="body too large")
         try:
-            payload = json.loads(await request.body() or b"{}")
+            payload = json.loads(await _read_capped(request, HOOK_MAX_BYTES) or b"{}")
         except ValueError:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="body must be JSON") from None
         if not isinstance(payload, dict):
@@ -211,7 +230,11 @@ def create_app(
         name, data = await read_upload(request, UPLOAD_MAX_BYTES)
         safe = sanitize_filename(name)
         dest = Path(agent.upload_path(safe))
-        write_atomic(dest, data)
+        try:
+            write_atomic(dest, data)
+        except UploadDirError as e:
+            log.warning("upload refused: %s", e)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail=str(e)) from None
         log.info("stored upload %s (%d bytes)", dest.name, len(data))
         return {"path": str(dest), "name": dest.name, "size": len(data)}
 
@@ -276,13 +299,17 @@ def _packaged_web():
 
 
 def build_csp(host: str) -> str:
-    """Only our own origin, our inline script/style, our WebSocket, and data/blob audio."""
+    """Only our own origin, our WebSocket, and data/blob audio and images.
+
+    The client has no inline script (``index.html`` loads three ``<script defer src>``
+    files; ``tests/test_web_static.py`` checks this), so ``script-src`` is ``'self'``
+    alone. Styles stay ``'unsafe-inline'`` for the stylesheet's own needs only."""
     connect = "'self'"
     if host:
         connect += f" ws://{host} wss://{host}"
     return (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         f"connect-src {connect}; "
         "img-src 'self' data: blob:; "
@@ -340,6 +367,31 @@ def same_origin(headers: Headers) -> bool:
         return False
     netloc = origin.split("://", 1)[-1].split("/", 1)[0]
     return netloc.lower() == host.lower()
+
+
+def is_direct_loopback(request: Request) -> bool:
+    """True only when the TCP peer is loopback and no proxy header says otherwise.
+
+    cloudflared/ngrok connect from loopback but add ``CF-Connecting-IP`` /
+    ``X-Forwarded-For``; uvicorn's proxy middleware may also have rewritten the
+    peer already. Either way a tunnelled request is not a direct loopback one.
+    """
+    peer = request.client.host if request.client else ""
+    if peer not in LOOPBACK_PEERS:
+        return False
+    return not any(request.headers.get(h) for h in PROXY_IP_HEADERS)
+
+
+def request_is_https(request: Request) -> bool:
+    """The request arrived over HTTPS, directly or through a loopback proxy that
+    says so with ``X-Forwarded-Proto: https``. Only a loopback peer's header counts."""
+    if request.url.scheme == "https":
+        return True
+    peer = request.client.host if request.client else ""
+    if peer not in LOOPBACK_PEERS:
+        return False
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    return proto == "https"
 
 
 # ---- uploads -------------------------------------------------------------------------------
@@ -426,13 +478,38 @@ def parse_multipart_file(content_type: str, body: bytes) -> tuple[str, bytes | N
     return filename, payload
 
 
+class UploadDirError(OSError):
+    """The upload directory (or its ``.zordon`` parent) is a symlink or not a directory."""
+
+
+def check_upload_dir(folder: Path) -> None:
+    """Refuse to write through a symlink planted in the project (``.zordon`` or
+    ``.zordon/uploads``). Raises :class:`UploadDirError`."""
+    for p in (folder, folder.parent):
+        if p.is_symlink():
+            raise UploadDirError(f"{p} is a symlink; refusing to write uploads through it")
+    try:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as e:
+        raise UploadDirError(f"{folder} is not a directory: {e.strerror}") from e
+    os.close(fd)
+
+
 def write_atomic(dest: Path, data: bytes) -> None:
+    """Write ``data`` to ``dest`` via a temp file in the same directory, following no
+    symlink at any step: the directory is checked, the temp file is created with
+    ``O_NOFOLLOW|O_EXCL``, and ``os.replace`` replaces a symlink rather than its target."""
+    for p in (dest.parent, dest.parent.parent):
+        if p.is_symlink():
+            raise UploadDirError(f"{p} is a symlink; refusing to write uploads through it")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".upload-")
+    check_upload_dir(dest.parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    tmp_name = str(dest.parent / f".upload-{secrets.token_hex(8)}")
+    fd = os.open(tmp_name, flags, 0o600)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, dest)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -503,7 +580,12 @@ def serve_in_thread(
 
 
 __all__ = [
+    "HOOK_MAX_BYTES",
     "UPLOAD_MAX_BYTES",
+    "UploadDirError",
+    "check_upload_dir",
+    "is_direct_loopback",
+    "request_is_https",
     "SecurityHeadersMiddleware",
     "build_csp",
     "check_bind",

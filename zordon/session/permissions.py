@@ -12,6 +12,12 @@ Mode names: Claude Code's are ``default`` (``manual`` in the status row and in
 ``bypassPermissions``. Voice may switch between the first three; ``auto`` and
 ``dontAsk`` are tap-only; ``bypassPermissions`` is never a target (``ValueError``)
 and is only ever reported.
+
+The mode Claude Code uses when no settings file and no flag names one is its
+*built-in* default, which has changed between releases (2.1.x starts in ``auto``).
+It is therefore not assumed here: ``PermissionSummary.default_mode`` is ``None``
+when no file sets one, and ``summary_sentence`` only names a mode it was given
+(the status row or the jsonl ``permission-mode`` record, via the manager).
 """
 
 from __future__ import annotations
@@ -47,11 +53,15 @@ FORBIDDEN_TARGET_MODES: frozenset[str] = frozenset({"bypassPermissions"})
 MODE_CYCLE: tuple[str, ...] = ("default", "acceptEdits", "plan")
 
 RULE_LISTS = ("allow", "ask", "deny")
+# Claude Code's built-in default when nothing names a mode: not known to Zordon (it
+# differs between releases), so it is never assumed.
+BUILTIN_DEFAULT_MODE: str | None = None
+UNKNOWN_MODE_TEXT = "I can't tell which permission mode this session is in yet"
 
 
 @dataclass(slots=True)
 class PermissionSummary:
-    default_mode: str  # effective permissions.defaultMode, "default" when none is set
+    default_mode: str | None = BUILTIN_DEFAULT_MODE  # permissions.defaultMode; None when no file sets one
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     ask: list[str] = field(default_factory=list)
@@ -80,8 +90,7 @@ def settings_paths(claude_home: Path, project_dir: Path | str | None) -> list[Pa
 
 def read_settings(claude_home: Path, project_dir: Path | str | None) -> PermissionSummary:
     """Merge the user, project and local settings into one PermissionSummary."""
-    summary = PermissionSummary(default_mode="default")
-    mode_set = False
+    summary = PermissionSummary()
     for path in settings_paths(claude_home, project_dir):
         data = _load(path, summary)
         if data is None:
@@ -102,15 +111,12 @@ def read_settings(claude_home: Path, project_dir: Path | str | None) -> Permissi
                 summary.bypass_configured = True
                 summary.bypass_sources.append(path)
             summary.default_mode = MODE_LABELS.get(mode, mode)
-            mode_set = True
         if perms.get("disableBypassPermissionsMode") == "disable":
             summary.disable_bypass = True
         if data.get("skipDangerousModePermissionPrompt") is True:
             summary.skip_dangerous_prompt = True
         if data.get("disableAllHooks") is True:
             summary.hooks_disabled = True
-    if not mode_set:
-        summary.default_mode = "default"
     return summary
 
 
@@ -144,23 +150,40 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
-def summary_sentence(summary: PermissionSummary, active_mode: str | None = None) -> str:
-    """One spoken sentence about the active mode and the rule counts, with the switch hint."""
-    mode = MODE_LABELS.get(active_mode, active_mode) if active_mode else summary.default_mode
-    mode = mode or "default"
-    label = mode_label(mode)
+def rules_phrase(summary: PermissionSummary) -> str:
+    """``"1 allow rule and 28 deny rules"`` / ``"no allow or deny rules"``."""
     counts = summary.rule_counts
     parts = [f"{counts['allow']} allow rule" + ("" if counts["allow"] == 1 else "s")]
     parts.append(_plural(counts["deny"], "deny rule"))
     if counts["ask"]:
         parts.append(_plural(counts["ask"], "ask rule"))
     if not any(counts.values()):
-        rules = "no allow or deny rules"
-    elif len(parts) == 2:
-        rules = f"{parts[0]} and {parts[1]}"
-    else:
-        rules = f"{parts[0]}, {parts[1]} and {parts[2]}"
+        return "no allow or deny rules"
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return f"{parts[0]}, {parts[1]} and {parts[2]}"
 
+
+def summary_sentence(summary: PermissionSummary, active_mode: str | None = None) -> str:
+    """One spoken sentence about the active mode and the rule counts, with the switch hint.
+
+    ``active_mode`` is what the manager observed (status row or jsonl record);
+    without it the configured ``defaultMode`` is used, and when no file sets one
+    either the sentence says so instead of guessing Claude Code's built-in default.
+    """
+    mode = MODE_LABELS.get(active_mode, active_mode) if active_mode else summary.default_mode
+    rules = rules_phrase(summary)
+    if not mode:
+        others = [mode_label(m) for m in VOICE_SWITCHABLE]
+        sentence = (
+            f"{UNKNOWN_MODE_TEXT}; it has {rules}. "
+            f"Say switch to {others[0]}, {others[1]} or {others[2]} mode to set it."
+        )
+        if summary.bypass_configured:
+            where = ", ".join(_short_source(p) for p in summary.bypass_sources) or "a settings file"
+            sentence += f" Bypass permissions is configured in {where}; Zordon never switches to it."
+        return sentence
+    label = mode_label(mode)
     if mode in FORBIDDEN_TARGET_MODES:
         sentence = (
             f"This session is in {label} mode, so Claude Code will not ask before acting; "

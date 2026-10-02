@@ -49,8 +49,8 @@ long text is about half of it. There is no per-clause streaming inside a sentenc
 **Voices.** `voices-v1.0.bin` holds 54 styles. English: `af_alloy af_aoede af_bella
 af_heart af_jessica af_kore af_nicole af_nova af_river af_sarah af_sky` and `am_adam
 am_echo am_eric am_fenrir am_liam am_michael am_onyx am_puck am_santa` (American,
-`lang="en-us"`); `bf_alice bf_emma bf_isabella bf_lily` and `bm_daniel bm_fable
-bm_george bm_lewis` (British, `lang="en-gb"`). The rest are Spanish (`ef_`/`em_`),
+`lang="en-us"`); `bf_alice bf_emma bf_isabella bf_lily` and `bm_daniel bm_george
+bm_lewis` plus one more male voice (British, `lang="en-gb"`). The rest are Spanish (`ef_`/`em_`),
 French (`ff_`), Hindi (`hf_`/`hm_`), Italian (`if_`/`im_`), Japanese (`jf_`/`jm_`),
 Portuguese (`pf_`/`pm_`) and Chinese (`zf_`/`zm_`). Per-sentence cost is the same
 across voices (af_sarah 595 ms, am_adam 554 ms for the test sentence).

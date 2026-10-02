@@ -4,7 +4,9 @@ One ``SessionManager`` thread polls every attached session each
 ``config.output.poll_interval_ms``:
 
 1. ``tmux.pane_exists`` / ``alternate_on``: a missing pane is DETACHED; the
-   normal screen is only looked at for the trust dialog and the exit line;
+   normal screen is only looked at for the trust dialog and for signs that Claude
+   Code is gone (the exit line, a shell prompt, or having left the alternate
+   screen), which make the session DETACHED after one confirming poll;
 2. ``capture`` -> ``screen.parse_screen`` -> ``screen.diff_screens``: new content
    lines go to ``bus.pane_lines`` with ``source="pane"`` when the session has no
    jsonl (or ``output.source == "pane"``);
@@ -26,10 +28,18 @@ thread itself, the command runs inline.
 
 Keystrokes: literal text goes through ``Tmux.send_literal`` (control characters
 stripped, ``send-keys -l``) and Enter is a separate call. Menu navigation only
-ever uses ``Up``/``Down``/``Enter``/``Escape``/``BTab`` from the allowlist.
+ever uses ``Up``/``Down``/``Enter``/``Escape``/``BTab`` from the allowlist. No
+keystroke is sent while the pane is off the alternate screen (a shell would run
+the text as a command) unless the prompt on screen is the trust dialog.
 ``approve`` selects only the option labelled exactly ``Yes``; ``plan_approve``
 never selects the auto-mode option; ``set_permission_mode`` refuses
-``bypassPermissions`` and presses BTab again at once if that mode ever shows.
+``bypassPermissions``, steps past it a bounded number of times if it shows, and
+returns to the starting mode when the target is never reached.
+
+Launch: ``start``/``resume`` without an explicit mode pass ``--permission-mode
+default`` so a pane never comes up in Claude Code's built-in default (``auto`` in
+2.1.x). ``permission_summary`` speaks the mode that was actually observed (status
+row or jsonl record), waiting briefly for it instead of assuming one.
 """
 
 from __future__ import annotations
@@ -37,12 +47,14 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import uuid
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,6 +77,7 @@ from zordon.session.prompts import PromptMatch
 from zordon.session.screen import Screen, diff_screens, held_tail, parse_screen
 from zordon.session.state import Observation, next_state
 from zordon.session.tmux import Tmux, TmuxError, strip_control
+from zordon.transcript.redaction import redact
 
 log = logging.getLogger("zordon.session.manager")
 
@@ -77,10 +90,27 @@ REGISTRY_INTERVAL = 1.0  # seconds between registry status reads per session
 REGISTRY_WAITING_SCORE = 0.95
 PANE_TAIL_LINES = 200
 MAX_BTAB_PRESSES = 6
+MAX_BYPASS_STEPS = 2  # how often bypass may show in one switch before giving up
+MAX_STUCK_READS = 2  # status row unchanged after this many presses: the TUI is not reacting
 BTAB_SETTLE = 0.25  # seconds for the status row to redraw after Shift+Tab
 MENU_SETTLE = 0.3  # seconds between selecting a plan option and typing feedback
+DEFAULT_LAUNCH_MODE = "default"  # start/resume without an explicit mode never inherit auto
+MODE_OBSERVE_TIMEOUT = 2.0  # seconds permission_summary waits for the status row / jsonl record
+EXIT_CONFIRM_POLLS = 2  # normal-screen exit signs must hold for this many consecutive polls
+QUIET_IDLE_POLLS = 30  # 100 ms polls: three seconds of a quiet input box counts as idle
 STALL_TEXT = "Claude Code looks like it is waiting on something. The last lines were: "
 NO_CHANGE_TEXT = "I sent that, but nothing changed on screen."
+NO_TUI_TEXT = (
+    "Claude Code isn't on screen in that pane, so I won't type into it. Resume the session first."
+)
+TIMEOUT_DROPPED_TEXT = "The session thread was busy and that command was dropped; say it again."
+TIMEOUT_RUNNING_TEXT = (
+    "That is taking longer than usual; Claude Code may still carry it out, so wait before repeating it."
+)
+# A shell waiting for input: "user@host:~/dir$ ", "host% ", "# ", "(venv) user@host:~$ "...
+_SHELL_PROMPT_RE = re.compile(
+    r"^(?:\(\S+\)\s*)?(?:\S+@\S+:\S*|\S+:\S+|~\S*|/\S*|[A-Za-z][\w.-]*)?\s*[$#%]\s*$"
+)
 
 
 class SessionError(RuntimeError):
@@ -93,6 +123,23 @@ class SessionBusy(SessionError):
 
 class UnknownSession(SessionError):
     pass
+
+
+class CommandTimeout(SessionError):
+    """The session thread did not run the command in time; ``executed`` says whether it may
+    still run (``None``: it had already started and may complete) or was dropped (``False``)."""
+
+    def __init__(self, message: str, *, executed: bool | None) -> None:
+        super().__init__(message)
+        self.executed = executed
+
+
+def looks_like_shell_prompt(lines: list[str]) -> bool:
+    """Fallback for ``Screen.shell_prompt``: is the last non-blank line a bare shell prompt?"""
+    for line in reversed(lines):
+        if line.strip():
+            return bool(_SHELL_PROMPT_RE.match(line.rstrip()))
+    return False
 
 
 @dataclass(slots=True)
@@ -140,6 +187,7 @@ class Session:
     exit_notified: bool = False
     hook_hint: hooks.HookHint | None = None
     believed_prompt: PromptKind | None = None  # second/third-signal prompt the regex cannot see
+    quiet_polls: int = 0  # consecutive polls with a quiet input box and unchanged content
     echo_deadline: float | None = None
     echo_signature: tuple[Any, ...] | None = None
     registry_checked: float = 0.0
@@ -147,6 +195,7 @@ class Session:
     held_flushed: str | None = None
     seen_alternate: bool = False
     normal_signature: int | None = None
+    exit_polls: int = 0  # consecutive normal-screen polls that looked like Claude Code is gone
 
 
 class SessionManager(threading.Thread):
@@ -182,6 +231,11 @@ class SessionManager(threading.Thread):
         )
         self._stop_event = threading.Event()
         self._focused: str | None = None
+        self._refocused = False  # focus moved automatically; publish a Sessions snapshot
+        # Called after an automatic refocus (pane died, session deleted or exited) so
+        # every client's picker learns the new focus. The default builds the
+        # transport's Sessions snapshot; the agent may replace it.
+        self.publish_sessions: Callable[[], None] | None = None
         self.polls = 0
 
     # ---- thread ---------------------------------------------------------------------
@@ -220,22 +274,38 @@ class SessionManager(threading.Thread):
         while True:
             if item is not None:
                 fn, args, fut = item
-                try:
-                    fut.set_result(fn(*args))
-                except BaseException as e:  # noqa: BLE001 - hand every failure to the caller
-                    fut.set_exception(e)
+                if fut.set_running_or_notify_cancel():  # False: the caller gave up; never run it
+                    try:
+                        fut.set_result(fn(*args))
+                    except BaseException as e:  # noqa: BLE001 - hand every failure to the caller
+                        fut.set_exception(e)
             try:
                 item = self._commands.get_nowait()
             except queue.Empty:
                 return
 
-    def _call(self, fn: Callable[..., Any], *args: Any, timeout: float = COMMAND_TIMEOUT) -> Any:
-        """Run ``fn`` on the session thread and wait for its result."""
+    def _call(self, fn: Callable[..., Any], *args: Any, timeout: float | None = None) -> Any:
+        """Run ``fn`` on the session thread and wait for its result.
+
+        On timeout a command that has not started yet is cancelled, so a retry
+        never types the same keystrokes twice; one that is already running cannot
+        be stopped, and the ``CommandTimeout`` (and a spoken Notice) say so.
+        """
         if not self.is_alive() or threading.current_thread() is self:
             return fn(*args)
+        if timeout is None:
+            timeout = COMMAND_TIMEOUT
         fut: Future[Any] = Future()
         self._commands.put((fn, args, fut))
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except FutureTimeout:
+            dropped = fut.cancel()
+            text = TIMEOUT_DROPPED_TEXT if dropped else TIMEOUT_RUNNING_TEXT
+            log.warning("%s timed out after %.1fs (%s)", getattr(fn, "__name__", "command"), timeout,
+                        "dropped" if dropped else "still running")
+            self.bus.publish(Notice(text=text, level="warning", speak=True))
+            raise CommandTimeout(text, executed=False if dropped else None) from None
 
     def wake(self) -> None:
         """Make the thread poll now instead of at the next tick."""
@@ -274,6 +344,7 @@ class SessionManager(threading.Thread):
             return
 
         s.seen_alternate = True
+        s.exit_polls = 0
         prev = s.prev_screen
         new_lines = diff_screens(prev, screen)
         if s.held_flushed is not None:
@@ -302,6 +373,14 @@ class SessionManager(threading.Thread):
 
         watchdog = float(self.config.voice.idle_watchdog_seconds)
         idle = prompts.is_idle_prompt(screen)
+        # Stability rule: a quiet input box with unchanged content for a few polls is idle
+        # even when no completion row is visible (showTurnDuration off, unknown wording).
+        if prompts.input_quiet(screen) and not content_changed and not jsonl_lines:
+            s.quiet_polls += 1
+        else:
+            s.quiet_polls = 0
+        if not idle and s.quiet_polls >= QUIET_IDLE_POLLS and match is None and s.believed_prompt is None:
+            idle = True
         spinning = prompts.is_working(screen)
         working = spinning and since < watchdog
         score, override = self._second_opinions(s, match, now)
@@ -319,7 +398,14 @@ class SessionManager(threading.Thread):
         self._apply(s, obs, now, match, watchdog=0.0 if override else watchdog, screen=screen)
 
     def _poll_normal_screen(self, s: Session, screen: Screen, jsonl_lines: int, now: float) -> None:
-        """The pane is not on the alternate screen: shell, trust dialog or the exit line."""
+        """The pane is not on the alternate screen: shell, trust dialog or the exit line.
+
+        Claude Code is treated as gone when the resume line is on screen, or (after
+        ``EXIT_CONFIRM_POLLS`` consecutive polls) when the pane shows a shell prompt
+        or has left the alternate screen it was on before, with no trust dialog up.
+        Without this a crashed or never-started ``claude`` leaves a bare shell that
+        would receive voice text as commands.
+        """
         sig = hash(tuple(screen.lines))
         changed = sig != s.normal_signature
         s.normal_signature = sig
@@ -333,6 +419,18 @@ class SessionManager(threading.Thread):
         match = prompts.detect_prompt(screen)
         if match is not None and match.kind is not PromptKind.TRUST:
             match = None  # only the trust dialog lives on the normal screen
+        shell = bool(getattr(screen, "shell_prompt", False)) or looks_like_shell_prompt(screen.lines)
+        if match is None and (shell or s.seen_alternate):
+            s.exit_polls += 1
+            if s.exit_polls >= EXIT_CONFIRM_POLLS:
+                log.info(
+                    "%s: Claude Code is gone (%s)", s.session_id[:8],
+                    "shell prompt" if shell else "left the alternate screen",
+                )
+                self._mark_exited(s, now)
+                return
+        else:
+            s.exit_polls = 0
         since = max(0.0, now - s.last_output_ts)
         obs = Observation(
             pane_alive=True,
@@ -351,10 +449,13 @@ class SessionManager(threading.Thread):
             s.state = SessionState.DETACHED
             s.detail = "Claude Code exited; resume to start it again"
             s.attached = False
+            s.exit_polls = 0
             if self._focused == s.session_id:
-                self._set_focus(self._next_focus(exclude=s.session_id))
+                self._set_focus(self._next_focus(exclude=s.session_id), auto=True)
         if changed:
             self.bus.publish(StateChanged(s.session_id, SessionState.DETACHED, s.detail))
+            self._publish_session_closed(s.session_id)
+        self._flush_refocus()
         if not s.exit_notified:
             s.exit_notified = True
             self.bus.publish(
@@ -438,13 +539,16 @@ class SessionManager(threading.Thread):
             if not obs.pane_alive:
                 s.attached = False
                 if self._focused == sid:
-                    self._set_focus(self._next_focus(exclude=sid))
+                    self._set_focus(self._next_focus(exclude=sid), auto=True)
                 self._remove_settings(s)
         for ev in events:
             if isinstance(ev, PaneLine):
                 self.bus.pane_lines.put(ev)
             else:
                 self.bus.publish(ev)
+        if not obs.pane_alive:
+            self._publish_session_closed(sid)
+            self._flush_refocus()
 
     def _unreadable_prompt_notice(self, s: Session) -> Notice:
         hint = s.hook_hint
@@ -494,7 +598,7 @@ class SessionManager(threading.Thread):
             raw_lines=list(match.raw_lines),
         )
         events.append(s.current_prompt)
-        log.info("%s: %s prompt: %s", s.session_id[:8], match.kind.value, match.title)
+        log.info("%s: %s prompt: %s", s.session_id[:8], match.kind.value, redact(match.title)[0])
         return events
 
     def _clear_prompt(self, s: Session) -> list[Any]:
@@ -638,12 +742,33 @@ class SessionManager(threading.Thread):
             return [line.strip() for line in source[-n:]] if n > 0 else []
 
     def permission_summary(self, session_id: str) -> str:
+        """One sentence about the mode the pane is really in and the configured rules.
+
+        The mode comes from the status row or the jsonl ``permission-mode`` record.
+        When neither has been seen yet the call waits up to ``MODE_OBSERVE_TIMEOUT``
+        for the poll loop to observe one (never when called from the session
+        thread itself); if it still is not known the sentence says so rather than
+        naming Claude Code's built-in default.
+        """
         with self._lock:
             s = self.sessions.get(session_id)
             cwd = s.cwd if s else None
             active = s.permission_mode if s else None
+        if active is None and s is not None and s.attached:
+            active = self._wait_for_mode(s)
         summary = permissions.read_settings(self.claude_home, cwd)
         return permissions.summary_sentence(summary, active)
+
+    def _wait_for_mode(self, s: Session) -> str | None:
+        if not self.is_alive() or threading.current_thread() is self:
+            return s.permission_mode
+        deadline = time.monotonic() + MODE_OBSERVE_TIMEOUT
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            with self._lock:
+                if s.permission_mode is not None or not s.attached:
+                    return s.permission_mode
+        return s.permission_mode
 
     # ---- SessionControl: lifecycle --------------------------------------------------------
 
@@ -675,7 +800,7 @@ class SessionManager(threading.Thread):
             raise SessionError(f"{directory} is not a directory")
         sid = str(uuid.uuid4())
         settings_path = self._write_settings(sid)
-        command = discovery.new_session_command(sid, settings_path, permission_mode)
+        command = discovery.new_session_command(sid, settings_path, permission_mode or DEFAULT_LAUNCH_MODE)
         target = self._open_pane(cwd, sid, command)
         self._register(sid, cwd, target, settings_path, owned=True, from_start=True, detail="starting")
         log.info("started session %s in %s (%s)", sid[:8], cwd, target)
@@ -720,7 +845,7 @@ class SessionManager(threading.Thread):
             except TmuxError as e:
                 log.debug("old pane for %s not killed: %s", session_id[:8], e)
         settings_path = self._write_settings(session_id)
-        command = discovery.resume_command(session_id, settings_path, permission_mode)
+        command = discovery.resume_command(session_id, settings_path, permission_mode or DEFAULT_LAUNCH_MODE)
         target = self._open_pane(cwd, session_id, command)
         self._register(
             session_id,
@@ -736,8 +861,12 @@ class SessionManager(threading.Thread):
 
     def _open_pane(self, cwd: str, sid: str, command: list[str]) -> str:
         """Open the pane in the ``zordon`` tmux session. ``command`` comes from the
-        discovery builders, which are the only place a ``claude`` argv is made."""
-        self.tmux.ensure_session(self.tmux_session, cwd=cwd, width=PANE_WIDTH, height=PANE_HEIGHT)
+        discovery builders, which are the only place a ``claude`` argv is made.
+
+        ``Tmux.new_window`` creates the session when it does not exist, with this
+        window as its first, so no idle shell window is left behind; it also scrubs
+        the session environment of provider keys and Claude Code's nesting markers.
+        """
         name = (os.path.basename(cwd.rstrip("/")) or sid[:8])[:20]
         return self.tmux.new_window(self.tmux_session, name, cwd, command, PANE_WIDTH, PANE_HEIGHT)
 
@@ -767,6 +896,7 @@ class SessionManager(threading.Thread):
                 s.pane_tail.clear()
                 s.seen_alternate = False
                 s.normal_signature = None
+                s.exit_polls = 0
                 s.exit_notified = False
                 s.stall_notified = False
                 s.hook_hint = None
@@ -795,7 +925,8 @@ class SessionManager(threading.Thread):
             return None
         path = discovery.hook_settings_path(self.zordon_home, sid)
         try:
-            return discovery.write_hook_settings(path, self.hook_port, self.hook_secret)
+            host = discovery.hook_host(self.config.server.bind)
+            return discovery.write_hook_settings(path, self.hook_port, self.hook_secret, host=host)
         except (OSError, ValueError) as e:
             log.warning("hook settings not written (%s); launching without hooks", e)
             return None
@@ -803,10 +934,7 @@ class SessionManager(threading.Thread):
     def _remove_settings(self, s: Session) -> None:
         if s.settings_path is None:
             return
-        try:
-            s.settings_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        discovery.remove_hook_settings(s.settings_path)
         s.settings_path = None
 
     def detach(self, session_id: str) -> None:
@@ -819,11 +947,14 @@ class SessionManager(threading.Thread):
             s.attached = False
             s.state = SessionState.DETACHED
             s.detail = "detached; the pane keeps running"
+            s.exit_polls = 0
             if self._focused == session_id:
-                self._set_focus(self._next_focus(exclude=session_id))
+                self._set_focus(self._next_focus(exclude=session_id), auto=True)
         for ev in events:
             self.bus.publish(ev)
         self.bus.publish(StateChanged(session_id, SessionState.DETACHED, s.detail))
+        self._publish_session_closed(session_id)
+        self._flush_refocus()
 
     def delete(self, session_id: str) -> None:
         self._call(self._do_delete, session_id)
@@ -834,7 +965,7 @@ class SessionManager(threading.Thread):
             events = self._clear_prompt(s)
             del self.sessions[session_id]
             if self._focused == session_id:
-                self._set_focus(self._next_focus(exclude=session_id))
+                self._set_focus(self._next_focus(exclude=session_id), auto=True)
         try:
             if self.tmux.pane_exists(s.target):
                 self.tmux.kill_window(s.target)
@@ -844,6 +975,8 @@ class SessionManager(threading.Thread):
         for ev in events:
             self.bus.publish(ev)
         self.bus.publish(StateChanged(session_id, SessionState.DETACHED, "pane killed"))
+        self._publish_session_closed(session_id)
+        self._flush_refocus()
         log.info("deleted session %s (%s)", session_id[:8], s.target)
 
     def _next_focus(self, exclude: str) -> str | None:
@@ -852,10 +985,55 @@ class SessionManager(threading.Thread):
                 return sid
         return None
 
-    def _set_focus(self, session_id: str | None) -> None:
+    def _set_focus(self, session_id: str | None, *, auto: bool = False) -> None:
+        """Move focus (caller holds the lock). ``auto`` marks a refocus the user did not ask
+        for, which ``_flush_refocus`` turns into a Sessions snapshot once the lock is released."""
+        if auto and session_id != self._focused:
+            self._refocused = True
         self._focused = session_id
         for sid, s in self.sessions.items():
             s.focused = sid == session_id
+
+    def _flush_refocus(self) -> None:
+        """Publish a Sessions snapshot after an automatic refocus (never under the lock)."""
+        with self._lock:
+            if not self._refocused:
+                return
+            self._refocused = False
+        try:
+            if self.publish_sessions is not None:
+                self.publish_sessions()
+            else:
+                self._publish_sessions_snapshot()
+        except Exception:  # noqa: BLE001 - a picker refresh must never break the poll loop
+            log.exception("could not publish the sessions snapshot")
+
+    def _publish_sessions_snapshot(self) -> None:
+        """Default ``publish_sessions``: the transport's ``Sessions`` message with the new focus."""
+        # Imported here so the session package never depends on the transport at import time.
+        from zordon.transport.protocol import Sessions
+        from zordon.transport.ws import to_session_summary
+
+        focused = self.focused()
+        rows = [to_session_summary(r, focused) for r in self.list_sessions()]
+        self.bus.publish(Sessions(sessions=rows))
+
+    def _publish_session_closed(self, session_id: str) -> None:
+        """Tell the pipeline the session's output stream ended (detach, delete, exit).
+
+        A ``turn_end`` marker makes the pipeline flush its per-session buffers now,
+        so a trailing sentence from before the detach is never spoken later as the
+        summary of a turn in a resumed session.
+        """
+        self.bus.pane_lines.put(
+            PaneLine(
+                session_id=session_id,
+                text="",
+                source="jsonl",
+                block="turn_end",
+                meta={"reason": "session_closed"},
+            )
+        )
 
     def _get(self, session_id: str) -> Session:
         s = self.sessions.get(session_id)
@@ -868,6 +1046,25 @@ class SessionManager(threading.Thread):
         if not s.attached or s.state is SessionState.DETACHED:
             raise SessionError("That session is detached. Resume it first.")
         return s
+
+    def _require_tui(self, s: Session, m: PromptMatch | None = None) -> None:
+        """Refuse keystrokes unless Claude Code's TUI (alternate screen) is on the pane.
+
+        The trust dialog is the one prompt drawn on the normal screen, so it is
+        allowed when it is the current prompt. Anything else off the alternate
+        screen is a shell or a dead ``claude``, where text would run as a command.
+        """
+        try:
+            if self.tmux.alternate_on(s.target):
+                return
+        except TmuxError as e:
+            raise SessionError("I can't reach that pane right now.") from e
+        current = m if m is not None else s.current_match
+        if current is not None and current.kind is PromptKind.TRUST:
+            return
+        log.warning("%s: refusing keystrokes; pane is not on the alternate screen", s.session_id[:8])
+        self.bus.publish(Notice(text=NO_TUI_TEXT, level="warning", session_id=s.session_id, speak=True))
+        raise SessionError(NO_TUI_TEXT)
 
     # ---- SessionControl: keystrokes -------------------------------------------------------
 
@@ -882,6 +1079,7 @@ class SessionManager(threading.Thread):
                 Notice(text="There was nothing to send.", level="warning", session_id=session_id, speak=True)
             )
             return
+        self._require_tui(s)
         screen = s.prev_screen
         s.echo_signature = _signature(screen) if screen is not None else None
         s.echo_deadline = self.clock() + ECHO_TIMEOUT
@@ -894,6 +1092,7 @@ class SessionManager(threading.Thread):
 
     def _do_send_key(self, session_id: str, key: str) -> None:
         s = self._live(session_id)
+        self._require_tui(s)
         self.tmux.send_key(s.target, key)
 
     def approve(self, session_id: str) -> bool:
@@ -926,6 +1125,7 @@ class SessionManager(threading.Thread):
             return self._do_decline_trust(session_id)
         no = prompts.no_option(m)
         if no is None:
+            self._require_tui(s, m)
             self.tmux.send_key(s.target, "Escape")
             return True
         self._select(s, m, no)
@@ -970,6 +1170,7 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.PLAN)
         if m is None:
             return False
+        self._require_tui(s, m)
         self.tmux.send_key(s.target, "Escape")
         return True
 
@@ -1008,6 +1209,7 @@ class SessionManager(threading.Thread):
             return False
         no = next((o.index for o in m.options if o.label == "No, exit"), None)
         if no is None:
+            self._require_tui(s, m)
             self.tmux.send_key(s.target, "Escape")
         else:
             self._select(s, m, no)
@@ -1018,6 +1220,7 @@ class SessionManager(threading.Thread):
         for ev in events:
             self.bus.publish(ev)
         self.bus.publish(StateChanged(session_id, SessionState.DETACHED, s.detail))
+        self._publish_session_closed(session_id)
         return True
 
     def _prompt_for(self, session_id: str, *kinds: PromptKind) -> tuple[Session, PromptMatch | None]:
@@ -1030,6 +1233,7 @@ class SessionManager(threading.Thread):
 
     def _select(self, s: Session, m: PromptMatch, index: int) -> None:
         """Move the pointer from the selected option to ``index`` and press Enter."""
+        self._require_tui(s, m)
         selected = m.selected.index if m.selected else 1
         steps = index - selected
         key = "Down" if steps > 0 else "Up"
@@ -1050,36 +1254,76 @@ class SessionManager(threading.Thread):
         if prompts.detect_prompt(screen) is not None or screen.input_box is None:
             log.info("%s: not switching mode while a prompt is up", session_id[:8])
             return False
-        current = prompts.permission_mode_from_screen(screen)
-        if current is None:
+        self._require_tui(s)
+        start = prompts.permission_mode_from_screen(screen)
+        if start is None:
             return False
+        current = start
+        bypass_steps = 0
+        stuck = 0
+        reason = "the cycle never reached it"
         for _ in range(MAX_BTAB_PRESSES):
             if current == target:
                 s.permission_mode = current
                 return True
-            self.tmux.send_key(s.target, "BTab")
-            time.sleep(BTAB_SETTLE)
-            screen = parse_screen(self.tmux.capture(s.target))
-            current = prompts.permission_mode_from_screen(screen)
-            while current in permissions.FORBIDDEN_TARGET_MODES:
+            previous = current
+            current = self._press_btab(s)
+            if current in permissions.FORBIDDEN_TARGET_MODES:
+                bypass_steps += 1
+                if bypass_steps > MAX_BYPASS_STEPS:
+                    reason = "bypass permissions keeps showing"
+                    break
                 log.warning("%s: bypass mode showed in the cycle; stepping past it", session_id[:8])
-                self.tmux.send_key(s.target, "BTab")
-                time.sleep(BTAB_SETTLE)
-                screen = parse_screen(self.tmux.capture(s.target))
-                current = prompts.permission_mode_from_screen(screen)
+                continue
+            if current is None or current == previous:
+                stuck += 1
+                if stuck >= MAX_STUCK_READS:
+                    reason = "the status row did not change"
+                    break
+                continue
+            stuck = 0
+            if current == start and current != target:
+                break  # a full cycle without the target: it is not reachable from here
+        if current == target:
+            s.permission_mode = current
+            return True
+        if stuck < MAX_STUCK_READS:
+            current = self._return_to(s, start, current)
         if current is not None:
             s.permission_mode = current
-        if current == target:
-            return True
+        where = (
+            f"the pane is back in {permissions.mode_label(current)} mode"
+            if current == start
+            else f"the pane shows {permissions.mode_label(current) if current else 'an unknown'} mode now"
+        )
         self.bus.publish(
             Notice(
-                text=f"I couldn't switch to {permissions.mode_label(target)} mode from here.",
+                text=f"I couldn't switch to {permissions.mode_label(target)} mode from here: {reason}; {where}.",
                 level="warning",
                 session_id=session_id,
                 speak=True,
             )
         )
         return False
+
+    def _press_btab(self, s: Session) -> str | None:
+        """One Shift+Tab, then the mode the status row shows after it settles."""
+        self.tmux.send_key(s.target, "BTab")
+        time.sleep(BTAB_SETTLE)
+        return prompts.permission_mode_from_screen(parse_screen(self.tmux.capture(s.target)))
+
+    def _return_to(self, s: Session, start: str, current: str | None) -> str | None:
+        """Press BTab (bounded) until the status row shows ``start`` again, skipping bypass."""
+        for _ in range(MAX_BTAB_PRESSES):
+            if current == start:
+                return current
+            previous = current
+            current = self._press_btab(s)
+            if current is None or (current == previous and current not in permissions.FORBIDDEN_TARGET_MODES):
+                break  # not reacting: stop pressing keys into a pane we cannot read
+        if current != start:
+            log.warning("%s: could not return the mode to %s (now %s)", s.session_id[:8], start, current)
+        return current
 
     # ---- SessionControl: hooks --------------------------------------------------------------------
 

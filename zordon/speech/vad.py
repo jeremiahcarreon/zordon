@@ -155,7 +155,7 @@ def make_vad(models_dir: Path | None = None) -> SileroVAD:
     model = models_dir_override(models_dir) / assets.SILERO_VAD.filename
     if not model.is_file():
         raise ProviderNotConfigured(
-            f"Silero VAD model not found at {model}; run `zordon doctor` to download it"
+            f"Silero VAD model not found at {model}; run `zordon doctor --download` to fetch it"
         )
     vad = SileroVAD(model)
     log.info("loaded Silero VAD from %s", model)

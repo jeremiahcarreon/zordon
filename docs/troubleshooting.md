@@ -1,9 +1,11 @@
 # Troubleshooting
 
 Start with `zordon doctor`. It checks Python, tmux, the `claude` binary, each
-configured provider and its key or model files, the espeak path, the CUDA libraries
-when `stt_device = "cuda"`, and cloudflared when `--tunnel` is configured, and says
-what is missing. `zordon doctor --download` fetches missing models and binaries.
+configured provider and its key or model files, the espeak path, `curl` (used by the
+Claude Code hook signal), the CUDA libraries when `stt_device = "cuda"`, and whether
+cloudflared is present, and says what is missing. `zordon doctor --download` fetches
+missing models; add `--tunnel` to fetch cloudflared too (`zordon serve --tunnel` also
+downloads it on first use).
 
 ## Session start
 
@@ -140,21 +142,23 @@ buffered with the next two, so a 1-2 s wait before the first words is normal.
 
 ### `zordon serve --tunnel` fails to start
 
-* `cloudflared not found`: run `zordon doctor --download`, or install cloudflared
-  yourself and put it on `PATH`. The download comes from GitHub's release page
+* `cloudflared is not installed and the download failed`: `zordon serve --tunnel`
+  downloads cloudflared on first use; when that fails, run `zordon doctor --download
+  --tunnel` on a working network or install cloudflared yourself and put it on `PATH`. The download comes from GitHub's release page
   (`cloudflared-linux-amd64`, `cloudflared-linux-arm64`,
   `cloudflared-darwin-*.tgz`), about 40 MB.
-* `did not print a trycloudflare.com URL in 30s`: cloudflared could not reach
+* `did not print a trycloudflare.com URL within 45s`: cloudflared could not reach
   Cloudflare. Its last log lines are shown. QUIC on UDP 7844 is sometimes blocked;
   cloudflared's `--protocol http2` fallback usually works. Corporate networks may
   block it entirely; use Tailscale instead.
-* `a server.token is required`: the tunnel refuses to run without a token. Check
-  `~/.zordon/config.toml`.
+* The tunnel is up but every login fails: `--tunnel` starts without a `server.token`
+  (the log says `no server token is configured`), and `/auth` then refuses every
+  attempt. Run `zordon token rotate` and restart.
 
 ### `server.bind=... is not loopback; a server.token is required`
 
 Any bind address other than `127.0.0.1` needs `server.token` in `config.toml`.
-A fresh config has one; if it was removed, generate a new one (see `security.md`).
+A fresh config has one; if it was removed, `zordon token rotate` writes a new one.
 
 ### 429 on login
 

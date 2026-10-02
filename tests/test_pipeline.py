@@ -88,6 +88,7 @@ class Harness:
         self, tmp_path: Path, verbosity: str = "minimal", prebuffer: int = 1, **kw
     ) -> None:
         self.bus = Bus()
+        self.focused: str | None = kw.get("focused", SID)
         self.config = Config()
         self.config.voice.verbosity = verbosity
         self.config.voice.prebuffer_sentences = prebuffer
@@ -103,23 +104,30 @@ class Harness:
             self.tts,
             self.store,
             muted=self.muted,
+            focused_fn=(lambda: self.focused) if kw.get("focus_aware", False) else None,
             lull_seconds=kw.get("lull", 0.15),
             prebuffer_max_wait=kw.get("prebuffer_max_wait", 5.0),
+            prebuffer_quiet=kw.get("prebuffer_quiet", 0.3),
         )
         self.pipeline.start()
 
     def line(
-        self, text: str, source: str = "pane", block: str = "", meta: dict | None = None
+        self,
+        text: str,
+        source: str = "pane",
+        block: str = "",
+        meta: dict | None = None,
+        session_id: str = SID,
     ) -> None:
         self.bus.pane_lines.put(
-            PaneLine(session_id=SID, text=text, source=source, block=block, meta=meta or {})
+            PaneLine(session_id=session_id, text=text, source=source, block=block, meta=meta or {})
         )
 
-    def jsonl(self, text: str) -> None:
-        self.line(text, source="jsonl", block="text")
+    def jsonl(self, text: str, session_id: str = SID) -> None:
+        self.line(text, source="jsonl", block="text", session_id=session_id)
 
-    def turn_end(self) -> None:
-        self.line("", source="jsonl", block="turn_end")
+    def turn_end(self, session_id: str = SID) -> None:
+        self.line("", source="jsonl", block="turn_end", session_id=session_id)
 
     def tool_use(self, name: str, inp: dict) -> None:
         self.line(name, source="jsonl", block="tool_use", meta={"name": name, "input": inp})
@@ -277,11 +285,162 @@ def test_muted_writes_transcript_but_no_audio(make):
     assert h.pipeline.stats()["muted_skips"] == 2
 
 
+def test_bypass_mute_speaks_the_ack_while_muted(make):
+    """CONC-12: 'Muted.' is queued before the mute takes effect; with bypass_mute it still plays."""
+    h = make(verbosity="normal")
+    h.pipeline.speak_now("Muted.", SID, LineKind.SUMMARY, bypass_mute=True)
+    h.muted.set()
+    assert h.wait_synth(1)
+    assert h.tts.calls == ["Muted."]
+    h.pipeline.speak_now("Not this one.", SID, LineKind.SUMMARY)
+    assert wait_until(lambda: h.pipeline.stats()["muted_skips"] == 1)
+    assert h.tts.calls == ["Muted."]
+
+
+# ---- focus -----------------------------------------------------------------------------------
+
+
+def test_only_the_focused_session_is_synthesized(make):
+    """DC-01 / CONC-4: an unfocused session's prose gets a transcript row and nothing else."""
+    h = make(verbosity="normal", focus_aware=True)
+    other = "sess-2"
+    h.jsonl("Background session says hello to the speaker.", session_id=other)
+    h.turn_end(session_id=other)
+    h.jsonl("Focused session speaks.")
+    h.turn_end()
+    assert h.wait_synth(1)
+    time.sleep(0.2)
+    assert h.tts.calls == ["FOCUSED SESSION SPEAKS."]
+    assert h.pipeline.stats()["unfocused_skips"] == 1
+    # The transcript is complete for both sessions, and the background row is marked unspoken.
+    bg = h.store.tail(other, 10)
+    assert [r.text for r in bg if r.kind == "spoken"] == ["BACKGROUND SESSION SAYS HELLO TO THE SPEAKER."]
+    assert bg[-1].spoken is False
+    assert {r.session_id for r in spoken_rows(h.bus)} == {SID, other}
+    assert all(c.sentence_id != bg[-1].sentence_id for c in h.chunks())
+
+
+def test_priority_items_from_an_unfocused_session_are_still_spoken(make):
+    """Background prompts reach the pipeline as 'In <title>: ...' notices; they must play."""
+    h = make(verbosity="minimal", focus_aware=True)
+    h.pipeline.speak_now("In api: Claude Code is waiting on a permission prompt.", "sess-2", LineKind.ERROR)
+    assert h.wait_synth(1)
+    assert h.tts.calls == ["In api: Claude Code is waiting on a permission prompt."]
+
+
+def test_focus_change_takes_effect_for_queued_sentences(make):
+    h = make(verbosity="normal", focus_aware=True)
+    h.focused = "sess-2"
+    h.jsonl("Spoken only if focused.")
+    h.turn_end()
+    assert wait_until(lambda: h.pipeline.stats()["unfocused_skips"] == 1)
+    assert h.tts.calls == []
+    h.focused = SID
+    h.jsonl("Now we are focused.")
+    h.turn_end()
+    assert h.wait_synth(1)
+    assert h.tts.calls == ["NOW WE ARE FOCUSED."]
+
+
+# ---- turn end -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "normal", "technical"])
+def test_turn_end_speaks_every_trailing_sentence_exactly_once(make, verbosity):
+    """CONC-3: three trailing one-sentence paragraphs after the intent. At normal and
+    technical every sentence is spoken exactly once; at minimal the intent and the
+    summary are, and nothing is spoken twice."""
+    h = make(verbosity=verbosity, lull=5.0)
+    for text in ["First sentence here.", "Second sentence here.", "Third sentence here.", "Fourth sentence here."]:
+        h.jsonl(text)
+    h.turn_end()
+    expected_all = ["FIRST SENTENCE HERE.", "SECOND SENTENCE HERE.", "THIRD SENTENCE HERE.", "FOURTH SENTENCE HERE."]
+    if verbosity == "minimal":
+        assert h.wait_synth(2)
+        time.sleep(0.3)
+        assert h.tts.calls == ["FIRST SENTENCE HERE.", "FOURTH SENTENCE HERE."]
+    else:
+        assert h.wait_synth(4)
+        time.sleep(0.2)
+        assert h.tts.calls == expected_all
+    stats = h.pipeline.stats()
+    assert stats["sentences"] == 4
+    assert stats["kept"] + stats["dropped"] == 4, "every sentence is decided exactly once"
+    texts = [r.text for r in h.store.tail(SID, 20) if r.kind == "spoken"]
+    assert len(texts) == len(set(texts))
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "normal", "technical"])
+def test_turn_end_long_last_two_sentences_in_one_paragraph(make, verbosity):
+    """The two trailing sentences are too long to pair as the summary: the first one is
+    prose (verbosity decides), the last is the summary. Nothing disappears silently."""
+    h = make(verbosity=verbosity, lull=5.0)
+    gamma = "Gamma " + "is a long sentence that keeps going on and on " * 2 + "until it is long."
+    delta = "Delta " + "is another long sentence that keeps going on and on " * 2 + "to the end."
+    h.jsonl(f"Alpha starts the turn. Beta is second. {gamma} {delta}")
+    h.turn_end()
+    if verbosity == "minimal":
+        assert h.wait_synth(2)
+        time.sleep(0.3)
+        assert h.tts.calls == ["ALPHA STARTS THE TURN.", delta.upper()]
+    else:
+        assert h.wait_synth(4)
+        assert h.tts.calls == ["ALPHA STARTS THE TURN.", "BETA IS SECOND.", gamma.upper(), delta.upper()]
+    stats = h.pipeline.stats()
+    assert stats["kept"] + stats["dropped"] == 4
+
+
+# ---- shutdown ---------------------------------------------------------------------------------
+
+
+def test_stop_interrupts_synthesis_and_join_waits_for_the_speaker(make):
+    """CONC-10: stop() ends a long synthesis between chunks, join() covers the speaker
+    thread, and closing the store afterwards is safe."""
+    h = make(verbosity="normal", chunks=50, delay=0.05)
+    h.jsonl("A very long sentence that takes a while to synthesize.")
+    h.turn_end()
+    assert h.wait_synth(1)
+    assert wait_until(lambda: h.pipeline.stats()["chunks"] >= 2)
+    t0 = time.monotonic()
+    h.pipeline.stop()
+    h.pipeline.join(timeout=3.0)
+    elapsed = time.monotonic() - t0
+    assert not h.pipeline.is_alive()
+    assert not any(t.name == "zordon-speaker" and t.is_alive() for t in threading.enumerate())
+    assert elapsed < 1.0, f"stop took {elapsed:.2f}s"
+    assert h.pipeline.stats()["chunks"] < 50
+    h.store.close()  # no write may follow this
+
+
+# ---- raw transcript ------------------------------------------------------------------------------
+
+
+def test_tool_calls_are_described_in_the_raw_transcript(make):
+    """DC-03: the raw row for a tool call carries the description and the call, so a
+    transcript query can name the file even when the filter drops the spoken item."""
+    h = make(verbosity="minimal")
+    h.jsonl("I'll add retry logic to the upload handler.")
+    h.tool_use("Edit", {"file_path": "/home/me/code/api/upload_handler.py", "old_string": "a", "new_string": "b"})
+    h.tool_use("Bash", {"command": "pytest -q", "description": "Run tests"})
+    h.jsonl("Done, tests pass.")
+    h.turn_end()
+    assert h.wait_synth(2)
+    assert h.tts.calls == ["I'LL ADD RETRY LOGIC TO THE UPLOAD HANDLER.", "DONE, TESTS PASS."]
+    raw = h.store.raw_tail(SID, 20)
+    assert "editing upload_handler.py (Edit(/home/me/code/api/upload_handler.py))" in raw
+    assert "running: Run tests (Bash(pytest -q))" in raw
+    assert "Edit" not in raw  # the bare tool name is not what the row says
+    # The spoken tail alone has no file name; the raw tail does.
+    assert not any("upload_handler.py" in t for t in h.store.spoken_tail_text(SID, 12))
+
+
 # ---- prebuffer ---------------------------------------------------------------------------
 
 
 def test_prebuffer_holds_three_then_releases(make):
-    h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=10.0)
+    """While text keeps arriving (quiet window not reached), the first sentence waits for
+    three normalized ones."""
+    h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=10.0, prebuffer_quiet=10.0)
     h.jsonl("First sentence here.")
     h.jsonl("Second sentence here.")
     time.sleep(0.4)
@@ -296,7 +455,7 @@ def test_prebuffer_holds_three_then_releases(make):
 
 
 def test_prebuffer_releases_on_turn_end(make):
-    h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=10.0)
+    h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=10.0, prebuffer_quiet=10.0)
     h.jsonl("Only one sentence.")
     time.sleep(0.3)
     assert h.tts.calls == []
@@ -310,7 +469,7 @@ def test_prebuffer_releases_on_turn_end(make):
 
 
 def test_prebuffer_releases_on_priority(make):
-    h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=10.0)
+    h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=10.0, prebuffer_quiet=10.0)
     h.jsonl("Held sentence.")
     time.sleep(0.2)
     assert h.tts.calls == []
@@ -320,9 +479,39 @@ def test_prebuffer_releases_on_priority(make):
 
 
 def test_prebuffer_gives_up_after_max_wait(make):
+    """A normalization still in flight is the one thing worth waiting for, up to the cap."""
     h = make(verbosity="normal", prebuffer=3, prebuffer_max_wait=0.3)
-    h.jsonl("Lonely sentence.")
+    h.config.providers.normalizer_timeout_seconds = 5.0
+    h.normalizer.sleep = 2.0
+    h.jsonl("Lonely sentence. Second lonely sentence.")
     assert h.wait_synth(1, 2.0)
+
+
+def test_prebuffer_releases_a_lone_normalized_sentence_when_quiet(make):
+    """CONC-5: at minimal verbosity a turn has one speakable sentence early (the intent);
+    with nothing left to normalize and no more lines arriving it must not sit for the
+    2.5 s cap."""
+    h = make(verbosity="minimal", prebuffer=3, prebuffer_max_wait=2.5, prebuffer_quiet=0.3)
+    h.line("", source="jsonl", block="turn_start")
+    t0 = time.monotonic()
+    h.jsonl("Adding the retry logic now.")
+    assert h.wait_synth(1, 2.0)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.2, f"lone sentence held for {elapsed:.2f}s"
+    assert h.tts.calls == ["ADDING THE RETRY LOGIC NOW."]
+    assert h.pipeline.stats()["chunks"] >= 1
+    # The hold still applies while text is arriving: a new turn with lines every 100 ms.
+    h.turn_end()
+    time.sleep(0.2)
+    h.tts.calls.clear()
+    h.line("", source="jsonl", block="turn_start")
+    h.jsonl("Second turn intent here.")
+    for _ in range(4):
+        time.sleep(0.1)
+        h.line("more arriving text", source="jsonl", block="thinking")  # transcript-only, but arriving
+    # Quiet starts now; the intent is released within the quiet window, long before the cap.
+    assert h.wait_synth(1, 1.5)
+    assert h.tts.calls == ["SECOND TURN INTENT HERE."]
 
 
 # ---- normalizer failure modes -------------------------------------------------------------
@@ -564,6 +753,7 @@ def test_stats_shape(make):
         "priority",
         "dropped_by_generation",
         "muted_skips",
+        "unfocused_skips",
         "queued",
         "kinds",
         "verbosity",

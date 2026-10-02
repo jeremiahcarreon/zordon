@@ -215,3 +215,56 @@ def test_tail_text_is_last_ten_lines():
     tail = t.recent_lines()
     assert tail == [f"line {i}" for i in range(15, 25)]
     assert json.dumps(tail)  # plain strings
+
+
+# ---- environment scrubbing (SEC-1) --------------------------------------------------------
+
+
+def test_scrubbed_env_drops_keys_tokens_and_provider_prefixes():
+    src = {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "ANTHROPIC_API_KEY": "sk-ant-x",
+        "OPENAI_API_KEY": "sk-x",
+        "ELEVENLABS_API_KEY": "x",
+        "GROQ_API_KEY": "gsk_x",
+        "TYPESAFE_API_KEY": "x",
+        "anthropic_base_url": "x",
+        "OPENAI_ORG": "x",
+        "GITHUB_TOKEN": "x",
+        "MY_SECRET": "x",
+        "HF_TOKEN": "x",
+        "NO_AUTOUPDATE": "false",
+        "LANG": "C.UTF-8",
+    }
+    env = T.scrubbed_env(src)
+    assert env == {"PATH": "/usr/bin", "HOME": "/home/u", "LANG": "C.UTF-8", "NO_AUTOUPDATE": "true"}
+    assert T.is_secret_env_name("TYPESAFE_WHATEVER")
+    assert not T.is_secret_env_name("TOKENIZERS_PARALLELISM")
+
+
+def test_tunnel_child_does_not_inherit_secrets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    env_file = tmp_path / "child-env.json"
+    monkeypatch.setenv("FAKE_CLOUDFLARED_ENV_FILE", str(env_file))
+    monkeypatch.setenv("FAKE_CLOUDFLARED_URL", URL)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-LEAKED")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_LEAKED")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_LEAKED")
+    monkeypatch.setenv("ZORDON_HOOK_SECRET", "LEAKED")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://leaked")
+    monkeypatch.setenv("ZORDON_KEEP_ME", "kept")
+    t = T.Tunnel("cloudflared", 8765, binary=fake_cmd())
+    try:
+        assert t.start(timeout=10) == URL
+    finally:
+        t.stop()
+    child = json.loads(env_file.read_text())
+    assert "ANTHROPIC_API_KEY" not in child
+    assert "GROQ_API_KEY" not in child
+    assert "GITHUB_TOKEN" not in child
+    assert "ZORDON_HOOK_SECRET" not in child
+    assert "OPENAI_BASE_URL" not in child
+    assert "LEAKED" not in json.dumps(child)
+    assert child["ZORDON_KEEP_ME"] == "kept"
+    assert child["NO_AUTOUPDATE"] == "true"
+    assert "PATH" in child

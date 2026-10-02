@@ -20,6 +20,7 @@ from zordon.bus import (
     Flush,
     LineKind,
     Notice,
+    PaneLine,
     PromptDetected,
     PromptKind,
     SessionState,
@@ -248,7 +249,7 @@ def test_agent_api_surface(agent: A.Agent):
 def test_settings_round_trip(agent: A.Agent):
     s = agent.settings()
     assert s["verbosity"] == "minimal" and s["tool_chatter"] is False and s["muted"] is False
-    assert s["providers"] == {"stt": "fake-stt", "tts": "fake-tts", "normalizer": "passthrough", "router": "fake-router"}
+    assert {k: s["providers"][k] for k in ("stt", "tts", "normalizer", "router")} == {"stt": "fake-stt", "tts": "fake-tts", "normalizer": "passthrough", "router": "fake-router"}
     assert s["tts_sample_rate"] == 16000
     agent.set_verbosity("technical")
     agent.set_tool_chatter(True)
@@ -428,13 +429,17 @@ def test_first_focus_speaks_permission_summary_once(agent: A.Agent, tmp_path: Pa
     sid = focused_session(agent, tmp_path)
     row = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken" and "mode" in e.text)
     assert row.session_id == sid
-    assert row.text.endswith(A.KEEP_SETTINGS_QUESTION)
     assert "default mode" in row.text
+    # DC-02: a statement that says how to change the mode, never a question: nothing owns
+    # the answer, and a bare "yes" would be typed into Claude Code.
+    assert "?" not in row.text
+    assert "keep these settings" not in row.text.lower()
+    assert "say switch to" in row.text and row.text.rstrip().endswith("to change it.")
     # A second IDLE transition or re-focus does not repeat it.
     agent.bus.publish(StateChanged(sid, SessionState.IDLE, "again"))
     agent.sessions.focus(sid)
     time.sleep(0.2)
-    assert sum(1 for r in ev.spoken() if A.KEEP_SETTINGS_QUESTION in r.text) == 1
+    assert sum(1 for r in ev.spoken() if "say switch to" in r.text) == 1
 
 
 def test_focus_switch_speaks_summary_for_the_other_session(agent: A.Agent, tmp_path: Path):
@@ -447,9 +452,10 @@ def test_focus_switch_speaks_summary_for_the_other_session(agent: A.Agent, tmp_p
         lambda e: isinstance(e, TranscriptRow)
         and e.kind == "spoken"
         and e.session_id == b
-        and A.KEEP_SETTINGS_QUESTION in e.text
+        and "say switch to" in e.text
     )
     assert row.session_id == b != a
+    assert "?" not in row.text
     snapshot = ev.wait(lambda e: getattr(e, "type", None) == "sessions")
     assert [r.session_id for r in snapshot.sessions if r.focused] == [b]
 
@@ -486,6 +492,137 @@ def test_call_state_drives_the_audio_thread(agent: A.Agent):
     assert wait_until(lambda: agent.audio.client_id == "c9")
     for action in ("pause", "resume", "end"):
         agent.call_state("c9", action)
+    assert not agent.audio.in_call
+
+
+def test_only_one_client_is_in_the_call(agent: A.Agent):
+    """CONC-9: a second start is refused with an error notice; a non-caller's end is ignored."""
+    ev = Events(agent.bus)
+    agent.call_state("phone", "start")
+    assert agent.audio.in_call and agent.audio.client_id == "phone"
+    agent.call_state("laptop", "start")
+    notice = ev.wait(lambda e: isinstance(e, Notice) and e.level == "error")
+    assert notice.text == A.CALL_BUSY_TEXT
+    assert agent.audio.client_id == "phone" and agent.audio.in_call
+    # The laptop tab closing (ws sends call end on disconnect) does not end the phone's call.
+    agent.call_state("laptop", "end")
+    agent.call_state("laptop", "pause")
+    assert agent.audio.in_call and agent.audio.client_id == "phone"
+    agent.call_state("phone", "end")
+    assert not agent.audio.in_call
+    agent.call_state("laptop", "start")
+    assert agent.audio.client_id == "laptop"
+    with pytest.raises(ValueError):
+        agent.call_state("laptop", "dance")
+
+
+# ---- focus: only the focused session is spoken ------------------------------------------------------
+
+
+def test_unfocused_session_output_is_stored_but_not_spoken(agent: A.Agent, parts: dict[str, Any], tmp_path: Path):
+    """DC-01 / CONC-4: two attached sessions, one focused. Prose from the other one gets a
+    transcript row and no audio; a prompt there is a collapsed notice."""
+    sid = focused_session(agent, tmp_path)
+    other = agent.sessions.start(str(tmp_path / "proj"))
+    assert wait_until(lambda: agent.manager.state_of(other) is SessionState.IDLE)
+    assert agent.sessions.focused() == sid
+    agent.config.voice.verbosity = "normal"
+    ev = Events(agent.bus)
+    tts: FakeTTS = parts["tts"]
+    tts.calls.clear()
+    for s, text in ((other, "Background session says this sentence."), (sid, "Focused session says this sentence.")):
+        agent.bus.pane_lines.put(PaneLine(session_id=s, text=text, source="jsonl", block="text"))
+        agent.bus.pane_lines.put(PaneLine(session_id=s, text="", source="jsonl", block="turn_end"))
+    bg = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken" and e.session_id == other)
+    fg = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken" and e.session_id == sid)
+    assert wait_until(lambda: "Focused session says this sentence." in tts.calls)
+    time.sleep(0.2)
+    assert tts.calls == ["Focused session says this sentence."]
+    assert agent.pipeline.stats()["unfocused_skips"] == 1
+    assert [r.text for r in agent.transcript_tail(other, 5) if r.kind == "spoken"] == [bg.text]
+    assert agent.transcript_tail(other, 5)[-1].spoken is False
+    assert fg.sentence_id != bg.sentence_id
+    chunks = [e for e in ev.pump() if hasattr(e, "sentence_id") and hasattr(e, "pcm")]
+    assert any(c.sentence_id == fg.sentence_id for c in chunks)
+    assert not any(c.sentence_id == bg.sentence_id for c in chunks)
+
+
+# ---- redaction of prompt cards and notices -----------------------------------------------------------
+
+
+def test_prompt_cards_and_notices_are_redacted_before_clients_see_them(agent: A.Agent, tmp_path: Path):
+    """SEC-3: PromptDetected title/options/raw_lines and Notice text are masked on publish."""
+    sid = focused_session(agent, tmp_path)
+    key = "sk-ant-api03-" + "A" * 40
+    ev = Events(agent.bus)
+    agent.bus.publish(
+        PromptDetected(
+            sid,
+            PromptKind.PERMISSION,
+            f"Bash command: curl -H 'Authorization: Bearer {key}'",
+            ["Yes", f"Yes, and always allow {key}", "No"],
+            [f"│ curl -H 'Authorization: Bearer {key}'", "│ Do you want to proceed?"],
+        )
+    )
+    prompt = ev.wait(lambda e: isinstance(e, PromptDetected))
+    assert key not in prompt.title and key not in " ".join(prompt.options) and key not in " ".join(prompt.raw_lines)
+    assert "[redacted]" in prompt.title and prompt.options[0] == "Yes" and prompt.options[-1] == "No"
+    assert len(prompt.raw_lines) == 2 and prompt.raw_lines[1] == "│ Do you want to proceed?"
+    spoken = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken" and "shell command" in e.text)
+    assert key not in spoken.text
+    agent.bus.publish(Notice(text=f"Claude Code looks stuck. The last lines were: export ANTHROPIC_API_KEY={key}", level="warning", session_id=sid, speak=True))
+    notice = ev.wait(lambda e: isinstance(e, Notice) and "looks stuck" in e.text)
+    assert key not in notice.text and "[redacted]" in notice.text
+    row = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken" and "looks stuck" in e.text)
+    assert key not in row.text
+    # Events without secrets pass through untouched (same object).
+    clean = Notice(text="all good", level="info")
+    agent.bus.publish(clean)
+    assert ev.wait(lambda e: e is clean) is clean
+    assert A.redact_event(clean) is clean
+
+
+def test_redact_event_is_pure():
+    key = "sk-ant-api03-" + "B" * 40
+    p = PromptDetected("s", PromptKind.PERMISSION, f"Bash command: echo {key}", ["Yes", "No"], [key])
+    out = A.redact_event(p)
+    assert out is not p and out.prompt_id == p.prompt_id and out.session_id == "s"
+    assert key not in out.title and out.raw_lines == ["[redacted]"]
+    assert p.title.endswith(key)  # the original is untouched
+    n = A.redact_event(Notice(text=f"token {key}"))
+    assert key not in n.text
+
+
+# ---- shutdown order ---------------------------------------------------------------------------------
+
+
+class SlowTTS(FakeTTS):
+    sample_rate = 16000
+
+    def synthesize(self, text: str) -> Iterator[bytes]:
+        with self._lock:
+            self.calls.append(text)
+        for _ in range(50):
+            time.sleep(0.05)
+            yield b"\x00\x00" * 160
+
+
+def test_stop_joins_the_speaker_before_closing_the_store(cfg: Config, parts: dict[str, Any], tmp_path: Path):
+    """CONC-10: a long synthesis in flight must not outlive stop(); the store is closed only
+    after the speaker thread is gone."""
+    parts = dict(parts, tts=SlowTTS())
+    a = A.Agent(cfg, tmux=FakeTmux(), providers_override=parts, claude_home=tmp_path / "ch")  # type: ignore[arg-type]
+    a.start()
+    sid = focused_session(a, tmp_path)
+    a.speak("A sentence that takes two and a half seconds to synthesize.", sid, LineKind.PROSE)
+    assert wait_until(lambda: a.pipeline.stats()["chunks"] >= 2)
+    t0 = time.monotonic()
+    a.stop()
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0, f"stop took {elapsed:.2f}s"
+    assert not any(t.name == "zordon-speaker" and t.is_alive() for t in threading.enumerate())
+    assert not a.pipeline.is_alive()
+    assert a.pipeline.stats()["chunks"] < 50
 
 
 def test_tunnel_url_is_published(agent: A.Agent):

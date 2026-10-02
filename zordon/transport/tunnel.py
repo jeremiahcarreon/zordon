@@ -44,8 +44,29 @@ STOP_GRACE_S = 3.0
 LOG_TAIL = 10
 
 
+# Environment variables that must never reach the tunnel child. Matched against the
+# variable name, case-insensitively; the child only needs PATH/HOME/TMPDIR/locale.
+SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET")
+SECRET_ENV_PREFIXES = ("ANTHROPIC_", "OPENAI_", "ELEVENLABS_", "GROQ_", "TYPESAFE_")
+
+
 class TunnelError(RuntimeError):
     pass
+
+
+def is_secret_env_name(name: str) -> bool:
+    upper = name.upper()
+    return upper.endswith(SECRET_ENV_SUFFIXES) or upper.startswith(SECRET_ENV_PREFIXES)
+
+
+def scrubbed_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """A copy of ``source`` (default ``os.environ``) without provider keys, tokens or
+    secrets, with ``NO_AUTOUPDATE`` set. This is the only environment the tunnel
+    child ever sees."""
+    base = os.environ if source is None else source
+    env = {k: v for k, v in base.items() if not is_secret_env_name(k)}
+    env["NO_AUTOUPDATE"] = "true"
+    return env
 
 
 class Tunnel:
@@ -109,7 +130,7 @@ class Tunnel:
                 stderr=subprocess.PIPE if self.provider == "cloudflared" else subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
-                env={**os.environ, "NO_AUTOUPDATE": "true"},
+                env=scrubbed_env(),
             )
         except OSError as e:
             raise TunnelError(f"could not start {self.provider}: {e}") from e
@@ -169,7 +190,7 @@ class Tunnel:
             found = assets.find_binary(self.provider)
             if not found:
                 raise TunnelError(
-                    f"{self.provider} binary not found; run `zordon doctor` to download it"
+                    f"{self.provider} binary not found; run `zordon doctor --download --tunnel` to download it"
                 )
             prefix = [found]
         elif isinstance(self._binary, str):

@@ -196,7 +196,7 @@
       );
     },
     flush: function (m) {
-      return isInt(m.generation);
+      return isInt(m.generation) && optional(m.sentence_id, isInt);
     },
     transcript: function (m) {
       return (

@@ -2,7 +2,8 @@
 
 On every launch Zordon passes ``--settings <file>`` with ``command`` hooks that
 POST each ``Notification``, ``UserPromptSubmit`` and ``Stop`` event to
-``/hooks/claude``. The transport verifies the shared secret and hands the JSON
+``/hooks/claude`` (the secret header comes from a 0600 curl config file, see
+``discovery.write_hook_settings``). The transport verifies the shared secret and hands the JSON
 body to ``SessionControl.hook_event``; this module holds the pure pieces of that
 path: building the settings, checking a payload's shape and secret, and turning
 a payload into a ``Notice`` or a state hint.
@@ -16,14 +17,16 @@ from __future__ import annotations
 import hmac
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from zordon import paths
 from zordon.bus import Notice
 from zordon.session import discovery
 
 log = logging.getLogger("zordon.session.hooks")
 
-HOOK_SECRET_HEADER = "X-Zordon-Hook-Secret"
+HOOK_SECRET_HEADER = discovery.HOOK_SECRET_HEADER
 
 # Notification types Zordon registered a matcher for, and what each one hints.
 PROMPT_NOTIFICATIONS: frozenset[str] = frozenset(
@@ -57,13 +60,23 @@ class HookHint:
             self.polls_left -= 1
 
 
-def build_hook_settings(port: int, secret: str) -> dict[str, Any]:
+def build_hook_settings(
+    port: int,
+    secret: str,
+    curl_config: Path | str | None = None,
+    host: str = discovery.HOOK_DEFAULT_HOST,
+) -> dict[str, Any]:
     """Settings JSON for ``--settings``: command hooks that POST to Zordon.
 
     Delegates to ``discovery.hook_settings_json`` so there is exactly one place
-    that knows the handler shape.
+    that knows the handler shape. ``secret`` is validated but never written into
+    the JSON: the handler reads it from ``curl_config`` (``discovery.write_hook_settings``
+    writes that file with mode 0600).
     """
-    return discovery.hook_settings_json(port, secret)
+    discovery.validate_hook_secret(secret)
+    if curl_config is None:
+        curl_config = paths.zordon_home() / "hooks" / "zordon.curlrc"
+    return discovery.hook_settings_json(port, curl_config, host=host)
 
 
 def verify_hook_payload(payload: Any, secret_header: str, expected_secret: str) -> bool:

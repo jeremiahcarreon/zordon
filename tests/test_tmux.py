@@ -31,10 +31,12 @@ class FakeRun:
     replies: list[Completed] = field(default_factory=list)
     calls: list[list[str]] = field(default_factory=list)
     timeouts: list[float] = field(default_factory=list)
+    envs: list[dict[str, str] | None] = field(default_factory=list)
 
-    def __call__(self, cmd, capture_output, timeout, check):  # noqa: ANN001
+    def __call__(self, cmd, capture_output, timeout, check, env=None):  # noqa: ANN001
         self.calls.append(list(cmd))
         self.timeouts.append(timeout)
+        self.envs.append(env)
         if self.replies:
             return self.replies.pop(0)
         return Completed()
@@ -61,6 +63,67 @@ def test_run_prefixes_socket_and_decodes_with_replace(fake: FakeRun):
 def test_run_without_socket_and_custom_binary(fake: FakeRun):
     Tmux(binary="/opt/bin/tmux").run("list-sessions")
     assert fake.last() == ["/opt/bin/tmux", "list-sessions"]
+
+
+# ---- environment scrubbing (SEC-2 / RR-7) ------------------------------------------------
+
+
+def test_scrub_names_covers_claude_markers_and_secret_shapes():
+    environ = {
+        "PATH": "/bin",
+        "HOME": "/home/u",
+        "ANTHROPIC_API_KEY": "sk-ant-x",
+        "OPENAI_API_KEY": "sk-x",
+        "GITHUB_TOKEN": "ghp_x",
+        "MY_APP_SECRET": "s",
+        "CLAUDE_CODE_EXECPATH": "/x",
+        "CLAUDE_EFFORT": "high",
+        "CLAUDE_CONFIG_DIR": "/home/u/.claude-alt",
+        "TMUX_TMPDIR": "/tmp",
+        "SECRET_SAUCE": "no match: SECRET is not a suffix",
+    }
+    names = T.scrub_names(environ)
+    for fixed in T.SCRUB_NAMES:
+        assert fixed in names
+    for dyn in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "MY_APP_SECRET", "CLAUDE_CODE_EXECPATH", "CLAUDE_EFFORT"):
+        assert dyn in names
+    assert "CLAUDE_CONFIG_DIR" not in names  # claude must still find the store Zordon watches
+    assert "PATH" not in names and "HOME" not in names and "TMUX_TMPDIR" not in names
+    assert "SECRET_SAUCE" not in names
+    assert names == sorted(set(names))
+    clean = T.scrubbed_environ(environ)
+    assert set(clean) == {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "TMUX_TMPDIR", "SECRET_SAUCE"}
+    assert not any(k.endswith("_API_KEY") or k.startswith("CLAUDE_CODE") for k in clean)
+
+
+def test_run_starts_tmux_with_a_scrubbed_environment(fake: FakeRun, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc")
+    monkeypatch.setenv("KEEP_ME", "yes")
+    Tmux().run("list-sessions")
+    env = fake.envs[-1]
+    assert env is not None
+    assert "ANTHROPIC_API_KEY" not in env and "CLAUDECODE" not in env and "CLAUDE_CODE_SESSION_ID" not in env
+    assert env["KEEP_ME"] == "yes" and "PATH" in env
+
+
+def test_scrub_environment_marks_every_name_removed_in_one_call(fake: FakeRun):
+    t = Tmux()
+    removed = t.scrub_environment("zordon", ["ANTHROPIC_API_KEY", "CLAUDECODE"])
+    assert removed == ["ANTHROPIC_API_KEY", "CLAUDECODE"]
+    assert fake.last() == [
+        "tmux",
+        "set-environment", "-t", "=zordon", "-r", "ANTHROPIC_API_KEY",
+        ";",
+        "set-environment", "-t", "=zordon", "-r", "CLAUDECODE",
+    ]
+    # Once per session per instance when the names are not given explicitly.
+    fake.calls.clear()
+    assert t.scrub_environment("zordon") == []
+    assert fake.calls == []
+    assert t.scrub_environment("other")  # a different session is scrubbed with the live names
+    assert fake.last()[1] == "set-environment" and "-r" in fake.last()
 
 
 def test_run_raises_tmux_error_on_failure(fake: FakeRun):
@@ -135,29 +198,58 @@ def test_ensure_session_creates_detached_when_missing(fake: FakeRun):
     Tmux().ensure_session("zordon", cwd="/tmp", width=160, height=45)
     assert fake.calls[0] == ["tmux", "has-session", "-t", "=zordon"]
     assert fake.calls[1] == ["tmux", "new-session", "-d", "-s", "zordon", "-x", "160", "-y", "45", "-c", "/tmp"]
+    assert fake.calls[2][1:5] == ["set-environment", "-t", "=zordon", "-r"]  # scrubbed right away
+    assert len(fake.calls) == 3
     fake.calls.clear()
     Tmux().ensure_session("zordon")
     assert len(fake.calls) == 1  # exists: nothing created
 
 
 def test_new_window_uses_target_format_resizes_and_verifies(fake: FakeRun):
+    fake.replies.append(Completed())  # has-session: exists
+    fake.replies.append(Completed())  # set-environment (scrub)
     fake.replies.append(Completed(stdout=b"zordon:@4.%9\n"))  # new-window -P
     fake.replies.append(Completed())  # resize-window
     fake.replies.append(Completed(stdout=b"%9\t160x45\n"))  # display-message size
     target = Tmux().new_window("zordon", "z-abc", "/home/u/proj", ["claude", "--resume", "abc def"], 160, 45)
     assert target == "zordon:@4.%9"
-    nw = fake.calls[0]
+    assert fake.calls[0] == ["tmux", "has-session", "-t", "=zordon"]
+    assert fake.calls[1][1:5] == ["set-environment", "-t", "=zordon", "-r"]
+    nw = fake.calls[2]
     assert nw[:3] == ["tmux", "new-window", "-d"]
     assert nw[nw.index("-t") + 1] == "=zordon"
     assert nw[nw.index("-n") + 1] == "z-abc"
     assert nw[nw.index("-c") + 1] == "/home/u/proj"
     assert "-P" in nw and nw[nw.index("-F") + 1] == "#{session_name}:#{window_id}.#{pane_id}"
     assert nw[-1] == "claude --resume 'abc def'"  # one shell-safe string
-    assert fake.calls[1] == ["tmux", "resize-window", "-t", "zordon:@4.%9", "-x", "160", "-y", "45"]
-    assert fake.calls[2][-1] == "#{pane_id}\t#{window_width}x#{window_height}"
+    assert fake.calls[3] == ["tmux", "resize-window", "-t", "zordon:@4.%9", "-x", "160", "-y", "45"]
+    assert fake.calls[4][-1] == "#{pane_id}\t#{window_width}x#{window_height}"
+
+
+def test_new_window_creates_the_session_with_itself_as_first_window(fake: FakeRun):
+    """RR-8: no idle shell window is created ahead of the Claude Code window."""
+    fake.replies.append(Completed(returncode=1, stderr=b"can't find session: zordon"))  # has-session
+    fake.replies.append(Completed(stdout=b"zordon:@0.%0\n"))  # new-session -P
+    fake.replies.append(Completed())  # set-environment (scrub)
+    fake.replies.append(Completed())  # resize-window
+    fake.replies.append(Completed(stdout=b"%0\t160x45\n"))  # display-message size
+    target = Tmux().new_window("zordon", "proj", "/home/u/proj", ["claude", "--session-id", "x"], 160, 45)
+    assert target == "zordon:@0.%0"
+    assert fake.calls[0] == ["tmux", "has-session", "-t", "=zordon"]
+    ns = fake.calls[1]
+    assert ns[:5] == ["tmux", "new-session", "-d", "-s", "zordon"]
+    assert ns[ns.index("-c") + 1] == "/home/u/proj"
+    assert ns[ns.index("-n") + 1] == "proj"
+    assert ns[-1] == "claude --session-id x"
+    assert "-P" in ns and ns[ns.index("-F") + 1] == "#{session_name}:#{window_id}.#{pane_id}"
+    assert not any(c[1] == "new-window" for c in fake.calls)
+    assert fake.calls[2][1:5] == ["set-environment", "-t", "=zordon", "-r"]
+    assert fake.calls[3][:3] == ["tmux", "resize-window", "-t"]
 
 
 def test_new_window_rejects_garbage_output_and_empty_command(fake: FakeRun):
+    fake.replies.append(Completed())  # has-session
+    fake.replies.append(Completed())  # scrub
     fake.replies.append(Completed(stdout=b"something odd\n"))
     with pytest.raises(TmuxError, match="unexpected"):
         Tmux().new_window("z", "w", "/tmp", ["true"])
@@ -292,6 +384,8 @@ def test_private_server_literal_text_is_not_interpreted(private_tmux: Tmux, tmp_
     t.send_literal(target, "printf '%s\\n' ok-marker")
     t.send_enter(target)
     assert _wait_for(lambda: "ok-marker" in t.capture(target))
+    env = t.pane_environment(target)
+    assert env.get("PATH")  # the pane shell is readable through /proc
     panes = t.list_panes()
     assert any(p.target == target and p.cwd == str(tmp_path) for p in panes)
     assert all(p.session == "zt" for p in panes)

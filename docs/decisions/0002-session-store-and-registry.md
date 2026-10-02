@@ -25,9 +25,9 @@ becomes `-`, including the leading `/`, spaces, dots and underscores:
 
 | directory name | real cwd |
 | --- | --- |
-| `-home-operator-Code-example-com` | `/home/operator/Code/example.com` |
-| `-home-operator-Videos-Season-1-Mp4-1080p` | `/home/operator/Videos/Season 1 Mp4 1080p` |
-| `-tmp-claude-1000--home-operator-Code-zordon-...` | `/tmp/claude-1000/-home-operator-Code-zordon/...` |
+| `-home-user-Code-example-com` | `/home/user/Code/example.com` |
+| `-home-user-Documents-My-Notes-2026-v1-0` | `/home/user/Documents/My Notes 2026 v1.0` |
+| `-tmp-claude-1000--home-user-Code-zordon-...` | `/tmp/claude-1000/-home-user-Code-zordon/...` |
 
 Names over 200 characters are truncated and get a hash suffix. The name cannot be
 decoded back to a path. The real cwd has to come from a record's `cwd` field
@@ -82,9 +82,9 @@ liveness test.
   `kill -0` **and** whose `procStart` matches `/proc/<pid>/stat` field 22. A running
   session is never passed to `claude --resume`: two resumes of one id interleave
   into one transcript, and resuming a running background session exits 1. Instead,
-  if `tmux` is set, Zordon attaches to that pane; if `kind` is `bg`, it opens
-  `claude attach <id>` in a new pane; otherwise it reports "running in another
-  terminal".
+  if `tmux` is set, Zordon attaches to that pane; otherwise (including `kind: bg`)
+  it reports "running in another terminal" and refuses (`SessionBusy`). Opening a
+  background session with `claude attach <id>` in a new pane is not implemented.
 * New panes are created with `tmux new-window -d -P -F
   '#{session_name}:#{window_id}.#{pane_id}'` so Zordon's own pane target has the
   same shape as the registry's `tmux` field.

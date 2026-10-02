@@ -62,7 +62,7 @@ blank keys are mapped to `None`.
 
 * `routing/typesafe.py` depends on `typesafe-sdk>=0.7.2,<0.8` and calls
   `system_one` directly. One sync client per process, built with the key passed
-  explicitly (never exported to the environment, so child processes such as
+  explicitly (Zordon never exports it to the environment, so child processes such as
   cloudflared cannot see it), `timeout=1.5`, and
   `RetryPolicy(max_retries=1, backoff_initial=0.1, backoff_max=0.2, timeout=2.0)`.
 * One request per utterance carries a four-way `Choice` (`claude_code`,

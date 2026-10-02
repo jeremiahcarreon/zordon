@@ -13,7 +13,8 @@ always spoken, answered only with a clear yes or no, and never widened.
 
 - **Hands-free operation from a browser.** Resume any Claude Code session, give it a task by voice,
   type when speech is the wrong tool, drop a file or a photo in.
-- **Barge-in.** Start talking and playback stops within ~150 ms, with no network round trip.
+- **Barge-in.** Start talking and playback stops within ~150 ms on a LAN or Tailscale (no
+  cloud call is involved); over a public tunnel the two network legs can add 60-160 ms.
   The interrupted sentence is marked as unspoken in the transcript.
 - **Output that sounds like a colleague, not a terminal.** A deterministic pre-pass collapses
   code blocks, diffs and paths; a small language model rewrites each sentence into spoken
@@ -55,8 +56,9 @@ rendered pane. See `docs/architecture.md` and `docs/decisions/` for the reasonin
 
 ## Requirements
 
-- Linux or macOS, Python 3.12 or 3.13
+- Linux or macOS, Python 3.12 or newer (the local Kokoro TTS needs 3.12 or 3.13; `kokoro-onnx` has no 3.14 build yet)
 - `tmux` 3.2 or newer
+- `curl` (Claude Code's hook handlers use it to tell Zordon about prompts; without it only pane detection runs)
 - Claude Code installed and logged in (`claude` on your `PATH`)
 - A browser with microphone access: Safari on iOS, Chrome on Android, or any desktop browser
 
@@ -76,6 +78,18 @@ Open `http://127.0.0.1:8765`, paste the token, tap **Talk**.
 
 `zordon doctor` checks every dependency and every configured provider and prints a one-line fix
 for anything missing. `zordon token show` prints the token again.
+
+### First run, step by step
+
+1. `zordon doctor --download`, then `zordon serve`. Serving works without models or keys too,
+   but degraded: without the VAD model voice input is off, without a TTS provider nothing is
+   spoken, and without a normalizer key text is read as is; the startup warnings and
+   `zordon doctor` say what to fix.
+2. Open the page, paste the token. Nothing is spoken until a session is focused: the picker
+   opens by itself; **Resume** a session or **Start** one in a directory.
+3. A brand-new directory shows Claude Code's trust dialog. Its highlighted default is
+   "No, exit", which ends the session; answer the card (or say "yes") to trust the folder.
+4. Tap **Talk** and speak. Permission prompts are read aloud and shown as a card.
 
 ### Without local models
 
@@ -105,7 +119,7 @@ HTTPS (or `localhost`), so the first two routes are the practical ones for a pho
 | Tailscale | `zordon serve --bind tailscale` | Users who already have it | Free, stable address |
 | LAN | `zordon serve --bind 0.0.0.0` | Same Wi-Fi only; HTTPS needed for the mic | Free, local IP |
 
-`--tunnel` starts a `cloudflared` quick tunnel (downloaded on first use into `~/.zordon/bin/`),
+`--tunnel` starts a `cloudflared` quick tunnel (downloaded on first use into `~/.zordon/bin/`; `zordon doctor --download --tunnel` fetches it ahead of time),
 waits for its `trycloudflare.com` URL, and prints it as text and as a QR code in the terminal and
 on the session picker. A public URL changes the threat model, so the tunnel route turns three
 recommendations into requirements: the token is mandatory, failed token attempts are limited to
@@ -195,8 +209,8 @@ Known limits and the reasoning behind the main choices are in `docs/decisions/`.
 git clone https://github.com/jeremiahcarreon/zordon
 cd zordon
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev,local,jev]"
-.venv/bin/python -m pytest -q                 # unit tests
-.venv/bin/python -m pytest -q -m integration  # needs tmux; uses a private server
+.venv/bin/python -m pytest -q                 # everything, including the integration tests (they need tmux and start a private server)
+.venv/bin/python -m pytest -q -m "not integration"  # unit tests only
 ZORDON_TEST_MODELS=~/.zordon/models .venv/bin/python -m pytest -q -m provider
 ```
 

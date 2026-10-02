@@ -11,8 +11,12 @@ same path). For every utterance it looks at the focused session's state first:
 * otherwise the router decides between Claude Code, a transcript answer and a
   shim command; ``unclear`` or low confidence goes to Claude Code.
 
-A transcript query never touches the pane. Shim commands are looked up in the
-closed set ``commands.BY_NAME``; anything else is refused. Destructive commands
+A transcript query never touches the pane. It is answered over the recent *raw*
+transcript lines (``store.raw_tail``, which include the tool-call descriptions
+the verbosity filter may have kept from being spoken) merged with the spoken
+tail, so "what file did it just change?" works at minimal verbosity. Shim
+commands are looked up in the closed set ``commands.BY_NAME``; anything else is
+refused. Destructive commands
 (delete) need a strict spoken yes on the next utterance. An exception while
 handling one utterance is logged and spoken; it never kills the thread.
 """
@@ -46,9 +50,10 @@ from zordon.transcript.store import TranscriptStore
 
 log = logging.getLogger("zordon.routing.dispatcher")
 
-# speak(text, session_id, kind): the pipeline's ``speak_now``. Its ``kind`` is a LineKind;
-# the dispatcher's own vocabulary maps onto it here.
-SpeakFn = Callable[[str, str, LineKind], Any]
+# speak(text, session_id, kind, *, bypass_mute=False): the pipeline's ``speak_now``. Its
+# ``kind`` is a LineKind; the dispatcher's own vocabulary maps onto it here. The keyword is
+# only passed for the "Muted." acknowledgement.
+SpeakFn = Callable[..., Any]
 SPEAK_KINDS: dict[str, LineKind] = {
     "ack": LineKind.SUMMARY,  # "Muted.", "Approved.", "Switched to api."
     "answer": LineKind.PROSE,  # transcript answers, status, session list
@@ -65,6 +70,8 @@ SAFE_IN_PROMPT = frozenset(
 NEEDS_SESSION = frozenset({"stop", "repeat", "status", "set_permission_mode", "delete", "detach"})
 # Permission modes voice may switch to when session.permissions is not importable.
 _DEFAULT_VOICE_SWITCHABLE = ("default", "acceptEdits", "plan")
+# Transcript-query context: raw transcript lines (every pre-passed line, kept or not).
+RAW_TAIL_LINES = 40
 
 _REVISE = re.compile(
     r"\b(change|changes|revise|revision|instead|modify|different|tweak|adjust|rather|what about|"
@@ -278,7 +285,7 @@ class DispatcherThread(threading.Thread):
             f" {r.command}" if r.command else "",
         )
         if dest == "transcript_query":
-            self._transcript(text, sid, ctx.transcript_tail)
+            self._transcript(text, sid, ctx.transcript_tail, self._raw_tail(sid))
         elif dest == "shim_command":
             self._execute(r.command, r.argument, text, sid, ctx)
         else:
@@ -291,8 +298,8 @@ class DispatcherThread(threading.Thread):
         self.sessions.send_text(sid, text)
         self.store.add_event(sid, "user", text)
 
-    def _transcript(self, text: str, sid: str, tail: list[str]) -> None:
-        answer = self._answerer.answer(text, tail)
+    def _transcript(self, text: str, sid: str, tail: list[str], raw: list[str] | None = None) -> None:
+        answer = self._answerer.answer(text, tail, raw=raw)
         self.store.add_event(sid, "user", text)
         self.store.add_event(sid, "notice", answer)
         self._speak(answer, sid, "answer")
@@ -426,7 +433,9 @@ class DispatcherThread(threading.Thread):
         handler(argument, text, sid)
 
     def _cmd_mute(self, argument: str | None, text: str, sid: str | None) -> None:
-        self._speak("Muted.", sid, "ack")
+        # speak() only queues; the mute below takes effect first, so the ack has to be
+        # allowed through it or the user never hears that mute worked.
+        self._speak("Muted.", sid, "ack", bypass_mute=True)
         self.settings.set_muted(True)
 
     def _cmd_unmute(self, argument: str | None, text: str, sid: str | None) -> None:
@@ -534,11 +543,21 @@ class DispatcherThread(threading.Thread):
 
     # ---- helpers -----------------------------------------------------------------------
 
-    def _speak(self, text: str, sid: str | None, kind: str) -> None:
+    def _speak(self, text: str, sid: str | None, kind: str, *, bypass_mute: bool = False) -> None:
         try:
-            self.speak(text, sid or "", SPEAK_KINDS.get(kind, LineKind.PROSE))
+            if bypass_mute:
+                self.speak(text, sid or "", SPEAK_KINDS.get(kind, LineKind.PROSE), bypass_mute=True)
+            else:
+                self.speak(text, sid or "", SPEAK_KINDS.get(kind, LineKind.PROSE))
         except Exception:  # noqa: BLE001
             log.exception("speak failed")
+
+    def _raw_tail(self, sid: str) -> list[str]:
+        try:
+            return self.store.raw_tail(sid, RAW_TAIL_LINES)
+        except Exception:  # noqa: BLE001
+            log.exception("store.raw_tail failed")
+            return []
 
     def _focused(self) -> str | None:
         try:

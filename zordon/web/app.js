@@ -25,6 +25,8 @@
   var RECONNECT_MAX_MS = 30000;
   var GATE_AFTER_FAILURES = 3; // consecutive handshake failures after a good connection
   var MAX_ROWS = 600;
+  var UPLOAD_MAX_BYTES = 25 * 1024 * 1024; // mirrors zordon.transport.ws.UPLOAD_MAX_BYTES
+  var LOCAL_ECHO_SETTLE_MS = 4000; // unmirrored local rows become ordinary rows after this
   var VAD_ONSET_MS = 60; // 3 x 20 ms frames, from the design
   var KOKORO_VOICES = [
     'af_heart',
@@ -398,14 +400,38 @@
     }
   }
 
+  // Everything keyed on the agent's counters (generation, row/prompt/sentence ids)
+  // is forgotten when a new hello arrives: the agent may have restarted, and it
+  // resends the sessions and the transcript tail right after hello anyway.
+  function resetAgentState() {
+    audio.resetGeneration();
+    Object.keys(S.rows).forEach(function (id) {
+      var r = S.rows[id];
+      if (r.el.parentNode) r.el.parentNode.removeChild(r.el);
+    });
+    S.rows = {};
+    S.rowOrder = [];
+    S.pendingLocal.forEach(function (p) {
+      if (p.el.parentNode) p.el.parentNode.removeChild(p.el);
+    });
+    S.pendingLocal = [];
+    Object.keys(S.prompts).forEach(removePrompt);
+    S.unseen = 0;
+    renderJump();
+    show($('feed-empty'), true);
+  }
+
   function onHello(msg) {
+    var again = S.hello !== null;
     S.hello = msg;
     if (msg.protocol !== P.PROTOCOL_VERSION) {
       toast('Protocol mismatch: agent ' + msg.protocol + ', client ' + P.PROTOCOL_VERSION, 'warn');
     }
+    if (again) resetAgentState();
     S.focused = msg.focused_session || null;
     S.settings.verbosity = msg.verbosity;
     S.settings.tool_chatter = msg.tool_chatter;
+    if (typeof msg.muted === 'boolean') S.settings.muted = msg.muted; // WEB-7: hello carries the agent's mute state
     S.settings.providers = msg.providers || {};
     $('st-version').textContent = 'zordon ' + msg.version + ' (protocol ' + msg.protocol + ')';
     if (msg.tunnel_url && !S.tunnel) onTunnel({ type: 'tunnel', url: msg.tunnel_url, qr_svg: null });
@@ -424,10 +450,14 @@
         S.states[s.session_id] = { state: s.state, detail: (S.states[s.session_id] || {}).detail || '', ts: Date.now() / 1000 };
       }
     });
+    var before = S.focused;
     if (focused !== null) S.focused = focused;
     else if (S.focused && !S.sessionsById[S.focused]) S.focused = null;
+    // The last `settings` message described the session focused at that time.
+    if (S.focused !== before) S.settings.permission_mode = null;
     renderSessions();
     renderFocus();
+    renderSettings();
     // Nothing focused yet: open the picker once so the user can choose.
     if (!S.focused && !S.pickerAutoOpened && $('sessions').hasAttribute('hidden')) {
       S.pickerAutoOpened = true;
@@ -442,11 +472,34 @@
   function onFlush(msg) {
     var res = audio.flush(msg.generation);
     S.lastFlushMs = res.ms;
-    res.interrupted.forEach(function (sid) {
-      markCutOff(sid);
-    });
+    markInterrupted(res.interrupted, msg.sentence_id);
     send(P.buildFlushAck(msg.generation));
     renderLatency();
+  }
+
+  // Sentences cut by a flush: the ones that were playing (interrupted), the one the
+  // agent names, and every later sentence whose final chunk never arrived (the
+  // agent dropped them before they reached us).
+  function markInterrupted(interrupted, agentSentenceId) {
+    var cut = {};
+    (interrupted || []).forEach(function (sid) {
+      cut[sid] = true;
+    });
+    if (typeof agentSentenceId === 'number') cut[agentSentenceId] = true;
+    var ids = Object.keys(cut).map(Number);
+    if (ids.length) {
+      var base = Math.min.apply(null, ids);
+      Object.keys(S.rows).forEach(function (id) {
+        var m = S.rows[id].msg;
+        if (m.kind !== 'spoken' || typeof m.sentence_id !== 'number') return;
+        if (m.sentence_id > base && m.spoken !== true && !audio.sentenceFinished(m.sentence_id)) {
+          cut[m.sentence_id] = true;
+        }
+      });
+    }
+    Object.keys(cut).forEach(function (sid) {
+      markCutOff(Number(sid));
+    });
   }
 
   function onState(msg) {
@@ -528,8 +581,13 @@
     return s ? s.title || basename(s.directory) : sessionId.slice(0, 8);
   }
 
+  function isOtherSession(sessionId) {
+    // An empty session id is an agent-wide notice, not another session.
+    return !!(S.focused && sessionId && sessionId !== S.focused);
+  }
+
   function buildRow(msg) {
-    var other = S.focused && msg.session_id !== S.focused;
+    var other = isOtherSession(msg.session_id);
     var li = el('li', {
       class: 'row kind-' + msg.kind + (other ? ' other' : '') + (msg.spoken === false ? ' cut' : ''),
       dataset: { rowId: String(msg.row_id), sessionId: msg.session_id },
@@ -615,10 +673,25 @@
     S.pendingLocal.push({ id: id, text: text, el: li, ts: Date.now() });
     show($('feed-empty'), false);
     scrollFeedToBottom();
-    // Keep the local echo even if the agent never mirrors it; drop the pending look after a while.
+    // Keep the local echo even if the agent never mirrors it: after a while it becomes an
+    // ordinary row (subject to the row cap) and stops waiting for a server copy.
     setTimeout(function () {
       li.classList.remove('pending');
-    }, 4000);
+      settleLocalRow(id);
+    }, LOCAL_ECHO_SETTLE_MS);
+  }
+
+  function settleLocalRow(id) {
+    for (var i = 0; i < S.pendingLocal.length; i++) {
+      var p = S.pendingLocal[i];
+      if (p.id !== id) continue;
+      S.pendingLocal.splice(i, 1);
+      if (!p.el.parentNode) return;
+      S.rows[id] = { el: p.el, msg: { row_id: id, session_id: S.focused || '', kind: 'user', text: p.text, ts: p.ts / 1000 } };
+      S.rowOrder.push(id);
+      pruneRows();
+      return;
+    }
   }
 
   function reconcileLocalEcho(msg) {
@@ -651,7 +724,7 @@
 
   function buildPromptCard(msg) {
     var card = el('div', { class: 'prompt kind-' + msg.kind, dataset: { promptId: String(msg.prompt_id) } });
-    var other = S.focused && msg.session_id !== S.focused;
+    var other = isOtherSession(msg.session_id);
     card.appendChild(
       el('div', { class: 'p-head' }, [
         el('span', { class: 'p-kind', text: promptKindLabel(msg.kind) }),
@@ -952,7 +1025,7 @@
     // Rows from the focused session are no longer "other"; cheap to recompute.
     Object.keys(S.rows).forEach(function (id) {
       var r = S.rows[id];
-      r.el.classList.toggle('other', !!S.focused && r.msg.session_id !== S.focused);
+      r.el.classList.toggle('other', isOtherSession(r.msg.session_id));
     });
   }
 
@@ -1091,6 +1164,10 @@
 
   function uploadOne(file) {
     var status = $('upload-status');
+    if (file.size > UPLOAD_MAX_BYTES) {
+      toast(file.name + ' is larger than ' + Math.round(UPLOAD_MAX_BYTES / (1024 * 1024)) + ' MB', 'error');
+      return Promise.resolve();
+    }
     S.uploading++;
     show(status, true);
     status.textContent = 'Uploading ' + file.name + '...';
@@ -1267,7 +1344,10 @@
       updateCallUI();
     });
     $('btn-stop').addEventListener('click', function () {
-      audio.flush(); // local silence right away; the agent follows with its own flush
+      // Silence right away and keep dropping speech of this generation until the
+      // agent's own flush (sent by the stop command) arrives.
+      var res = audio.stopLocal();
+      markInterrupted(res.interrupted, null);
       cmd('stop');
     });
     $('btn-repeat').addEventListener('click', function () {

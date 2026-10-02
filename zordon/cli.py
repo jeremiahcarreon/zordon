@@ -254,15 +254,27 @@ def resolve_tunnel(cfg: Config, requested: str | None) -> str | None:
 
 
 def check_dependencies(*, need_tunnel: str | None, which: Any = None) -> None:
+    """tmux must be there; a missing cloudflared is downloaded on first use (ngrok is not)."""
     which = which or shutil.which
     if not which("tmux"):
         raise CliError("tmux is not installed; `zordon doctor` lists what is missing", EXIT_MISSING)
     if need_tunnel:
         from zordon import assets  # noqa: PLC0415
 
-        if not assets.find_binary(need_tunnel):
-            hint = "`zordon doctor --download --tunnel`" if need_tunnel == "cloudflared" else "install ngrok"
-            raise CliError(f"{need_tunnel} is not installed; {hint}", EXIT_MISSING)
+        if assets.find_binary(need_tunnel):
+            return
+        if need_tunnel != "cloudflared":
+            raise CliError(f"{need_tunnel} is not installed; install ngrok", EXIT_MISSING)
+        print("cloudflared is not installed yet; downloading it (first use)...", file=sys.stderr)
+        try:
+            found = doctor.download_cloudflared()
+        except Exception as e:  # noqa: BLE001
+            raise CliError(
+                f"cloudflared is not installed and the download failed: {e}; "
+                "retry with `zordon doctor --download --tunnel` or install cloudflared yourself",
+                EXIT_MISSING,
+            ) from e
+        print(f"cloudflared installed at {found}", file=sys.stderr)
 
 
 def serve(cfg: Config, *, tunnel_provider: str | None, warm_up: bool = True) -> int:

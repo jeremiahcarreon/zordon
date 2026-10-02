@@ -69,7 +69,7 @@ def test_node_check(path: Path):
 
 
 @needs_node
-@pytest.mark.parametrize("script", ["worklet_test.cjs", "protocol_test.cjs"])
+@pytest.mark.parametrize("script", ["worklet_test.cjs", "protocol_test.cjs", "app_test.cjs"])
 def test_node_self_tests(script: str):
     proc = subprocess.run(
         [NODE, str(NODE_TESTS / script)], capture_output=True, text=True, timeout=120, cwd=str(ROOT)
@@ -269,16 +269,20 @@ def test_no_permission_bypass_strings(path: Path):
         assert word.lower() not in text.lower(), f"{path.name} mentions {word!r}"
 
 
+# Model marketing names are spelled in pieces so this file does not itself contain them.
+_MODEL_WORDS = "|".join(("fa" + "ble", "op" + "us", "son" + "net", "haiku"))
+# The trailer and link markers are spelled in pieces for the same reason.
+_MARKERS = "|".join(("co-" + "authored-by", r"claude\.ai/" + "code", "session_" + "01", r"@noreply\." + "anthropic"))
 _ATTRIBUTION = re.compile(
     r"(?i)(?:generated|written|authored|created|made|built|co-?authored)\s+(?:by|with)\s+"
-    r"(?:claude|anthropic|gpt|openai|copilot|gemini|an? (?:ai|llm|language model)|fable|opus|sonnet|haiku)"
-    r"|co-authored-by|claude\.ai/code|session_01|@noreply\.anthropic"
+    r"(?:claude|anthropic|gpt|openai|copilot|gemini|an? (?:ai|llm|language model)|" + _MODEL_WORDS + r")"
+    r"|" + _MARKERS
 )
 
 
 @pytest.mark.parametrize(
     "path",
-    _web_files() + [NODE_TESTS / "worklet_test.cjs", NODE_TESTS / "protocol_test.cjs"],
+    _web_files() + sorted(NODE_TESTS.glob("*.cjs")),
     ids=lambda p: p.name,
 )
 def test_no_author_attribution(path: Path):
@@ -334,3 +338,19 @@ def test_manifest_is_valid_and_relative():
     for icon in data["icons"]:
         assert not icon["src"].startswith(("http", "/")), icon
         assert (WEB / icon["src"]).is_file()
+
+
+# ---- CSP: the client must stay free of inline script (script-src 'self') ---------------------
+
+
+def test_index_has_no_inline_script_or_handlers():
+    """SEC-13: ``build_csp`` sends ``script-src 'self'`` with no 'unsafe-inline'; the
+    client must therefore never carry inline scripts, handler attributes or javascript: URLs."""
+    html = _read("index.html")
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html, re.I), "inline <script> block"
+    assert not re.search(r"\son[a-z]+\s*=", html, re.I), "inline on* handler attribute"
+    assert "javascript:" not in html.lower()
+    for name in ("app.js", "audio.js", "protocol.js"):
+        js = _read(name)
+        assert "setAttribute('style'" not in js and 'setAttribute("style"' not in js
+        assert "innerHTML" not in js.replace("never innerHTML", "")

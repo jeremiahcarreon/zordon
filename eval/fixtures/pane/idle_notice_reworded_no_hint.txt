@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Model 0.0 with medium effort · Claude Max
+ ▝▝   ▝▝   ~/Code/zordon · /rc
+
+  Updated to latest. Got 49 features, 306 bugfixes, and 149 other changes.
+  code.claude.com/docs/en/changelog for details
+
+  Try the new /voice command. Switch anytime with /model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "write a test for <filepath>"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [PLUGIN ]
+  ⏸ manual mode on · ← 3 agents

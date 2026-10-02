@@ -14,6 +14,7 @@ from zordon.bus import PaneLine
 from zordon.session.jsonl import (
     JSONL_FORMAT_VERSION,
     REJECTION_TEXT,
+    SYNTHETIC_MODEL,
     JsonlEvent,
     JsonlTail,
     parse_record,
@@ -76,6 +77,35 @@ def test_assistant_without_end_turn_has_no_turn_end():
     assert kinds(parse_record(rec)) == ["tool_use"]
     empty = fs.assistant_record(SID, CWD, T0, [fs.text_block("   ")])
     assert parse_record(empty) == []
+
+
+@pytest.mark.parametrize("record_type", ["assistant", "message"])
+def test_synthetic_assistant_record_is_not_spoken(record_type: str, tmp_path: Path):
+    """RR-6: Claude Code writes ``model: "<synthetic>"`` records itself on --resume
+    ("No response requested."); they are not Claude's words and produce no event."""
+    rec = {
+        "type": record_type,
+        "sessionId": SID,
+        "timestamp": "2026-10-02T06:13:29.900Z",
+        "cwd": CWD,
+        "message": {
+            "role": "assistant",
+            "model": SYNTHETIC_MODEL,
+            "content": [{"type": "text", "text": "No response requested."}],
+            "stop_reason": "stop_sequence",
+        },
+    }
+    assert parse_record(rec) == []
+    rec["message"]["stop_reason"] = "end_turn"
+    assert parse_record(rec) == []  # not even a turn_end: nothing happened
+    # A real record right after it is still delivered, in order, through the tail.
+    path = tmp_path / f"{SID}.jsonl"
+    real = fs.assistant_record(SID, CWD, T0, [fs.text_block("resumed ok")], stop_reason="end_turn")
+    path.write_bytes(fs.jsonl_bytes([rec, real]))
+    tail = JsonlTail(path, offset=0, session_id=SID)
+    events = tail.poll()
+    assert [(e.kind, e.text) for e in events] == [("text", "resumed ok"), ("turn_end", "")]
+    assert SYNTHETIC_MODEL == "<synthetic>"
 
 
 def test_user_record_with_role_user_is_not_assistant():

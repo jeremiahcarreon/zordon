@@ -107,6 +107,15 @@ def test_hello_then_sessions_then_tail(client: TestClient, agent: FakeAgent):
         assert tail[0]["raw_lines"] == ["⏺ Edited auth.py"]
 
 
+def test_hello_carries_the_agent_mute_state(client: TestClient, agent: FakeAgent):
+    """WEB-7: a fresh client must learn the mute state from hello, not assume unmuted."""
+    with connected(client) as (ws, hello, _, _):
+        assert hello["muted"] is False
+    agent._settings["muted"] = True
+    with connected(client) as (ws, hello, _, _):
+        assert hello["muted"] is True
+
+
 def test_hello_never_contains_keys(client: TestClient, agent: FakeAgent):
     agent._settings["providers"]["anthropic_api_key"] = "sk-ant-should-not-leak"
     with connected(client) as (ws, hello, _, _):
@@ -457,3 +466,155 @@ def test_session_summary_from_dict_and_object():
     assert s.focused and s.state == "working" and s.last_active == 5.0
     s2 = W.to_session_summary(type("O", (), {"session_id": "b"})(), "a")
     assert not s2.focused and s2.state == "detached" and s2.directory == ""
+
+
+# ---- SEC-7 / CONC-2: commands run off the event loop ----------------------------------------
+
+
+def test_slow_command_does_not_stall_the_loop(client: TestClient, agent: FakeAgent):
+    """A blocking SessionControl call must not hold the asyncio loop: another client's
+    ping is answered while the first client's `start` is still sleeping."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_start(directory: str, permission_mode=None) -> str:
+        started.set()
+        release.wait(5.0)
+        return "sess-new"
+
+    agent.sessions.start = slow_start  # type: ignore[method-assign]
+    with connected(client) as (a, *_), connected(client) as (b, *_):
+        a.send_json({"type": "command", "name": "start", "args": {"directory": "/tmp/x"}})
+        assert started.wait(2.0)
+        t0 = time.monotonic()
+        b.send_json({"type": "ping", "ts": 7.0})
+        assert recv_type(b, "pong")["ts"] == 7.0
+        assert time.monotonic() - t0 < 1.0
+        # the first client's own ping is answered too: its receive loop is not blocked
+        a.send_json({"type": "ping", "ts": 8.0})
+        assert recv_type(a, "pong")["ts"] == 8.0
+        release.set()
+        assert recv_type(a, "sessions")["type"] == "sessions"
+
+
+def test_command_timeout_replies_error(client: TestClient, agent: FakeAgent, monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    release = threading.Event()
+    monkeypatch.setattr(W, "COMMAND_TIMEOUT_S", 0.2)
+
+    def hang(session_id: str) -> None:
+        release.wait(5.0)
+
+    agent.sessions.focus = hang  # type: ignore[method-assign]
+    try:
+        with connected(client) as (ws, *_):
+            ws.send_json({"type": "command", "name": "focus", "args": {"session_id": "sess-2"}})
+            err = recv_type(ws, "error")
+            assert err["code"] == "timeout"
+            assert "focus" in err["message"]
+            # the connection is still usable afterwards
+            ws.send_json({"type": "ping", "ts": 1.0})
+            assert recv_type(ws, "pong")["ts"] == 1.0
+    finally:
+        release.set()
+
+
+def test_commands_of_one_connection_run_in_order(client: TestClient, agent: FakeAgent):
+    with connected(client) as (ws, *_):
+        for level in ("normal", "technical", "minimal"):
+            ws.send_json({"type": "command", "name": "set_verbosity", "args": {"level": level}})
+        seen = [recv_type(ws, "settings")["verbosity"] for _ in range(3)]
+        assert seen == ["normal", "technical", "minimal"]
+    assert [c[1] for c in agent.calls if c[0] == "set_verbosity"] == ["normal", "technical", "minimal"]
+
+
+# ---- WEB-6: keepalive pings do not reset the idle disconnect -----------------------------------
+
+
+def test_ping_does_not_defeat_idle_disconnect(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(W.ClientConnection, "IDLE_SECONDS_OVERRIDE", 0.6)
+    with connected(client) as (ws, *_):
+        t0 = time.monotonic()
+        closed = False
+        try:
+            # ping faster than the idle timeout for longer than the idle timeout
+            for _ in range(8):
+                ws.send_json({"type": "ping", "ts": 1.0})
+                msg = ws.receive_json()
+                assert msg["type"] == "pong"
+                time.sleep(0.15)
+            ws.receive_json()
+        except WebSocketDisconnect as e:
+            closed = True
+            assert e.code == 1000 and e.reason == "idle"
+        assert closed, "pings alone kept the connection open"
+        assert 0.5 <= time.monotonic() - t0 <= 3.0
+
+
+def test_real_activity_resets_idle_timer(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(W.ClientConnection, "IDLE_SECONDS_OVERRIDE", 0.6)
+    with connected(client) as (ws, *_):
+        for _ in range(4):
+            time.sleep(0.3)
+            ws.send_json({"type": "flush_ack", "generation": 1})
+        # 1.2 s of wall time with activity every 0.3 s: still connected
+        ws.send_json({"type": "ping", "ts": 2.0})
+        assert recv_type(ws, "pong")["ts"] == 2.0
+
+
+# ---- SEC-10: control / bidi characters never reach the pane ----------------------------------
+
+
+def test_text_and_send_text_are_sanitized(client: TestClient, agent: FakeAgent):
+    from zordon.transport.sanitize import sanitize_keystrokes
+
+    dirty = "A\u009b31mB‮text​\x1b[31m\x7fC⁦D﻿"
+    assert sanitize_keystrokes(dirty) == "A31mBtext[31mCD"
+    assert sanitize_keystrokes("tabs\tand\nnewlines stay") == "tabs\tand\nnewlines stay"
+    with connected(client) as (ws, *_):
+        ws.send_json({"type": "text", "text": dirty})
+        ws.send_json({"type": "command", "name": "send_text", "args": {"text": dirty}})
+        ws.send_json({"type": "command", "name": "plan_revise", "args": {"text": "ok‮"}})
+        ws.send_json({"type": "command", "name": "answer", "args": {"option": "two​"}})
+        # only control characters: nothing is sent, the argument is invalid
+        ws.send_json({"type": "command", "name": "send_text", "args": {"text": "​\u009b"}})
+        assert recv_type(ws, "error")["code"] == "bad_argument"
+        ws.send_json({"type": "ping", "ts": 3.0})
+        recv_type(ws, "pong")
+    assert ("submit_text", "A31mBtext[31mCD", agent.calls[0][2]) == agent.calls[0]
+    assert ("send_text", "sess-1", "A31mBtext[31mCD") in agent.sessions.calls
+    assert ("plan_revise", "sess-1", "ok") in agent.sessions.calls
+    assert ("answer_question", "sess-1", "two") in agent.sessions.calls
+    assert len([c for c in agent.sessions.calls if c[0] == "send_text"]) == 1
+
+
+# ---- WEB-2: the voice selector ---------------------------------------------------------------
+
+
+def test_set_provider_voice_uses_agent_set_voice(client: TestClient, agent: FakeAgent):
+    def set_voice(name: str) -> None:
+        agent.calls.append(("set_voice", name))
+        agent._settings["providers"]["voice"] = name
+
+    agent.set_voice = set_voice  # type: ignore[attr-defined]
+    with connected(client) as (ws, *_):
+        ws.send_json({"type": "command", "name": "set_provider", "args": {"kind": "voice", "name": "am_adam"}})
+        assert recv_type(ws, "settings")["providers"]["voice"] == "am_adam"
+    assert ("set_voice", "am_adam") in agent.calls
+
+
+def test_set_provider_voice_without_agent_support_is_a_clear_error(client: TestClient, agent: FakeAgent):
+    def set_provider(kind: str, name: str) -> None:
+        if kind not in W.PROVIDER_KINDS:
+            raise ValueError("kind must be one of stt, tts, normalizer, router")
+        agent._settings["providers"][kind] = name
+
+    agent.set_provider = set_provider  # type: ignore[method-assign]
+    with connected(client) as (ws, *_):
+        ws.send_json({"type": "command", "name": "set_provider", "args": {"kind": "voice", "name": "am_adam"}})
+        err = recv_type(ws, "error")
+        assert err["code"] == "unsupported"
+        assert "voice" in err["message"]

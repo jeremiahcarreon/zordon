@@ -14,16 +14,27 @@ Keystroke safety (design, "Keystroke injection is literal"):
 
 Pane targets have the registry's shape ``session:@window.%pane`` (decision 0002),
 produced by ``new-window -P -F '#{session_name}:#{window_id}.#{pane_id}'``.
+
+Environment hygiene: a tmux server copies the environment of the process that
+started it into every pane. Zordon's process may hold provider keys
+(``*_API_KEY``) and, when launched from inside Claude Code, the ``CLAUDE*``
+variables that make a nested ``claude`` attach to its parent. So ``run()`` starts
+tmux with a scrubbed environment, and every session Zordon creates or reuses gets
+``set-environment -r`` for those names so later windows never see them either
+(``-r`` removes the variable from new processes even when the server's global
+environment still has it; ``-u`` would only drop a session-level entry).
+``discovery`` adds ``env -u`` to the ``claude`` command line as the third layer.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 log = logging.getLogger("zordon.session.tmux")
@@ -50,6 +61,23 @@ KEY_ALLOWLIST: frozenset[str] = frozenset(
 _C0 = re.compile(r"[\x00-\x1f\x7f]")
 _TARGET_RE = re.compile(r"^[^:\s]+:@\d+\.%\d+$")
 
+# Variables that must never reach a Claude Code pane: the nesting markers Claude
+# Code sets for its own children, and every secret-shaped name (see module doc).
+SCRUB_NAMES: tuple[str, ...] = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_PID",
+    "CLAUDE_JOB_DIR",
+    "CLAUDE_CODE_CHILD_SESSION",
+)
+SCRUB_PATTERN = re.compile(r"^(?:CLAUDECODE|CLAUDE_.*|.*_API_KEY|.*_TOKEN|.*_SECRET)$")
+# CLAUDE_CONFIG_DIR tells claude where its store is; Zordon reads the same place.
+SCRUB_KEEP: frozenset[str] = frozenset({"CLAUDE_CONFIG_DIR"})
+
 
 class TmuxError(RuntimeError):
     """A tmux command failed, timed out or the binary is missing."""
@@ -69,14 +97,35 @@ class PaneInfo:
     height: int
 
 
+_C1_FORMAT = re.compile("[\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
 def strip_control(text: str) -> str:
     """Drop every C0 control character (and DEL); newlines and tabs become spaces."""
     text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    return _C0.sub("", text)
+    text = _C0.sub("", text)
+    return _C1_FORMAT.sub("", text)
 
 
 def is_pane_target(target: str) -> bool:
     return bool(_TARGET_RE.match(target))
+
+
+def scrub_names(environ: Mapping[str, str] | None = None) -> list[str]:
+    """``SCRUB_NAMES`` plus every variable in ``environ`` matching ``SCRUB_PATTERN``, sorted."""
+    env = os.environ if environ is None else environ
+    names = set(SCRUB_NAMES)
+    for name in env:
+        if SCRUB_PATTERN.match(name) and name not in SCRUB_KEEP:
+            names.add(name)
+    return sorted(names)
+
+
+def scrubbed_environ(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """A copy of ``environ`` (default ``os.environ``) without the scrubbed names."""
+    env = os.environ if environ is None else environ
+    drop = set(scrub_names(env))
+    return {k: v for k, v in env.items() if k not in drop}
 
 
 def pane_id_of(target: str) -> str | None:
@@ -92,6 +141,7 @@ class Tmux:
     def __init__(self, binary: str = "tmux", socket: str | None = None) -> None:
         self.binary = binary
         self.socket = socket
+        self._scrubbed: set[str] = set()  # sessions whose environment has been scrubbed
 
     # ---- the one shell-out ---------------------------------------------------------
 
@@ -101,7 +151,9 @@ class Tmux:
             cmd += ["-L", self.socket]
         cmd += list(args)
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=timeout, check=False, env=scrubbed_environ()
+            )
         except FileNotFoundError as e:
             raise TmuxError(f"tmux binary not found: {self.binary!r}") from e
         except subprocess.TimeoutExpired as e:
@@ -139,7 +191,29 @@ class Tmux:
             args += ["-c", cwd]
         self.run(*args)
         log.info("created tmux session %s", name)
+        self.scrub_environment(name)
         return name
+
+    def scrub_environment(self, session: str, names: Sequence[str] | None = None) -> list[str]:
+        """``set-environment -t <session> -r NAME`` for every scrubbed name (once per session).
+
+        Returns the names removed. Later windows in ``session`` start without them
+        even when the server's global environment (inherited from whoever started
+        it) still carries them. Idempotent per ``Tmux`` instance.
+        """
+        if session in self._scrubbed and names is None:
+            return []
+        names = list(names) if names is not None else scrub_names()
+        args: list[str] = []
+        for name in names:
+            if args:
+                args.append(";")
+            args += ["set-environment", "-t", f"={session}", "-r", name]
+        if args:
+            self.run(*args)
+        self._scrubbed.add(session)
+        log.debug("scrubbed %d variables from tmux session %s", len(names), session)
+        return names
 
     def kill_session(self, name: str) -> None:
         self.run("kill-session", "-t", f"={name}")
@@ -217,11 +291,17 @@ class Tmux:
     ) -> str:
         """Open a detached window in ``session`` running ``command``; returns its pane target.
 
-        The window is resized to ``width`` x ``height`` afterwards and the size is
-        verified (tmux ``window-size latest`` has been seen to pick another size).
+        When ``session`` does not exist yet it is created with this window as its
+        first (``new_session``), so no idle shell window is left behind when the
+        last Claude Code window closes. The window is resized to ``width`` x
+        ``height`` afterwards and the size is verified (tmux ``window-size latest``
+        has been seen to pick another size).
         """
         if not command:
             raise ValueError("command must not be empty")
+        if not self.has_session(session):
+            return self.new_session(session, cwd, command, width, height, window_name=name)
+        self.scrub_environment(session)
         target = self.run(
             "new-window",
             "-d",
@@ -243,29 +323,32 @@ class Tmux:
         return target
 
     def new_session(
-        self, name: str, cwd: str, command: Sequence[str], width: int = 160, height: int = 45
+        self,
+        name: str,
+        cwd: str,
+        command: Sequence[str],
+        width: int = 160,
+        height: int = 45,
+        *,
+        window_name: str | None = None,
     ) -> str:
-        """Create a detached session whose first window runs ``command``; returns its pane target."""
+        """Create a detached session whose first window runs ``command``; returns its pane target.
+
+        The first window inherits the server environment (``run()`` already
+        scrubbed it when this call starts the server); the session environment is
+        scrubbed right after so every later window is clean too.
+        """
         if not command:
             raise ValueError("command must not be empty")
-        target = self.run(
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-c",
-            cwd,
-            "-x",
-            str(width),
-            "-y",
-            str(height),
-            "-P",
-            "-F",
-            TARGET_FORMAT,
-            shlex.join(list(command)),
-        ).strip()
+        args = ["new-session", "-d", "-s", name, "-c", cwd, "-x", str(width), "-y", str(height)]
+        if window_name:
+            args += ["-n", window_name]
+        args += ["-P", "-F", TARGET_FORMAT, shlex.join(list(command))]
+        target = self.run(*args).strip()
         if not is_pane_target(target):
             raise TmuxError(f"unexpected new-session output: {target!r}")
+        log.info("created tmux session %s with pane %s", name, target)
+        self.scrub_environment(name)
         self.resize_window(target, width, height)
         return target
 
@@ -284,6 +367,26 @@ class Tmux:
 
     def kill_window(self, target: str) -> None:
         self.run("kill-window", "-t", target)
+
+    def pane_environment(self, target: str) -> dict[str, str]:
+        """The live environment of the pane's process (``/proc/<pane_pid>/environ``).
+
+        Linux only; returns ``{}`` when the pid or the file cannot be read.
+        """
+        pid = self.pane_pid(target)
+        if not pid:
+            return {}
+        try:
+            raw = open(f"/proc/{pid}/environ", "rb").read()  # noqa: SIM115
+        except OSError:
+            return {}
+        env: dict[str, str] = {}
+        for item in raw.split(b"\0"):
+            if not item:
+                continue
+            k, _, v = item.decode("utf-8", errors="replace").partition("=")
+            env[k] = v
+        return env
 
     def alternate_on(self, target: str) -> bool:
         return self._display(target, "#{alternate_on}").strip() == "1"

@@ -45,9 +45,11 @@ from zordon.bus import (
     SpeechChunk,
     StateChanged,
     TranscriptRow,
+    drain,
 )
 from zordon.config import VERBOSITY_LEVELS
 from zordon.transport import protocol as P
+from zordon.transport.sanitize import sanitize_keystrokes
 
 log = logging.getLogger("zordon.transport.ws")
 
@@ -61,6 +63,13 @@ UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 ALLOWED_PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")
 FORBIDDEN_PERMISSION_MODES = ("bypassPermissions",)
 PROVIDER_KINDS = ("stt", "tts", "normalizer", "router")
+# ``voice`` is not a provider but the TTS voice; it rides on the same command.
+PROVIDER_LIKE_KINDS = (*PROVIDER_KINDS, "voice")
+# Command handlers call synchronous SessionControl methods that may block (tmux,
+# discovery, futures on the session thread). They run on the default executor so
+# the event loop keeps reading audio and sending flushes; past this many seconds
+# the client gets an error and the handler is left to finish on its thread.
+COMMAND_TIMEOUT_S = 12.0
 _SECRET_WORDS = ("key", "token", "secret", "password")
 
 # Ephemeral notices get row ids far below anything the transcript store hands out
@@ -86,7 +95,7 @@ def to_outbound(event: Any) -> list[BaseModel | dict[str, Any]]:
             )
         ]
     if isinstance(event, Flush):
-        return [P.FlushOut(generation=event.generation)]
+        return [P.FlushOut(generation=event.generation, sentence_id=event.interrupted_sentence_id)]
     if isinstance(event, StateChanged):
         return [
             P.StateOut(
@@ -367,6 +376,10 @@ class ClientConnection:
         self.audio_ignored = 0
         self.last_flush_ack = 0
         self._closed = False
+        # WEB-6: only non-ping traffic counts as activity for the idle disconnect.
+        self._last_activity = time.monotonic()
+        self._cmd_lock: asyncio.Lock | None = None
+        self._cmd_tasks: set[asyncio.Task[Any]] = set()
 
     # ---- lifecycle -------------------------------------------------------------------
 
@@ -376,9 +389,10 @@ class ClientConnection:
         self.broadcaster.register(self)
         log.info("client %s connected", self.client_id)
         try:
-            await self._send_model(self._hello())
-            await self._send_model(self._sessions())
-            for row in self._transcript_tail():
+            self._cmd_lock = asyncio.Lock()
+            await self._send_model(await self._off_loop(self._hello))
+            await self._send_model(await self._off_loop(self._sessions))
+            for row in await self._off_loop(self._transcript_tail):
                 await self._send_model(row)
             recv = asyncio.create_task(self._receive_loop(), name=f"ws-recv-{self.client_id}")
             send = asyncio.create_task(self._send_loop(), name=f"ws-send-{self.client_id}")
@@ -404,6 +418,8 @@ class ClientConnection:
         except (WebSocketDisconnect, WebSocketDisconnected):
             pass
         finally:
+            for task in list(self._cmd_tasks):
+                task.cancel()
             self.broadcaster.unregister(self)
             if self.call_active:
                 self.call_active = False
@@ -464,7 +480,10 @@ class ClientConnection:
         while not self._closed:
             try:
                 if self.idle_seconds:
-                    message = await asyncio.wait_for(self.ws.receive(), timeout=self.idle_seconds)
+                    remaining = self.idle_seconds - (time.monotonic() - self._last_activity)
+                    if remaining <= 0:
+                        raise TimeoutError
+                    message = await asyncio.wait_for(self.ws.receive(), timeout=remaining)
                 else:
                     message = await self.ws.receive()
             except TimeoutError:
@@ -491,12 +510,16 @@ class ClientConnection:
             await self._close(status.WS_1008_POLICY_VIOLATION, "protocol errors")
 
     async def _handle(self, msg: Any) -> None:
+        if not isinstance(msg, P.Ping):
+            self._last_activity = time.monotonic()
         if isinstance(msg, P.AudioIn):
             self._audio(msg)
         elif isinstance(msg, P.TextIn):
-            self._safe_call(self.agent.submit_text, msg.text, self.client_id)
+            text = sanitize_keystrokes(msg.text)
+            if text.strip():
+                self._safe_call(self.agent.submit_text, text, self.client_id)
         elif isinstance(msg, P.CommandIn):
-            await self._reply(self._command(msg))
+            self._spawn_command(msg)
         elif isinstance(msg, P.CallIn):
             self.call_active = msg.action in ("start", "resume")
             self._safe_call(self.agent.call_state, self.client_id, msg.action)
@@ -527,15 +550,51 @@ class ClientConnection:
 
     # ---- commands -------------------------------------------------------------------
 
-    def _command(self, cmd: P.CommandIn) -> BaseModel | list[BaseModel] | None:
+    def _spawn_command(self, cmd: P.CommandIn) -> None:
+        """Run the command on its own task so the receive loop keeps reading audio.
+
+        Commands of one connection still run one at a time (``_cmd_lock``), in order.
+        """
+        task = asyncio.create_task(self._run_command(cmd), name=f"ws-cmd-{cmd.name}")
+        self._cmd_tasks.add(task)
+        task.add_done_callback(self._cmd_tasks.discard)
+        task.add_done_callback(_retrieve_exception)
+
+    async def _run_command(self, cmd: P.CommandIn) -> None:
+        lock = self._cmd_lock
+        if lock is None:
+            self._cmd_lock = lock = asyncio.Lock()
+        async with lock:
+            if self._closed:
+                return
+            reply = await self._command(cmd)
+        try:
+            await self._reply(reply)
+        except (WebSocketDisconnect, WebSocketDisconnected, RuntimeError):
+            pass
+
+    async def _command(self, cmd: P.CommandIn) -> BaseModel | list[BaseModel] | None:
+        """Run one command handler off the event loop, bounded by ``COMMAND_TIMEOUT_S``."""
         handler = self._handlers().get(cmd.name)
         if handler is None:
             return P.ErrorOut(message=f"command {cmd.name} is not handled", code="command")
         try:
-            return handler(cmd.args)
+            return await asyncio.wait_for(
+                self._off_loop(handler, cmd.args), timeout=COMMAND_TIMEOUT_S
+            )
+        except TimeoutError:
+            log.warning("client %s: command %s timed out", self.client_id, cmd.name)
+            return P.ErrorOut(
+                message=f"{cmd.name} did not finish within {COMMAND_TIMEOUT_S:.0f}s",
+                code="timeout",
+            )
         except Exception as e:  # noqa: BLE001
             log.warning("client %s: command %s failed: %r", self.client_id, cmd.name, e)
             return P.ErrorOut(message=f"{cmd.name} failed: {e}", code="command")
+
+    async def _off_loop(self, fn: Callable[..., Any], *args: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, fn, *args)
 
     def _handlers(self) -> dict[str, Callable[[dict[str, Any]], Any]]:
         return {
@@ -623,7 +682,7 @@ class ClientConnection:
         return self._sessions()
 
     def _cmd_send_text(self, args: dict[str, Any]) -> BaseModel | None:
-        text = _str_arg(args, "text")
+        text = _text_arg(args, "text")
         if text is None:
             return _bad_argument("text")
         sid = self._need_session(args)
@@ -642,7 +701,7 @@ class ClientConnection:
         return None
 
     def _cmd_plan_revise(self, args: dict[str, Any]) -> BaseModel | None:
-        text = _str_arg(args, "text")
+        text = _text_arg(args, "text")
         if text is None:
             return _bad_argument("text")
         sid = self._need_session(args)
@@ -654,6 +713,8 @@ class ClientConnection:
 
     def _cmd_answer(self, args: dict[str, Any]) -> BaseModel | None:
         option = args.get("option")
+        if isinstance(option, str):
+            option = sanitize_keystrokes(option)
         if not isinstance(option, (int, str)) or isinstance(option, bool) or option == "":
             return _bad_argument("option")
         sid = self._need_session(args)
@@ -664,11 +725,23 @@ class ClientConnection:
         return None
 
     def _cmd_stop(self, args: dict[str, Any]) -> BaseModel | None:
+        """Stop: silence speech now (a real Flush with a new generation, so chunks still
+        in flight and sentences already synthesized are dropped everywhere) and send
+        Escape to the focused pane."""
+        self._flush_speech()
         sid = self._need_session(args)
         if isinstance(sid, P.ErrorOut):
             return sid
         self.agent.sessions.send_escape(sid)
         return None
+
+    def _flush_speech(self) -> None:
+        bus = getattr(self.agent, "bus", None)
+        if bus is None or not hasattr(bus, "next_generation"):
+            return
+        generation = bus.next_generation()
+        drain(bus.playback)
+        bus.publish(Flush(generation=generation))
 
     def _set_muted(self, muted: bool) -> BaseModel:
         self.agent.set_muted(muted)
@@ -707,13 +780,32 @@ class ClientConnection:
     def _cmd_set_provider(self, args: dict[str, Any]) -> BaseModel:
         kind = _str_arg(args, "kind")
         name = _str_arg(args, "name")
-        if kind not in PROVIDER_KINDS:
+        if kind not in PROVIDER_LIKE_KINDS:
             return P.ErrorOut(
-                message=f"kind must be one of {', '.join(PROVIDER_KINDS)}", code="bad_argument"
+                message=f"kind must be one of {', '.join(PROVIDER_LIKE_KINDS)}",
+                code="bad_argument",
             )
         if name is None:
             return _bad_argument("name")
+        if kind == "voice":
+            return self._set_voice(name)
         self.agent.set_provider(kind, name)
+        return self._settings()
+
+    def _set_voice(self, name: str) -> BaseModel:
+        """``set_provider {kind: voice}``: the TTS voice. Agents expose it either as
+        ``set_voice(name)`` or by accepting kind ``voice`` in ``set_provider``."""
+        setter = getattr(self.agent, "set_voice", None)
+        if callable(setter):
+            setter(name)
+            return self._settings()
+        try:
+            self.agent.set_provider("voice", name)
+        except ValueError:
+            return P.ErrorOut(
+                message="changing the voice is not supported by this agent; set providers.tts_voice in config.toml",
+                code="unsupported",
+            )
         return self._settings()
 
     def _cmd_repeat(self, args: dict[str, Any]) -> None:
@@ -757,6 +849,7 @@ class ClientConnection:
             providers=settings_out(settings).providers,
             tts_sample_rate=int(rate or DEFAULT_TTS_SAMPLE_RATE),
             tunnel_url=getattr(self.agent, "tunnel_url", None),
+            muted=bool(settings.get("muted", False)),
         )
 
     def _sessions(self) -> P.Sessions:
@@ -801,6 +894,15 @@ def _retrieve_exception(task: asyncio.Task[Any]) -> None:
 def _str_arg(args: dict[str, Any], key: str) -> str | None:
     v = args.get(key)
     return v if isinstance(v, str) and v != "" else None
+
+
+def _text_arg(args: dict[str, Any], key: str) -> str | None:
+    """A string argument that will be typed into a pane: control/bidi characters stripped."""
+    v = _str_arg(args, key)
+    if v is None:
+        return None
+    v = sanitize_keystrokes(v)
+    return v if v.strip() else None
 
 
 def _bad_argument(name: str) -> P.ErrorOut:

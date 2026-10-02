@@ -37,8 +37,9 @@ Kokoro voices (54 in `voices-v1.0.bin`). English, American (`lang="en-us"`):
 `af_alloy af_aoede af_bella af_heart af_jessica af_kore af_nicole af_nova af_river
 af_sarah af_sky am_adam am_echo am_eric am_fenrir am_liam am_michael am_onyx am_puck
 am_santa`. English, British (`lang="en-gb"`): `bf_alice bf_emma bf_isabella bf_lily
-bm_daniel bm_fable bm_george bm_lewis`. The remaining 26 are Spanish, French, Hindi,
-Italian, Japanese, Portuguese and Chinese.
+bm_daniel bm_george bm_lewis` and one more male voice (the full list is in
+`voices-v1.0.bin`). The remaining 26 are Spanish, French, Hindi, Italian, Japanese,
+Portuguese and Chinese.
 
 Do not use `kokoro-v1.0.int8.onnx` on CPU: it measured about 7x slower than fp32
 (4.0-4.2 s for the sentence fp32 does in 0.5 s). The fp16 model and GPU execution
@@ -103,9 +104,13 @@ A key is read from `[providers.keys]` first and from the environment second:
 | `typesafe` | `TYPESAFE_API_KEY` |
 
 An empty entry means "not configured", not "an empty key". `config.toml` is written
-with mode `0600`. Keys are passed to the SDKs explicitly and never exported into
-the environment, so child processes (tmux, cloudflared) do not inherit them. They
-never appear in logs, in the `hello` or `settings` messages, or in a transcript row.
+with mode `0600`. Keys are passed to the SDKs explicitly and Zordon never exports
+them into the environment itself; the tunnel child (cloudflared/ngrok) is started
+with every `*_API_KEY`, `*_TOKEN`, `*_SECRET` and provider-prefixed variable
+removed. Keys you supply through environment variables are, like any variable,
+visible to the tmux server and the Claude Code panes Zordon starts, so prefer
+`config.toml` when that matters. Keys never appear in logs, in the `hello` or
+`settings` messages, or in a transcript row.
 
 ## Model and binary downloads
 
@@ -174,7 +179,7 @@ With the defaults, only two cloud calls happen per spoken sentence or utterance:
 | `anthropic` normalizer, Haiku 4.5 | $1.00 per million input tokens, $5.00 per million output | about 600 input + 30 output tokens per sentence: under $0.001 | a few cents |
 | `jev` router | $0.042 per million input tokens; output free | about 700 tokens per utterance: $0.00003 | well under a cent |
 | `anthropic` router (fallback) | as above | about 400 input + 30 output tokens | a few cents |
-| `claude-sonnet-5` normalizer | $2.00 / $10.00 per million; about 30% more tokens than Haiku for the same text | | roughly 2-3x Haiku |
+| `claude-sonnet-5` normalizer | $2.00 / $10.00 per million; about 30% more tokens than `claude-sonnet-4-6` for the same text | | roughly 2-3x Haiku |
 | `openai`, `groq`, `elevenlabs` | not measured here; see the provider's pricing page | | |
 
 The local providers cost nothing to run. `passthrough` and `keyword` make no calls

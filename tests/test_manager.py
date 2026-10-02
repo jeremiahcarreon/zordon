@@ -32,7 +32,12 @@ from zordon.bus import (
 from zordon.config import Config
 from zordon.session import discovery, hooks
 from zordon.session import manager as M
-from zordon.session.manager import SessionBusy, SessionManager, UnknownSession
+from zordon.session.manager import QUIET_IDLE_POLLS, SessionBusy, SessionManager, UnknownSession
+
+
+def claude_argv(command: list[str]) -> list[str]:
+    """The ``claude ...`` part of a launched command (after the ``env -u ...`` scrub prefix)."""
+    return discovery.strip_env_prefix(command)
 
 
 def lines_of(name: str) -> list[str]:
@@ -75,19 +80,25 @@ class FakeTmux:
     # Tmux surface used by the manager
     def ensure_session(self, name: str, cwd: str | None = None, width: int = 160, height: int = 45) -> str:
         self.sessions.add(name)
+        self.calls.append(("ensure_session", name))
         return name
 
     def has_session(self, name: str) -> bool:
         return name in self.sessions
 
     def new_window(self, session: str, name: str, cwd: str, command, width: int = 160, height: int = 45) -> str:
+        """Like the real one: creates the session with this window first when it is missing."""
+        kind = "new_window"
+        if session not in self.sessions:
+            self.sessions.add(session)
+            kind = "new_session"
         self._n += 1
         target = f"{session}:@{self._n}.%{self._n}"
         self.windows.append((target, name, cwd, list(command)))
         self.alive[target] = True
         self.screens.setdefault(target, [])
         self.alt.setdefault(target, False)
-        self.calls.append(("new_window", target, list(command)))
+        self.calls.append((kind, target, list(command)))
         return target
 
     def pane_exists(self, target: str) -> bool:
@@ -204,8 +215,10 @@ def test_start_opens_pane_with_hooks_and_publishes_working(env):
     mgr, bus, tmux, clock, proj = env
     sid = mgr.start(str(proj), "plan")
     assert discovery.UUID_RE.match(sid)
-    target, name, cwd, command = tmux.windows[0]
+    target, name, cwd, full = tmux.windows[0]
     assert cwd == str(proj)
+    assert full[0] == "env" and "-u" in full  # RR-7 / SEC-2: scrub prefix
+    command = claude_argv(full)
     assert command[:3] == ["claude", "--session-id", sid]
     assert "--permission-mode" in command and command[command.index("--permission-mode") + 1] == "plan"
     settings = Path(command[command.index("--settings") + 1])
@@ -215,7 +228,13 @@ def test_start_opens_pane_with_hooks_and_publishes_working(env):
     data = json.loads(settings.read_text())
     assert set(data["hooks"]) == {"Notification", "UserPromptSubmit", "Stop"}
     assert "PermissionRequest" not in data["hooks"]
-    assert "s3cr3t" in data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    hook_cmd = data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "s3cr3t" not in hook_cmd and "s3cr3t" not in settings.read_text()  # SEC-6
+    curlrc = discovery.hook_curl_config_path(settings)
+    assert f"-K {curlrc}" in hook_cmd
+    assert curlrc.is_file() and stat.S_IMODE(curlrc.stat().st_mode) == 0o600
+    assert "X-Zordon-Hook-Secret: s3cr3t-s3cr3t-s3cr3t" in curlrc.read_text()
+    assert "http://127.0.0.1:8765/hooks/claude" in hook_cmd  # SEC-8: the default bind
     assert mgr.state_of(sid) is SessionState.WORKING
     assert mgr.focused() == sid
     assert "zordon" in tmux.sessions
@@ -235,9 +254,55 @@ def test_start_without_hook_config_passes_no_settings(env):
     mgr, bus, tmux, clock, proj = env
     mgr.hook_port = None
     sid = mgr.start(str(proj))
-    command = tmux.windows[0][3]
+    command = claude_argv(tmux.windows[0][3])
     assert "--settings" not in command
-    assert command == ["claude", "--session-id", sid]
+    assert command == ["claude", "--session-id", sid, "--permission-mode", "default"]
+
+
+def test_start_and_resume_without_a_mode_never_inherit_auto(env):
+    """RR-2: Claude Code 2.1.x starts in auto when no mode is given; Zordon always names one."""
+    mgr, bus, tmux, clock, proj = env
+    sid = mgr.start(str(proj))
+    command = claude_argv(tmux.windows[0][3])
+    assert command[command.index("--permission-mode") + 1] == "default"
+    other = fs.sid(8)
+    fs.write_session(mgr.claude_home, str(proj), other, [fs.user_prompt(other, str(proj), time.time() - 60, "hello")])
+    mgr.resume(other)
+    command = claude_argv(tmux.windows[1][3])
+    assert command[:3] == ["claude", "--resume", other]
+    assert command[command.index("--permission-mode") + 1] == "default"
+    # An explicit mode is still honoured (narrowing only; bypass is refused by the builder).
+    sid3 = mgr.start(str(proj), "plan")
+    assert claude_argv(tmux.windows[2][3])[-1] == "plan"
+    assert sid3 != sid
+    with pytest.raises(ValueError):
+        mgr.start(str(proj), "bypassPermissions")
+
+
+def test_hook_url_follows_the_server_bind(env):
+    """SEC-8: a server bound to one address only listens there, so the pane posts there."""
+    mgr, bus, tmux, clock, proj = env
+    mgr.config.server.bind = "100.101.102.103"
+    mgr.config.server.token = "t" * 32
+    sid = mgr.start(str(proj))
+    settings = mgr.sessions[sid].settings_path
+    cmd = json.loads(settings.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "http://100.101.102.103:8765/hooks/claude" in cmd
+    mgr.config.server.bind = "0.0.0.0"
+    sid2 = mgr.start(str(proj))
+    cmd2 = json.loads(mgr.sessions[sid2].settings_path.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "http://127.0.0.1:8765/hooks/claude" in cmd2
+
+
+def test_first_pane_is_the_first_window_of_the_tmux_session(env):
+    """RR-8: no stray shell window; the Claude Code pane creates the session."""
+    mgr, bus, tmux, clock, proj = env
+    a = mgr.start(str(proj))
+    b = mgr.start(str(proj))
+    kinds = [c[0] for c in tmux.calls if c[0] in ("ensure_session", "new_session", "new_window")]
+    assert kinds == ["new_session", "new_window"]
+    assert "zordon" in tmux.sessions
+    assert mgr.sessions[a].target != mgr.sessions[b].target
 
 
 def test_idle_screen_moves_to_idle(env):
@@ -274,12 +339,14 @@ def test_pane_gone_detaches_and_removes_hook_settings(env):
     sid, target = started(env)
     settings = mgr.sessions[sid].settings_path
     assert settings and settings.exists()
+    curlrc = discovery.hook_curl_config_path(settings)
+    assert curlrc.exists()
     tmux.alive[target] = False
     mgr.poll_once()
     ev = drain(bus)
     assert states(ev) == [SessionState.DETACHED]
     assert mgr.sessions[sid].attached is False
-    assert not settings.exists()
+    assert not settings.exists() and not curlrc.exists()
     assert mgr.focused() is None
     # Not polled any more, but still listed for resume.
     mgr.poll_once()
@@ -302,6 +369,115 @@ def test_exit_line_on_normal_screen_detaches_with_notice(env):
     assert tmux.alive[target]
 
 
+SHELL_ONLY = [
+    "user@host:~/proj$ claude --resume 11111111-2222-4333-8444-555555555555",
+    "No conversation found with session ID: 11111111-2222-4333-8444-555555555555",
+    "user@host:~/proj$",
+]
+CRASH_NO_RESUME_LINE = [
+    "node:internal/process/promises:289",
+    "    triggerUncaughtException(err, true /* fromPromise */);",
+    "Error: boom",
+    "    at main (file:///x/cli.js:12:3)",
+    "user@host:~/proj$",
+]
+
+
+def test_shell_prompt_after_failed_start_detaches_and_refuses_text(env):
+    """PR-2: a bare shell is never Claude Code; voice text must not become a shell command."""
+    mgr, bus, tmux, clock, proj = env
+    sid = mgr.start(str(proj))
+    target = mgr.sessions[sid].target
+    drain(bus)
+    tmux.set_screen(target, SHELL_ONLY, alt=False)
+    mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.WORKING  # one poll is not enough
+    assert mgr.sessions[sid].exit_polls == 1
+    mgr.poll_once()
+    ev = drain(bus)
+    assert states(ev) == [SessionState.DETACHED]
+    assert any(isinstance(e, Notice) and e.speak and "exited" in e.text for e in ev)
+    assert mgr.sessions[sid].attached is False
+    with pytest.raises(M.SessionError):
+        mgr.send_text(sid, "delete the build directory and rerun the tests")
+    assert not any(c[0] in ("literal", "enter", "key") for c in tmux.calls)
+
+
+def test_leaving_the_alternate_screen_without_the_resume_line_detaches(env):
+    """PR-2: a crash shows no 'claude --resume' line; having left the TUI is enough."""
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env)  # alt screen seen
+    assert mgr.sessions[sid].seen_alternate
+    tmux.set_screen(target, CRASH_NO_RESUME_LINE[:-1], alt=False)  # no shell prompt yet
+    mgr.poll_once()
+    assert mgr.state_of(sid) is not SessionState.DETACHED  # one poll is not enough
+    drain(bus)
+    mgr.poll_once()
+    ev = drain(bus)
+    assert states(ev) == [SessionState.DETACHED]
+    assert mgr.sessions[sid].attached is False
+    assert mgr.focused() is None
+    # The closed-session marker lets the pipeline flush its buffers (CONC-8).
+    markers = [ln for ln in drain_lines(bus) if ln.block == "turn_end"]
+    assert len(markers) == 1 and markers[0].session_id == sid and markers[0].meta["reason"] == "session_closed"
+
+
+def test_brief_normal_screen_flicker_does_not_detach(env):
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env)
+    tmux.set_screen(target, ["", ""], alt=False)
+    mgr.poll_once()
+    tmux.set_screen(target, lines_of("idle.txt"), alt=True)
+    mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.IDLE
+    assert mgr.sessions[sid].exit_polls == 0
+    assert SessionState.DETACHED not in states(drain(bus))
+    assert mgr.sessions[sid].attached
+
+
+def test_trust_dialog_on_the_normal_screen_is_not_an_exit_and_accepts_keys(env):
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env, "trust_dialog.txt", alt=False)
+    for _ in range(4):
+        mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.AWAITING_PERMISSION
+    assert mgr.sessions[sid].exit_polls == 0
+    assert mgr.accept_trust(sid) is True  # the one prompt that lives off the alternate screen
+    assert tmux.keys() == ["Down", "Enter"]
+
+
+def test_keystrokes_refused_off_the_alternate_screen_unless_trust_dialog(env):
+    """PR-2: no send_text / Escape / menu selection into a pane that is not showing the TUI."""
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env, "bash_permission.txt")
+    assert mgr.current_prompt(sid) is not None
+    tmux.alt[target] = False  # the TUI vanished between the poll and the keystroke
+    with pytest.raises(M.SessionError, match="won't type"):
+        mgr.send_text(sid, "yes")
+    with pytest.raises(M.SessionError):
+        mgr.send_escape(sid)
+    with pytest.raises(M.SessionError):
+        mgr.approve(sid)
+    with pytest.raises(M.SessionError):
+        mgr.deny(sid)
+    assert tmux.calls == []
+    notices = [e for e in drain(bus) if isinstance(e, Notice)]
+    assert notices and all(n.speak and "won't type" in n.text for n in notices)
+    tmux.alt[target] = True
+    assert mgr.approve(sid) is True
+    assert tmux.keys() == ["Enter"]
+
+
+def test_looks_like_shell_prompt_regex():
+    yes = ["user@host:~/proj$", "user@host:~/proj$ ", "(venv) user@host:~$", "host% ", "# ", "$", "~/proj %", "/root#"]
+    no = ["$ claude --session-id x", "Permission deny rule (...)", "100%", "Downloading 45%", "", "   ", "❯ ", "No conversation found"]
+    for line in yes:
+        assert M.looks_like_shell_prompt(["other", line, ""]), line
+    for line in no:
+        assert not M.looks_like_shell_prompt(["other", line]), line
+    assert not M.looks_like_shell_prompt([])
+
+
 def test_detach_and_delete(env):
     mgr, bus, tmux, clock, proj = env
     sid, target = started(env)
@@ -311,12 +487,67 @@ def test_detach_and_delete(env):
     assert tmux.alive[target]  # pane keeps running
     with pytest.raises(M.SessionError):
         mgr.send_text(sid, "hi")
+    # CONC-8: the pipeline is told the stream ended so its buffers flush now.
+    closed = [ln for ln in drain_lines(bus) if ln.block == "turn_end"]
+    assert len(closed) == 1 and closed[0].session_id == sid and closed[0].source == "jsonl"
     mgr.delete(sid)
     assert ("kill_window", target) in tmux.calls
     assert sid not in mgr.sessions
     assert mgr.state_of(sid) is SessionState.DETACHED
+    closed = [ln for ln in drain_lines(bus) if ln.block == "turn_end"]
+    assert len(closed) == 1 and closed[0].session_id == sid
     with pytest.raises(UnknownSession):
         mgr.delete(sid)
+
+
+def test_automatic_refocus_publishes_a_sessions_snapshot(env):
+    """CONC-11: pane died / delete / exit move focus; every client's picker must learn it."""
+    mgr, bus, tmux, clock, proj = env
+    a, ta = started(env)
+    b = mgr.start(str(proj))
+    tb = mgr.sessions[b].target
+    tmux.set_screen(tb, lines_of("idle.txt"))
+    mgr.poll_once()
+    drain(bus)
+    assert mgr.focused() == a
+    published: list[str | None] = []
+    mgr.publish_sessions = lambda: published.append(mgr.focused())
+    # Explicit focus is the agent's business (it publishes itself): no snapshot from here.
+    mgr.focus(b)
+    mgr.focus(a)
+    assert published == []
+    # Pane a dies: focus moves to b automatically.
+    tmux.alive[ta] = False
+    mgr.poll_once()
+    assert mgr.focused() == b and published == [b]
+    # Deleting the focused session moves focus (to None here).
+    mgr.delete(b)
+    assert mgr.focused() is None and published == [b, None]
+    # Deleting an unfocused session changes nothing.
+    c = mgr.start(str(proj))
+    d = mgr.start(str(proj))
+    assert mgr.focused() == c
+    mgr.delete(d)
+    assert published == [b, None]
+    # Exit line on the focused pane: snapshot again.
+    tmux.set_screen(mgr.sessions[c].target, lines_of("exit.txt"), alt=False)
+    mgr.poll_once()
+    assert published == [b, None, None]
+
+
+def test_default_sessions_snapshot_is_the_transport_message(env):
+    from zordon.transport.protocol import Sessions
+
+    mgr, bus, tmux, clock, proj = env
+    a, ta = started(env)
+    b = mgr.start(str(proj))
+    drain(bus)
+    tmux.alive[ta] = False
+    mgr.poll_once()
+    snaps = [e for e in drain(bus) if isinstance(e, Sessions)]
+    assert len(snaps) == 1
+    rows = {r.session_id: r for r in snaps[0].sessions}
+    assert rows[b].focused and not rows[a].focused
 
 
 def test_focus_switches_between_sessions(env):
@@ -870,14 +1101,51 @@ def test_set_permission_mode_refuses_while_a_prompt_is_up(env, monkeypatch):
     assert tmux.keys() == []  # Shift+Tab on a plan prompt would approve it
 
 
-def test_set_permission_mode_gives_up_after_six_presses(env, monkeypatch):
+def test_set_permission_mode_unreachable_target_returns_to_the_start_mode(env, monkeypatch):
+    """CONC-1: a full cycle without the target stops at the starting mode, never two steps away."""
     mgr, bus, tmux, clock, proj = env
     monkeypatch.setattr(M, "BTAB_SETTLE", 0.0)
     tmux.btab_cycles = True
     sid, target = started(env)
     assert mgr.set_permission_mode(sid, "auto") is False
-    assert tmux.keys() == ["BTab"] * M.MAX_BTAB_PRESSES
-    assert any(isinstance(e, Notice) and "auto" in e.text for e in drain(bus))
+    # manual -> accept edits -> plan -> manual: back where it started after one cycle.
+    assert tmux.keys() == ["BTab"] * len(FakeTmux.MODE_CYCLE)
+    assert len(tmux.keys()) <= M.MAX_BTAB_PRESSES
+    assert mgr.sessions[sid].permission_mode == "default"
+    assert any("manual mode on" in line for line in tmux.capture(target))
+    notices = [e for e in drain(bus) if isinstance(e, Notice)]
+    assert len(notices) == 1 and "auto" in notices[0].text and "back in default mode" in notices[0].text
+
+
+def test_set_permission_mode_gives_up_when_bypass_keeps_showing(env, monkeypatch):
+    """CONC-1: a status row stuck on bypass must not spin the session thread forever."""
+    mgr, bus, tmux, clock, proj = env
+    monkeypatch.setattr(M, "BTAB_SETTLE", 0.0)
+    sid, target = started(env)
+    stuck = with_mode(lines_of("idle.txt"), "bypass permissions")
+    tmux.set_screen(target, stuck)  # every capture after a press keeps saying bypass
+    mgr.poll_once()
+    drain(bus)
+    tmux.calls.clear()
+    assert mgr.set_permission_mode(sid, "plan") is False
+    assert 1 <= len(tmux.keys()) <= M.MAX_BYPASS_STEPS + 1
+    assert set(tmux.keys()) == {"BTab"}
+    notices = [e for e in drain(bus) if isinstance(e, Notice)]
+    assert len(notices) == 1 and notices[0].speak and "couldn't switch to plan mode" in notices[0].text
+    # The thread is not lost: polling and commands still work.
+    mgr.poll_once()
+    assert mgr.state_of(sid) is not None
+
+
+def test_set_permission_mode_stops_when_the_status_row_does_not_react(env, monkeypatch):
+    mgr, bus, tmux, clock, proj = env
+    monkeypatch.setattr(M, "BTAB_SETTLE", 0.0)
+    sid, target = started(env)  # manual mode, and BTab changes nothing (btab_cycles False)
+    assert mgr.set_permission_mode(sid, "plan") is False
+    assert tmux.keys() == ["BTab"] * M.MAX_STUCK_READS
+    assert mgr.sessions[sid].permission_mode == "default"
+    notices = [e for e in drain(bus) if isinstance(e, Notice)]
+    assert len(notices) == 1 and "status row did not change" in notices[0].text
 
 
 # ---- resume / discovery -----------------------------------------------------------------------
@@ -889,6 +1157,7 @@ def test_resume_opens_window_with_resume_command(env):
     fs.write_session(mgr.claude_home, str(proj), sid, [fs.user_prompt(sid, str(proj), time.time() - 60, "hello")])
     mgr.resume(sid, "acceptEdits")
     target, name, cwd, command = tmux.windows[0]
+    command = claude_argv(command)
     assert command[:3] == ["claude", "--resume", sid]
     assert "--permission-mode" in command and "acceptEdits" in command
     assert cwd == str(proj)
@@ -948,7 +1217,7 @@ def test_resume_after_exit_replaces_the_dead_pane(env):
     assert ("kill_window", target) in tmux.calls
     new_target = mgr.sessions[sid].target
     assert new_target != target
-    assert tmux.windows[-1][3][:3] == ["claude", "--resume", sid]
+    assert claude_argv(tmux.windows[-1][3])[:3] == ["claude", "--resume", sid]
     assert states(drain(bus)) == [SessionState.WORKING]
 
 
@@ -967,6 +1236,108 @@ def test_list_sessions_merges_live_and_store(env):
 
 
 # ---- thread -----------------------------------------------------------------------------------
+
+
+def test_timed_out_command_is_cancelled_and_never_runs_later(env, monkeypatch):
+    """CONC-7: a command the thread did not reach in time must not type into the pane later."""
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env)
+    monkeypatch.setattr(M, "COMMAND_TIMEOUT", 0.2)
+    import threading
+
+    release = threading.Event()
+    orig_capture = tmux.capture
+
+    def slow_capture(target_: str, *a, **k):
+        release.wait(2.0)  # the session thread is stuck in a poll
+        return orig_capture(target_, *a, **k)
+
+    tmux.capture = slow_capture  # type: ignore[method-assign]
+    mgr.start_thread()
+    try:
+        deadline = time.time() + 2
+        while mgr.polls < 2 and time.time() < deadline:
+            time.sleep(0.01)  # the thread is inside the slow capture now
+        t0 = time.monotonic()
+        with pytest.raises(M.CommandTimeout) as info:
+            mgr.send_text(sid, "do the thing", )
+        assert time.monotonic() - t0 < 1.5
+        assert info.value.executed is False
+        assert "dropped" in str(info.value)
+        release.set()
+        time.sleep(0.4)  # the thread drains the queue: the cancelled command is skipped
+        assert not any(c[0] in ("literal", "enter") for c in tmux.calls)
+        notices = [e for e in drain(bus) if isinstance(e, Notice) and "dropped" in e.text]
+        assert notices and notices[0].speak
+        # The thread is healthy: a fresh command goes through.
+        mgr.send_text(sid, "second")
+        assert ("literal", target, "second") in tmux.calls
+    finally:
+        release.set()
+        mgr.stop()
+
+
+def test_timed_out_running_command_reports_it_may_still_execute(env, monkeypatch):
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env)
+    monkeypatch.setattr(M, "COMMAND_TIMEOUT", 0.2)
+    import threading
+
+    release = threading.Event()
+    orig = tmux.send_literal
+
+    def slow_literal(target_: str, text: str) -> None:
+        release.wait(2.0)
+        orig(target_, text)
+
+    tmux.send_literal = slow_literal  # type: ignore[method-assign]
+    mgr.start_thread()
+    try:
+        with pytest.raises(M.CommandTimeout) as info:
+            mgr.send_text(sid, "slow one")
+        assert info.value.executed is None
+        assert "may still" in str(info.value)
+        release.set()
+        deadline = time.time() + 2
+        while ("literal", target, "slow one") not in tmux.calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert ("literal", target, "slow one") in tmux.calls  # it did run, as the message warned
+    finally:
+        release.set()
+        mgr.stop()
+
+
+def test_permission_summary_waits_for_the_observed_mode(env, monkeypatch):
+    """RR-2: the summary names the mode the pane really shows, never an assumed default."""
+    mgr, bus, tmux, clock, proj = env
+    monkeypatch.setattr(M, "MODE_OBSERVE_TIMEOUT", 0.6)
+    sid = mgr.start(str(proj))
+    target = mgr.sessions[sid].target
+    assert mgr.sessions[sid].permission_mode is None
+    # Not running: nothing to wait for, and no mode is invented.
+    sentence = mgr.permission_summary(sid)
+    assert sentence.startswith("I can't tell which permission mode")
+    assert "default mode" not in sentence
+    # Running: the status row shows auto a moment later and the summary says so.
+    import threading
+
+    tmux.set_screen(target, ["", "no status row yet"], alt=True)
+    mgr.start_thread()
+    try:
+        threading.Timer(0.15, lambda: tmux.set_screen(target, with_mode(lines_of("idle.txt"), "auto"))).start()
+        t0 = time.monotonic()
+        sentence = mgr.permission_summary(sid)
+        assert time.monotonic() - t0 < 0.6
+        assert sentence.startswith("This session is in auto mode")
+        # Never observed within the timeout: honest sentence, no guess.
+        sid2 = mgr.start(str(proj))
+        tmux.set_screen(mgr.sessions[sid2].target, ["", "nothing readable"], alt=True)
+        t0 = time.monotonic()
+        sentence = mgr.permission_summary(sid2)
+        assert 0.5 <= time.monotonic() - t0 < 1.5
+        assert sentence.startswith("I can't tell which permission mode")
+    finally:
+        mgr.stop()
 
 
 def test_commands_run_on_the_session_thread(env):
@@ -997,3 +1368,18 @@ def test_commands_run_on_the_session_thread(env):
     finally:
         mgr.stop()
     assert not mgr.is_alive()
+
+
+def test_quiet_input_box_becomes_idle_without_a_completion_row(env):
+    """showTurnDuration off / unknown wording: a quiet input box with unchanged content
+    for a few seconds is idle, but a believed prompt is never overridden."""
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env, "working_no_spinner.txt")
+    assert mgr.state_of(sid) is SessionState.WORKING
+    for _ in range(QUIET_IDLE_POLLS - 1):
+        clock.advance(0.1)
+        mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.WORKING
+    clock.advance(0.1)
+    mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.IDLE

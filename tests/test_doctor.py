@@ -80,10 +80,33 @@ def test_tmux_check_handles_a_hanging_binary(fake_bin: Path):
 
 def test_claude_check_with_fake_binary(fake_bin: Path):
     c = doctor.check_claude()
-    assert c.status == OK and c.detail == "2.1.287 (Claude Code)"
+    assert c.status == OK and c.detail.startswith("2.1.287 (Claude Code)")
+    assert "prompts verified against claude-code-2.1.287" in c.detail
     (fake_bin / "claude").unlink()
     c = doctor.check_claude()
     assert c.status == FAIL and "install Claude Code" in c.fix
+
+
+def test_claude_check_warns_on_prompts_version_mismatch():
+    """DOC-06: doctor shows PROMPTS_VERSION next to the installed claude and warns on a mismatch."""
+    c = doctor.compare_prompts_version("2.1.287 (Claude Code)", "claude-code-2.1.287")
+    assert c.status == OK
+    c = doctor.compare_prompts_version("2.2.0 (Claude Code)", "claude-code-2.1.287")
+    assert c.status == WARN and "prompts-version.md" in c.fix
+    assert doctor.compare_prompts_version("garbage", "claude-code-2.1.287").status == OK
+
+
+def test_curl_and_cuda_checks():
+    """DOC-08: doctor reports curl (hooks) and, with stt_device = cuda, the CUDA libraries."""
+    assert doctor.check_curl(lambda n: "/usr/bin/curl").status == OK
+    c = doctor.check_curl(lambda n: None)
+    assert c.status == WARN and "hook" in c.detail
+    cfg = Config.default()
+    assert doctor.check_cuda(cfg, lambda m: None) is None  # cpu: nothing to say
+    cfg.providers.stt_device = "cuda"
+    assert doctor.check_cuda(cfg, lambda m: object()).status == OK
+    c = doctor.check_cuda(cfg, lambda m: None)
+    assert c.status == FAIL and "nvidia.cublas" in c.detail
 
 
 def test_claude_home_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -259,6 +282,38 @@ def test_tunnel_download_only_with_tunnel_flag(monkeypatch: pytest.MonkeyPatch, 
     assert calls == [] and c.status == WARN
     c = doctor.check_tunnel_binary(cfg, DoctorOptions(download=True, tunnel=True), downloader=fake_download)
     assert calls == ["cloudflared"] and c.status == OK and c.detail == str(binary)
+
+
+def test_download_cloudflared_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    binary = tmp_path / "cloudflared"
+
+    def fake_download(asset: assets.Asset, **kw: Any) -> Path:
+        binary.write_bytes(b"#!/bin/sh\n")
+        return binary
+
+    monkeypatch.setattr(assets, "find_binary", lambda name: str(binary) if binary.exists() else None)
+    assert doctor.download_cloudflared(fake_download) == str(binary)
+    binary.unlink()
+    monkeypatch.setattr(assets, "find_binary", lambda name: None)
+    with pytest.raises(OSError, match="not runnable"):
+        doctor.download_cloudflared(lambda asset, **kw: tmp_path / "elsewhere")
+
+
+def test_install_hints_follow_the_installer(monkeypatch: pytest.MonkeyPatch):
+    """PKG-4: a pipx-managed interpreter gets `pipx inject`, anything else `pip install`."""
+    assert doctor.install_hint("local", pipx=False) == 'pip install "zordon[local]"'
+    assert doctor.install_hint("local", pipx=True) == "pipx inject zordon faster-whisper kokoro-onnx"
+    assert doctor.install_hint("jev", pipx=True) == "pipx inject zordon typesafe-sdk"
+    assert doctor.install_hint("", "anthropic", pipx=False) == "pip install anthropic"
+    assert doctor.install_hint("", "anthropic", pipx=True) == "pipx inject zordon anthropic"
+    assert doctor.installed_with_pipx("/home/u/.local/pipx/venvs/zordon", {})
+    assert doctor.installed_with_pipx("/opt/px/venvs/zordon", {"PIPX_HOME": "/opt/px"})
+    assert not doctor.installed_with_pipx("/home/u/Code/zordon/.venv", {})
+    monkeypatch.setattr(doctor.sys, "prefix", "/home/u/.local/pipx/venvs/zordon")
+    cfg = Config.default()
+    missing = {c.name: c for c in doctor.check_modules(cfg, find_spec=lambda m: None)}
+    assert missing["module faster-whisper"].fix == "pipx inject zordon faster-whisper kokoro-onnx"
+    assert missing["module typesafe-sdk"].fix == "pipx inject zordon typesafe-sdk"
 
 
 def test_port_check():
