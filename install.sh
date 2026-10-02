@@ -21,7 +21,8 @@ set -eu
 
 REPO="https://github.com/jeremiahcarreon/zordon"
 REF="${ZORDON_REF:-main}"
-SOURCE="${ZORDON_SOURCE:-git+${REPO}@${REF}}"
+# A tarball, not a git URL, so git is not a prerequisite on a fresh machine.
+SOURCE="${ZORDON_SOURCE:-${REPO}/archive/refs/heads/${REF}.tar.gz}"
 PYTHON_VERSION="${ZORDON_PYTHON:-3.12}"
 BIN_DIR="${UV_INSTALL_DIR:-$HOME/.local/bin}"
 

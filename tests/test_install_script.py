@@ -55,7 +55,7 @@ def test_script_runs_with_no_setup_flag_in_dry_mode(tmp_path, monkeypatch):
     assert out.returncode == 0, out.stderr
     calls = log.read_text()
     assert "uv python install 3.12" in calls
-    assert "uv tool install --python 3.12 zordon @ git+https://github.com/jeremiahcarreon/zordon@main" in calls
+    assert "uv tool install --python 3.12 zordon @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz" in calls
     assert "Skipping setup" in out.stdout
 
 
