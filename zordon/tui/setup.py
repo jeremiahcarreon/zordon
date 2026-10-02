@@ -28,7 +28,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Checkbox, Input, ProgressBar, Static
 
 from zordon import __version__, assets, manifest, paths, prereqs, setup
@@ -48,7 +48,6 @@ from zordon.tui.widgets import (
     StepIndicator,
     ThreadWriter,
     TitleBar,
-    needs_terminal,
     streaming_runner,
     widget_id,
 )
@@ -629,13 +628,70 @@ class AccessScreen(QuestionScreen):
 # ---- prerequisites -------------------------------------------------------------------------------
 
 
-class PrereqRow(Vertical):
-    """One missing prerequisite with its reason, command and Install/Skip buttons."""
+class SudoPassword(ModalScreen[str | None]):
+    """Ask for the sudo password once; the TUI primes sudo so later steps never prompt."""
 
-    def __init__(self, prereq: prereqs.Prereq, env: prereqs.Environment) -> None:
+    DEFAULT_CSS = """
+    SudoPassword { align: center middle; background: $background 60%; }
+    SudoPassword > Vertical { width: 70; height: auto; border: round $primary; background: $surface; padding: 1 2; }
+    SudoPassword .sudo--title { text-style: bold; }
+    SudoPassword .sudo--body { margin: 1 0; color: $text-muted; }
+    SudoPassword .sudo--error { color: $error; }
+    SudoPassword Horizontal { height: auto; align-horizontal: right; }
+    SudoPassword Button { margin-left: 1; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, user: str, commands: list[str], error: str = "") -> None:
+        super().__init__()
+        self._user = user
+        self._commands = commands
+        self._error = error
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Text(f"Administrator password for {self._user}", style="bold"), classes="sudo--title")
+            body = Text("These steps need sudo. Zordon asks once, here, and runs them in order:\n", style=DIM)
+            for c in self._commands:
+                body.append(f"  $ {c}\n", style=BLUE)
+            body.append("The password goes to sudo only and is not stored.", style=DIM)
+            yield Static(body, classes="sudo--body")
+            if self._error:
+                yield Static(Text(self._error, style=RED), classes="sudo--error")
+            yield Input(password=True, placeholder="password", id="sudo-input")
+            with Horizontal():
+                yield Button("Cancel", id="sudo-cancel")
+                yield Button("Continue", id="sudo-ok", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#sudo-input", Input).focus()
+
+    @on(Input.Submitted, "#sudo-input")
+    @on(Button.Pressed, "#sudo-ok")
+    def _ok(self) -> None:
+        self.dismiss(self.query_one("#sudo-input", Input).value)
+
+    @on(Button.Pressed, "#sudo-cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+def prime_sudo(password: str, *, run: Callable[..., Any] = subprocess.run) -> bool:
+    """Validate the password and start sudo's credential timestamp (default 15 minutes),
+    so the streamed steps' own ``sudo`` calls succeed without a terminal."""
+    try:
+        res = run(["sudo", "-S", "-k", "-v", "-p", ""], input=password + "\n", capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return getattr(res, "returncode", 1) == 0
+
+
+class PrereqRow(Vertical):
+    """One missing prerequisite: why, command, and a status line updated as the batch runs."""
+
+    def __init__(self, prereq: prereqs.Prereq) -> None:
         super().__init__(classes="prereq", id=f"prereq-{widget_id(prereq.key)}")
         self.prereq = prereq
-        self.env = env
         self.state = "pending"  # pending | running | done | failed | skipped
 
     def compose(self) -> ComposeResult:
@@ -646,35 +702,9 @@ class PrereqRow(Vertical):
         yield Static(Text(p.why + ".", style=DIM))
         if p.detail:
             yield Static(Text(p.detail, style=DIM))
-        if p.command:
-            cmd = Text("$ ", style=DIM)
-            cmd.append(p.command, style=BLUE)
-            yield Static(cmd)
-        else:
+        if not p.command:
             yield Static(Text("No install command known for this system; install it by hand.", style=RED))
         yield Static("", id=f"status-{widget_id(p.key)}", classes="prereq--status")
-        with Horizontal():
-            yield Button("Skip", id=f"skip-{widget_id(p.key)}")
-            yield Button("Install", id=f"install-{widget_id(p.key)}", variant="primary", disabled=not p.command)
-            if prereqs.login_command(p.key):
-                yield Button(f"Open {p.label} to log in", id=f"login-{widget_id(p.key)}", variant="success", classes="hidden")
-
-    def on_mount(self) -> None:
-        self.refresh_blocked()
-
-    @property
-    def blocked_by(self) -> list[prereqs.Prereq]:
-        return [b for b in (self.env.get(n) for n in self.prereq.needs) if b is not None and b.present is None]
-
-    def refresh_blocked(self) -> None:
-        if self.state != "pending":
-            return
-        blocked = self.blocked_by
-        status = self.query_one(".prereq--status", Static)
-        if blocked:
-            status.update(Text(f"needs {', '.join(b.label for b in blocked)} first", style=DIM))
-        else:
-            status.update("")
 
     def set_state(self, state: str, message: str) -> None:
         self.state = state
@@ -683,69 +713,165 @@ class PrereqRow(Vertical):
         self.query_one(".prereq--status", Static).update(Text(mark + message, style=style))
         self.set_class(state == "done", "-done")
         self.set_class(state == "failed", "-failed")
-        busy = state in ("running", "done", "skipped")
-        self.query_one(f"#install-{widget_id(self.prereq.key)}", Button).disabled = busy or not self.prereq.command
-        self.query_one(f"#skip-{widget_id(self.prereq.key)}", Button).disabled = busy
-        if state == "done" and prereqs.login_command(self.prereq.key):
-            self.query_one(f"#login-{widget_id(self.prereq.key)}", Button).remove_class("hidden")
 
 
 class PrereqScreen(WizardScreen):
     STEP = 6
-    HINT = "Tab between buttons · Enter press · Esc back · q quit"
+    HINT = "Enter installs everything in order · Esc back · q quit"
 
     def body(self) -> ComposeResult:
         c = self.wizard.choices
         assert c is not None
         want_agents = (c.agent,) if c.agent != "generic" else ()
         env = self.wizard.env = prereqs.detect(want_agents=want_agents, want_ollama=(c.normalizer == "ollama"))
-        missing = env.missing(required_only=True)
-        if not missing:
+        self.missing = env.missing(required_only=True)
+        self.steps = prereqs.plan_steps(env, self.missing)
+        self.results: dict[str, tuple[bool, str]] = {}
+        if not self.missing:
             yield Static(Text("✓ Everything your choices need is already installed.", style=f"bold {GREEN}"), classes="question")
-        else:
-            intro = Text("Missing for your choices. ", style="bold")
-            intro.append(
-                f"Each is installed only when you press its button; sudo asks for your password in the terminal as usual. Package manager: {env.package_manager or 'none known; adapt the commands shown'}.",
-                style=DIM,
-            )
-            yield Static(intro, classes="question")
+            return
+        intro = Text("Missing for your choices. ", style="bold")
+        intro.append(
+            f"Zordon installs them in dependency order as {len(self.steps)} command{'s' if len(self.steps) != 1 else ''}; "
+            f"sudo is asked for once. Package manager: {env.package_manager or 'none known; adapt the commands shown'}.",
+            style=DIM,
+        )
+        yield Static(intro, classes="question")
         with Vertical(id="prereq-list"):
-            for p in missing:
-                yield PrereqRow(p, env)
-        if missing:
-            yield LogPanel("Install output", id="log")
+            for p in self.missing:
+                yield PrereqRow(p)
+        plan = Text("Plan\n", style="bold")
+        for i, st in enumerate(self.steps, 1):
+            plan.append(f"  {i}. ", style=DIM)
+            plan.append(st.command + "\n", style=BLUE)
+        unplanned = [p for p in self.missing if not any(p.key in st.keys for st in self.steps)]
+        for p in unplanned:
+            plan.append(f"  ✗ {p.label}: no install command for this system\n", style=RED)
+        yield Static(plan, id="prereq-plan")
+        yield LogPanel("Install output", id="log")
 
     def buttons(self) -> ComposeResult:
         yield Button("Back", id="back")
-        yield Button("Continue", id="next", variant="primary")
+        if getattr(self, "missing", None):
+            yield Button("Skip", id="skip-all")
+            yield Button("Install all prerequisites", id="install-all", variant="primary")
+        yield Button("Continue", id="next", variant="primary", classes="hidden" if getattr(self, "missing", None) else "")
 
     def on_mount(self) -> None:
-        rows = list(self.query(PrereqRow))
-        if rows:
-            self.query_one(f"#install-{widget_id(rows[0].prereq.key)}", Button).focus()
+        if getattr(self, "missing", None):
+            self.query_one("#install-all", Button).focus()
         else:
             self.query_one("#next", Button).focus()
-        self._refresh_next()
 
-    def _refresh_next(self) -> None:
-        pending = [r for r in self.query(PrereqRow) if r.state in ("pending", "failed", "skipped")]
-        self.query_one("#next", Button).label = "Continue anyway" if pending else "Continue"
+    # -- the batch --
 
-    @on(Button.Pressed)
-    def _button(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
+    @on(Button.Pressed, "#install-all")
+    def _install_all(self) -> None:
+        if not self.steps:
+            self._finish_batch()
+            return
+        needs_sudo = any(st.terminal for st in self.steps) and not prereqs.is_root() and self.wizard.runner is None
+        if needs_sudo:
+            self._ask_sudo([st.command for st in self.steps if st.terminal])
+        else:
+            self._start_batch()
+
+    def _ask_sudo(self, commands: list[str], error: str = "") -> None:
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or "you"
+
+        def got(pw: str | None) -> None:
+            if pw is None:
+                return  # cancelled: stay on the screen, nothing ran
+            log = self.query_one(LogPanel)
+            log.write("$ sudo -v  (checking the password)", style=BLUE)
+            if prime_sudo(pw):
+                log.write("✓ sudo ready for the next 15 minutes", style=GREEN)
+                self._start_batch()
+            else:
+                log.write("✗ sudo did not accept that password", style=RED)
+                self._ask_sudo(commands, error="That password was not accepted. Try again, or Cancel.")
+
+        self.app.push_screen(SudoPassword(user, commands, error), got)
+
+    def _start_batch(self) -> None:
+        self.query_one("#install-all", Button).disabled = True
+        self.query_one("#skip-all", Button).disabled = True
+        self.query_one("#back", Button).disabled = True
         for row in self.query(PrereqRow):
-            wid = widget_id(row.prereq.key)
-            if bid == f"install-{wid}":
-                event.stop()
-                self._install(row)
-            elif bid == f"skip-{wid}":
-                event.stop()
+            if any(row.prereq.key in st.keys for st in self.steps):
+                row.set_state("pending", "queued")
+        log = self.query_one(LogPanel)
+        log.start(f"running {len(self.steps)} step{'s' if len(self.steps) != 1 else ''}")
+        self._run_batch(log)
+
+    @work(thread=True)
+    def _run_batch(self, log: LogPanel) -> None:
+        assert self.wizard.env is not None
+        runner = self.wizard.runner or streaming_runner(log.write_from_thread)
+
+        def on_step(st: prereqs.Step) -> None:
+            self.app.call_from_thread(self._step_started, st)
+
+        results = prereqs.run_steps(self.steps, self.wizard.env, run=runner, log=lambda line: log.write_from_thread(line), on_step=on_step)
+        self.app.call_from_thread(self._batch_done, results)
+
+    def _step_started(self, st: prereqs.Step) -> None:
+        for row in self.query(PrereqRow):
+            if row.prereq.key in st.keys:
+                row.set_state("running", f"installing: {st.command}")
+
+    def _batch_done(self, results: dict[str, tuple[bool, str]]) -> None:
+        self.results = results
+        log = self.query_one(LogPanel)
+        ok_all = True
+        for row in self.query(PrereqRow):
+            res = results.get(row.prereq.key)
+            if res is None:
+                continue
+            ok, msg = res
+            if ok:
+                try:
+                    manifest.record("system", row.prereq.key, command=row.prereq.command or "", note=row.prereq.label)
+                except OSError:
+                    pass
+                row.set_state("done", msg + (f". Next: {row.prereq.after}" if row.prereq.after else ""))
+            else:
+                ok_all = False
+                row.set_state("failed", msg)
+        log.finish("all prerequisites installed" if ok_all else "some steps failed; see above", ok=ok_all)
+        self._finish_batch()
+
+    def _finish_batch(self) -> None:
+        nxt = self.query_one("#next", Button)
+        nxt.remove_class("hidden")
+        pending = [r for r in self.query(PrereqRow) if r.state != "done"]
+        nxt.label = "Continue anyway" if pending else "Continue"
+        self.query_one("#back", Button).disabled = False
+        agents_done = [r.prereq for r in self.query(PrereqRow) if r.state == "done" and prereqs.login_command(r.prereq.key)]
+        if agents_done and self.wizard.runner is None:
+            self._offer_login(agents_done[0])
+        else:
+            nxt.focus()
+
+    def _offer_login(self, p: prereqs.Prereq) -> None:
+        def answer(yes: bool) -> None:
+            if yes:
+                with self.app.suspend():
+                    print(f"\n  ◆ Opening {p.label} so you can log in. Exit it when done.\n", flush=True)
+                    prereqs.open_for_login(p.key, run=subprocess.run)
+            self.query_one("#next", Button).focus()
+
+        self.app.push_screen(
+            Confirm(f"Log in to {p.label} now?", f"{p.label} is installed. It opens in this terminal; exit it when you are done and setup resumes.", yes="Open it", no="Later"),
+            answer,
+        )
+
+    @on(Button.Pressed, "#skip-all")
+    def _skip_all(self) -> None:
+        for row in self.query(PrereqRow):
+            if row.state == "pending":
                 row.set_state("skipped", "skipped; the command is listed under Still to do")
-                self._refresh_next()
-            elif bid == f"login-{wid}":
-                event.stop()
-                self._login(row)
+        self._finish_batch()
 
     @on(Button.Pressed, "#next")
     def _next(self) -> None:
@@ -760,77 +886,6 @@ class PrereqScreen(WizardScreen):
                 still.append(f"{p.label}: {p.command}" + (f"; then {p.after}" if p.after else ""))
         self.wizard.still_missing = still
         self.wizard.advance(self.STEP)
-
-    # -- installing --
-
-    def _install(self, row: PrereqRow) -> None:
-        p = row.prereq
-        if row.blocked_by:
-            row.set_state("failed", f"needs {', '.join(b.label for b in row.blocked_by)} first")
-            return
-        row.set_state("running", f"installing {p.label}...")
-        log = self.query_one(LogPanel)
-        log.start(f"$ {p.command}")
-        log.write(f"$ {p.command}", style=BLUE)
-        if self.wizard.runner is None and p.command and needs_terminal(p.command):
-            self._install_in_terminal(row)
-        else:
-            self._install_streaming(row, log)
-
-    def _install_in_terminal(self, row: PrereqRow) -> None:
-        p = row.prereq
-        assert self.wizard.env is not None
-        with self.app.suspend():
-            print(f"\n  ◆ Installing {p.label}:  $ {p.command}\n", flush=True)
-            ok, msg = prereqs.install(p, self.wizard.env, run=subprocess.run)
-            print(f"\n  {'✓' if ok else '✗'} {msg}", flush=True)
-            if not ok:
-                try:
-                    input("  Press Enter to return to zordon setup... ")
-                except EOFError:
-                    pass
-        self._installed(row, ok, msg)
-
-    @work(thread=True)
-    def _install_streaming(self, row: PrereqRow, log: LogPanel) -> None:
-        p = row.prereq
-        assert self.wizard.env is not None
-        runner = self.wizard.runner or streaming_runner(log.write_from_thread)
-        ok, msg = prereqs.install(p, self.wizard.env, run=runner)
-        self.app.call_from_thread(self._installed, row, ok, msg)
-
-    def _installed(self, row: PrereqRow, ok: bool, msg: str) -> None:
-        p = row.prereq
-        log = self.query_one(LogPanel)
-        if ok:
-            p.present = p.binary
-            try:
-                manifest.record("system", p.key, command=p.command or "", note=p.label)
-            except OSError:
-                pass
-            row.set_state("done", msg + (f". Next: {p.after}" if p.after else ""))
-            log.finish(msg, ok=True)
-            log.write(f"✓ {msg}", style=GREEN)
-        else:
-            row.set_state("failed", msg)
-            log.finish(msg, ok=False)
-            log.write(f"✗ {msg}", style=RED)
-        for other in self.query(PrereqRow):
-            other.refresh_blocked()
-        self._refresh_next()
-        if ok and prereqs.login_command(p.key):
-            self.query_one(f"#login-{widget_id(p.key)}", Button).focus()
-
-    def _login(self, row: PrereqRow) -> None:
-        key = row.prereq.key
-        if self.wizard.runner is not None:
-            prereqs.open_for_login(key, run=self.wizard.runner)
-            row.set_state("done", f"{row.prereq.label} installed; logged in")
-            return
-        with self.app.suspend():
-            print(f"\n  ◆ Opening {row.prereq.label} so you can log in. Exit it when done.\n", flush=True)
-            prereqs.open_for_login(key, run=subprocess.run)
-        row.set_state("done", f"{row.prereq.label} installed; login attempted")
 
 
 # ---- downloads -------------------------------------------------------------------------------------

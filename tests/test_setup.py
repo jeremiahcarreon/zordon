@@ -99,6 +99,7 @@ def test_actions_pull_and_installer_need_consent(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(wiz.shutil, "which", lambda name: "/usr/bin/ollama" if name == "ollama" else None)
+    monkeypatch.setattr(wiz, "ensure_ollama_server", lambda url, binary, out: True)
     c = wiz.Choices(normalizer="ollama", pull_ollama_model=True, download_models=False, speech="later")
     problems = wiz.run_actions(c, Config.default(), io.StringIO(), runner=runner)
     assert problems == [] and calls == [["/usr/bin/ollama", "pull", "qwen2.5:3b-instruct"]]
@@ -209,8 +210,8 @@ def test_prereqs_install_runs_only_the_shown_command_and_respects_needs():
     assert not ok and "needs Node.js" in msg and len(calls) == 1  # node missing: never runs npm
 
 
-def test_wizard_prerequisites_step_asks_per_item_and_reports_the_rest():
-    env = fake_env({"tmux", "claude"})
+def test_wizard_prerequisites_is_one_question_then_an_ordered_batch():
+    env = fake_env({"tmux", "claude", "zstd"})
     out = io.StringIO()
     calls = []
 
@@ -219,15 +220,44 @@ def test_wizard_prerequisites_step_asks_per_item_and_reports_the_rest():
 
     runner = lambda cmd, **k: (calls.append(cmd), R())[1]  # noqa: E731
     c = wiz.Choices(agent="claude-code", normalizer="ollama")
-    # yes to tmux, no to Claude Code
-    still = wiz.prerequisites(c, scripted("y", "n"), out, env=env, runner=runner)
+    still = wiz.prerequisites(c, scripted("y", "n"), out, env=env, runner=runner)  # yes to install all, no to login
     text = out.getvalue()
-    assert "$ brew install tmux" in text and "$ npm install -g @anthropic-ai/claude-code" in text
-    assert calls == [["sh", "-c", "brew install tmux"]]
-    assert len(still) == 1 and still[0].startswith("Claude Code: npm install -g @anthropic-ai/claude-code; then run `claude` once")
-    # --yes never installs anything, it only lists
+    assert "Plan:" in text and "1. brew install tmux zstd" in text and "2. npm install -g @anthropic-ai/claude-code" in text
+    assert calls == [["sh", "-c", "brew install tmux zstd"], ["sh", "-c", "npm install -g @anthropic-ai/claude-code"]]
+    assert still == []
+    # declining lists every command under Still to do; --yes never installs
+    calls.clear()
+    still = wiz.prerequisites(wiz.Choices(agent="claude-code"), scripted("n"), io.StringIO(), env=fake_env({"tmux"}), runner=runner)
+    assert calls == [] and still == ["tmux: brew install tmux"]
     still = wiz.prerequisites(wiz.Choices(agent="claude-code"), scripted(), io.StringIO(), env=fake_env({"tmux"}), runner=runner, assume_yes=True)
-    assert len(calls) == 1 and still and still[0].startswith("tmux:")
+    assert calls == [] and still == ["tmux: brew install tmux"]
+
+
+def test_plan_steps_batches_apt_with_update_and_orders_dependencies():
+    which = lambda n: f"/usr/bin/{n}" if n in ("apt-get",) else None  # noqa: E731
+    env = prereqs.detect(which=which, run=lambda *a, **k: None, want_agents=("claude-code",), want_ollama=True, root=True)
+    steps = prereqs.plan_steps(env)
+    assert [s.kind for s in steps] == ["pm", "npm", "script"]
+    assert steps[0].command == "apt-get update && apt-get install -y tmux curl zstd nodejs npm"
+    assert steps[1].command == "npm install -g @anthropic-ai/claude-code"
+    assert steps[2].command.startswith("curl -fsSL https://ollama.com/install.sh") and steps[2].terminal
+    assert steps[0].terminal is False  # root: no sudo prompt
+    env2 = prereqs.detect(which=lambda n: f"/usr/bin/{n}" if n in ("apt-get", "sudo") else None, run=lambda *a, **k: None, want_agents=(), root=False)
+    assert prereqs.plan_steps(env2)[0].command.startswith("sudo apt-get update && sudo apt-get install -y tmux") and prereqs.plan_steps(env2)[0].terminal
+
+
+def test_run_steps_marks_dependents_of_a_failed_step():
+    which = lambda n: f"/usr/bin/{n}" if n in ("apt-get",) else None  # noqa: E731
+    env = prereqs.detect(which=which, run=lambda *a, **k: None, want_agents=("claude-code",), root=True)
+    steps = prereqs.plan_steps(env)
+
+    class R:
+        returncode = 1
+
+    calls = []
+    results = prereqs.run_steps(steps, env, run=lambda cmd, **k: (calls.append(cmd), R())[1])
+    assert len(calls) == 1  # the pm batch failed; the npm step never ran
+    assert results["node"][0] is False and results["claude-code"][0] is False and "needs node" in results["claude-code"][1]
 
 
 def test_wizard_prerequisites_offers_login_after_installing_an_agent(monkeypatch):
@@ -252,7 +282,7 @@ def test_prereqs_drop_sudo_for_root_or_without_sudo():
     assert prereqs.detect_package_manager(no_sudo, root=False) == ("apt-get", "apt-get install -y {pkgs}")
     env = prereqs.detect(which=no_sudo, run=lambda *a, **k: None, want_agents=(), want_ollama=True, root=True)
     assert env.get("tmux").command == "apt-get install -y tmux"
-    assert env.get("ollama").needs == ("curl",)
+    assert env.get("ollama").needs == ("curl", "zstd")
 
 
 def test_run_actions_reports_model_checks_by_status(monkeypatch):
@@ -266,3 +296,11 @@ def test_run_actions_reports_model_checks_by_status(monkeypatch):
     c = wiz.Choices(speech="local", download_models=True, normalizer="passthrough")
     problems = wiz.run_actions(c, Config.default(), io.StringIO(), runner=lambda *a, **k: None)
     assert problems == ["model b: download failed: 403"]
+
+
+def test_run_actions_reports_when_the_ollama_server_cannot_start(monkeypatch):
+    monkeypatch.setattr(wiz.shutil, "which", lambda name: "/usr/bin/ollama" if name == "ollama" else None)
+    monkeypatch.setattr(wiz, "ensure_ollama_server", lambda url, binary, out: False)
+    c = wiz.Choices(normalizer="ollama", pull_ollama_model=True, download_models=False, speech="later")
+    problems = wiz.run_actions(c, Config.default(), io.StringIO(), runner=lambda *a, **k: None)
+    assert problems and "server is not running" in problems[0]

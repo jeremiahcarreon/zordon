@@ -336,8 +336,8 @@ def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = Non
 
 PREREQ_TEXT = """
 5. Prerequisites: Zordon assumes nothing about this machine. Missing pieces for the
-   choices above, with the exact command for your package manager. Each one is
-   installed only if you say yes; sudo will ask for your password as usual.
+   choices above are installed in dependency order with as few commands as possible,
+   so sudo asks for your password once.
 """
 
 
@@ -350,7 +350,7 @@ def prerequisites(
     runner: Callable[..., Any] = subprocess.run,
     assume_yes: bool = False,
 ) -> list[str]:
-    """Offer to install everything the chosen path needs. Returns what is still missing."""
+    """Offer to install everything the chosen path needs, as one batch. Returns what is still missing."""
     want_agents = (c.agent,) if c.agent != "generic" else ()
     env = env or prereqs.detect(want_agents=want_agents, want_ollama=(c.normalizer == "ollama"))
     missing = env.missing(required_only=True)
@@ -361,35 +361,41 @@ def prerequisites(
         out.write(f"  Package manager: {env.package_manager}\n")
     else:
         out.write("  No known package manager found (apt, dnf, pacman, zypper, apk, brew); commands are shown for you to adapt.\n")
-    still: list[str] = []
     for p in missing:
         out.write(f"\n  {p.label}: {p.why}.\n")
         if p.detail:
             out.write(f"    {p.detail}\n")
-        if not p.command:
-            still.append(f"{p.label}: install it by hand ({p.detail or 'no command known for this system'})")
-            continue
-        out.write(f"    $ {p.command}\n")
-        blocked = [b for b in (env.get(n) for n in p.needs) if b is not None and b.present is None]
-        if blocked:
-            out.write(f"    needs {', '.join(b.label for b in blocked)} first\n")
-        if assume_yes or not _yes(ask, f"Install {p.label} now?", default=False):
-            still.append(f"{p.label}: {p.command}" + (f"; then {p.after}" if p.after else ""))
-            continue
-        ok, msg = prereqs.install(p, env, run=runner)
-        out.write(f"    {msg}\n")
-        if ok:
-            p.present = p.binary
+    steps = prereqs.plan_steps(env, missing)
+    unplanned = [p for p in missing if not any(p.key in st.keys for st in steps)]
+    still: list[str] = [f"{p.label}: install it by hand ({p.detail or 'no command known for this system'})" for p in unplanned]
+    if not steps:
+        return still
+    out.write("\n  Plan:\n")
+    for i, st in enumerate(steps, 1):
+        out.write(f"    {i}. {st.command}\n")
+    if assume_yes or not _yes(ask, f"Install all {len(steps)} step{'s' if len(steps) != 1 else ''} now?", default=True):
+        for st in steps:
+            for k in st.keys:
+                p = env.get(k)
+                if p is not None:
+                    still.append(f"{p.label}: {st.command}" + (f"; then {p.after}" if p.after else ""))
+        return still
+    results = prereqs.run_steps(steps, env, run=runner, log=lambda line: out.write(f"\n  {line}\n"))
+    for k, (ok, msg) in results.items():
+        p = env.get(k)
+        out.write(f"    {'✓' if ok else '✗'} {msg}\n")
+        if ok and p is not None:
             try:
                 manifest.record("system", p.key, command=p.command or "", note=p.label)
             except OSError:
                 pass
             if p.after:
-                out.write(f"    Next: {p.after}\n")
-            if prereqs.login_command(p.key) and _yes(ask, f"Open {p.label} now to log in (exit it when done)?", default=True):
-                prereqs.open_for_login(p.key, run=runner)
-        else:
+                out.write(f"      Next: {p.after}\n")
+        elif p is not None:
             still.append(f"{p.label}: {p.command}" + (f"; then {p.after}" if p.after else ""))
+    for p in missing:
+        if p.present and prereqs.login_command(p.key) and _yes(ask, f"Open {p.label} now to log in (exit it when done)?", default=True):
+            prereqs.open_for_login(p.key, run=runner)
     return still
 
 
@@ -425,6 +431,9 @@ def run_actions(
     if c.normalizer == "ollama" and c.pull_ollama_model:
         binary = shutil.which("ollama")
         if binary:
+            if not ensure_ollama_server(cfg.providers.ollama_url, binary, out):
+                problems.append("Ollama is installed but its server is not running; start it with `ollama serve`, then `ollama pull " + c.ollama_model + "`")
+                return problems
             out.write(f"\nPulling {c.ollama_model} with Ollama (one time)...\n")
             try:
                 res = runner([binary, "pull", c.ollama_model], check=False)
@@ -455,6 +464,40 @@ def run_actions(
         except Exception as e:  # noqa: BLE001
             problems.append(f"cloudflared download failed: {e}")
     return problems
+
+
+def ensure_ollama_server(url: str, binary: str, out: TextIO, *, wait_s: float = 15.0) -> bool:
+    """Ollama normally runs as a service; where it does not (containers, no systemd) start it
+    detached and wait until it answers. Returns whether the server is reachable."""
+    import time  # noqa: PLC0415
+
+    from zordon.output.normalizer.ollama import server_models  # noqa: PLC0415
+
+    def up() -> bool:
+        try:
+            server_models(url, timeout=1.0)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    if up():
+        return True
+    out.write("\nStarting the Ollama server (it was not running)...\n")
+    try:
+        log_path = paths.zordon_home() / "ollama-serve.log"
+        paths.ensure_private_dir(log_path.parent)
+        with open(log_path, "ab") as log:
+            subprocess.Popen([binary, "serve"], stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)  # noqa: S603
+    except OSError as e:
+        out.write(f"  could not start it: {e}\n")
+        return False
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if up():
+            out.write("  Ollama server is up.\n")
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def next_steps(c: Choices, cfg: Config) -> str:

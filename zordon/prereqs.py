@@ -48,6 +48,7 @@ class Prereq:
     after: str = ""  # what to do once installed (login, etc.)
     present: str | None = None  # path when found
     detail: str = ""  # version or note
+    pkg: str = ""  # package-manager package name(s); batched into one install command
 
 
 @dataclass(slots=True)
@@ -111,11 +112,23 @@ def detect(
         return template.format(pkgs=pkgs) if template else None
 
     env.checks.append(
-        Prereq("tmux", "tmux", "Zordon drives the coding agent inside a tmux pane", "tmux", True, pkg("tmux"), present=which("tmux"))
+        Prereq("tmux", "tmux", "Zordon drives the coding agent inside a tmux pane", "tmux", True, pkg("tmux"), present=which("tmux"), pkg="tmux")
     )
     env.checks.append(
         Prereq(
-            "curl", "curl", "Claude Code's hook handlers tell Zordon about prompts through curl", "curl", False, pkg("curl"), present=which("curl")
+            "curl", "curl", "Claude Code's hook handlers tell Zordon about prompts through curl", "curl", want_ollama, pkg("curl"), present=which("curl"), pkg="curl"
+        )
+    )
+    env.checks.append(
+        Prereq(
+            "zstd",
+            "zstd",
+            "Ollama's installer unpacks its download with zstd",
+            "zstd",
+            want_ollama and env.system != "Darwin",
+            pkg("zstd"),
+            present=which("zstd"),
+            pkg="zstd",
         )
     )
     node_needed = any(a in want_agents for a in ("claude-code", "codex"))
@@ -131,6 +144,7 @@ def detect(
             node_cmd,
             present=(which("npm") if node_ok else None),
             detail=(f"node {env.node_major}" if env.node_major else "not found") + ("" if node_ok else f"; need {NODE_MIN_MAJOR}+: {NODE_FALLBACK}"),
+            pkg=NODE_PACKAGE.get(pm or "", "nodejs npm"),
         )
     )
     env.checks.append(
@@ -167,7 +181,7 @@ def detect(
             "ollama",
             want_ollama,
             "curl -fsSL https://ollama.com/install.sh | sh" if env.system != "Darwin" else "brew install ollama",
-            needs=("curl",) if env.system != "Darwin" else (),
+            needs=("curl", "zstd") if env.system != "Darwin" else (),
             after="start it with `ollama serve` (the installer usually does); Zordon pulls the model",
             present=which("ollama"),
         )
@@ -213,3 +227,83 @@ def open_for_login(key: str, *, run: Runner = subprocess.run) -> bool:
 
 def is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+# ---- batched installation -----------------------------------------------------------------
+
+UPDATE_FIRST = {"apt-get": "{sudo}apt-get update"}  # fresh machines have empty package lists
+
+
+@dataclass(slots=True)
+class Step:
+    label: str
+    command: str
+    keys: list[str]  # prerequisite keys this step satisfies
+    kind: str  # pm | npm | script
+    terminal: bool = False  # needs the real tty (sudo password, installer prompts)
+
+
+def plan_steps(env: Environment, missing: list[Prereq] | None = None) -> list[Step]:
+    """Everything missing, as the fewest commands in dependency order: one package-manager
+    command for all packages (sudo asks once), then npm globals, then standalone installers."""
+    missing = env.missing(required_only=True) if missing is None else missing
+    steps: list[Step] = []
+    pm_items = [p for p in missing if p.pkg and p.command and env.install_template]
+    if pm_items:
+        tpl = env.install_template or ""
+        sudo = "sudo " if tpl.startswith("sudo ") else ""
+        pkgs = " ".join(dict.fromkeys(" ".join(p.pkg for p in pm_items).split()))
+        cmd = tpl.format(pkgs=pkgs)
+        pre = UPDATE_FIRST.get(env.package_manager or "")
+        if pre:
+            cmd = pre.format(sudo=sudo) + " && " + cmd
+        steps.append(Step(f"Install {', '.join(p.label for p in pm_items)}", cmd, [p.key for p in pm_items], "pm", terminal=bool(sudo)))
+    for p in missing:
+        if p.command and not p.pkg and p.command.startswith("npm "):
+            steps.append(Step(f"Install {p.label}", p.command, [p.key], "npm", terminal=False))
+    for p in missing:
+        if p.command and not p.pkg and not p.command.startswith("npm "):
+            steps.append(Step(f"Install {p.label}", p.command, [p.key], "script", terminal=True))
+    return steps
+
+
+def run_steps(
+    steps: list[Step],
+    env: Environment,
+    *,
+    run: Runner = subprocess.run,
+    log: Callable[[str], None] | None = None,
+    on_step: Callable[[Step], None] | None = None,
+) -> dict[str, tuple[bool, str]]:
+    """Run the steps in order. A failed step marks its keys failed and skips later steps
+    that depend on them. Returns key -> (ok, message)."""
+    results: dict[str, tuple[bool, str]] = {}
+    failed: set[str] = set()
+    for step in steps:
+        blocked = sorted({n for k in step.keys for n in (env.get(k).needs if env.get(k) else ())} & failed)
+        if blocked:
+            for k in step.keys:
+                results[k] = (False, f"skipped: needs {', '.join(blocked)} which failed")
+                failed.add(k)
+            continue
+        if on_step:
+            on_step(step)
+        if log:
+            log(f"$ {step.command}")
+        try:
+            res = run(["sh", "-c", step.command], check=False)
+            code = getattr(res, "returncode", 1)
+        except (OSError, subprocess.SubprocessError) as e:
+            code, err = 1, str(e)
+        else:
+            err = f"exited with {code}"
+        for k in step.keys:
+            p = env.get(k)
+            if code == 0:
+                if p is not None:
+                    p.present = p.binary
+                results[k] = (True, f"{p.label if p else k} installed")
+            else:
+                failed.add(k)
+                results[k] = (False, f"`{step.command}` {err}")
+    return results

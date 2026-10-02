@@ -230,7 +230,7 @@ async def test_setup_ollama_with_gpu_offers_the_14b_toggle(quiet_machine, monkey
     assert not paths.config_path().exists()
 
 
-async def test_prerequisites_screen_installs_on_click_and_offers_login(quiet_machine, monkeypatch):
+async def test_prerequisites_install_all_runs_the_batch_in_order_and_offers_login(quiet_machine, monkeypatch):
     fake_prereqs(monkeypatch, {"tmux", "claude"})
     runner = Recorder()
     monkeypatch.setattr(prereqs.shutil, "which", lambda n: f"/usr/bin/{n}")  # for open_for_login
@@ -243,53 +243,42 @@ async def test_prerequisites_screen_installs_on_click_and_offers_login(quiet_mac
         assert isinstance(app.screen, PrereqScreen)
         rows = {r.prereq.key: r for r in app.screen.query(PrereqRow)}
         assert set(rows) == {"tmux", "claude-code"}
-        text = str(app.screen.query_one("#prereq-tmux").query(Static)[2].render())
-        assert "brew install tmux" in text
-        assert str(app.screen.query_one("#next", Button).label) == "Continue anyway"
-        await pilot.click("#install-tmux")
+        plan = str(app.screen.query_one("#prereq-plan", Static).render())
+        assert "brew install tmux" in plan and "npm install -g @anthropic-ai/claude-code" in plan
+        assert app.screen.query_one("#next", Button).has_class("hidden")
+        await pilot.click("#install-all")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert runner.calls == [["sh", "-c", "brew install tmux"]]
-        assert rows["tmux"].state == "done" and manifest.has("system", "tmux")
-        await pilot.click("#install-claude-code")
-        await app.workers.wait_for_complete()
-        await pilot.pause()
-        assert runner.calls[-1] == ["sh", "-c", "npm install -g @anthropic-ai/claude-code"]
-        login = app.screen.query_one("#login-claude-code", Button)
-        assert login.display and "log in" in str(login.label)
-        await pilot.click("#login-claude-code")
-        await pilot.pause()
-        assert runner.calls[-1] == ["claude"]
-        assert str(app.screen.query_one("#next", Button).label) == "Continue"
-        assert "brew install tmux" in "".join(str(line) for line in app.screen.query_one(LogPanel).rich_log.lines)
+        # one package-manager command first, npm globals after: dependency order, no per-item clicks
+        assert runner.calls == [["sh", "-c", "brew install tmux"], ["sh", "-c", "npm install -g @anthropic-ai/claude-code"]]
+        assert rows["tmux"].state == "done" and rows["claude-code"].state == "done"
+        assert manifest.has("system", "tmux") and manifest.has("system", "claude-code")
+        nxt = app.screen.query_one("#next", Button)
+        assert not nxt.has_class("hidden") and str(nxt.label) == "Continue"
+        assert app.screen.query_one("#install-all", Button).disabled
+        log_text = "".join(str(line) for line in app.screen.query_one(LogPanel).rich_log.lines)
+        assert "brew install tmux" in log_text and "npm install -g" in log_text  # every step in the same panel
         await pilot.press("escape")  # back to Reach
         await pilot.pause()
         assert isinstance(app.screen, AccessScreen)
 
 
-async def test_prerequisites_skip_lands_in_still_to_do(quiet_machine, monkeypatch):
-    fake_prereqs(monkeypatch, {"tmux"})
-    runner = Recorder()
+async def test_prerequisites_batch_skips_steps_whose_dependency_failed(quiet_machine, monkeypatch):
+    fake_prereqs(monkeypatch, {"tmux", "npm", "claude"})  # node missing: npm global must not run
+    runner = Recorder(returncode=1)
     app = SetupApp(runner=runner)
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         for _ in range(6):
             await pilot.press("enter")
             await pilot.pause()
-        await pilot.click("#skip-tmux")
-        await pilot.pause()
-        await pilot.click("#next")
-        await pilot.pause()
+        await pilot.click("#install-all")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, DoneScreen)
-        assert app.screen.query("Panel")  # "Still to do"
-        await pilot.press("q")
-    assert runner.calls == []
-    assert app.still_missing == ["tmux: brew install tmux"]
-    assert app.return_value == "done" and app.return_code == 3
+        assert len(runner.calls) == 1 and runner.calls[0][2].startswith("brew install ")  # only the pm batch ran
+        rows = {r.prereq.key: r for r in app.screen.query(PrereqRow)}
+        assert rows["claude-code"].state == "failed" and "needs node" in str(rows["claude-code"].query_one(".prereq--status", Static).render())
+        assert str(app.screen.query_one("#next", Button).label) == "Continue anyway"
 
 
 async def test_downloads_screen_reports_problems_and_streams_output(quiet_machine, monkeypatch):
