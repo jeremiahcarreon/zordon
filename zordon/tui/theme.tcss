@@ -1,0 +1,142 @@
+/* Zordon setup / uninstall TUI. Colors come from the "zordon" Theme registered by the
+   apps (install.sh palette: purple frames, blue accents, green ok, red bad). */
+
+Screen {
+    layout: vertical;
+    background: $background;
+}
+
+.screen-body {
+    height: 1fr;
+    padding: 0 2;
+}
+
+.row {
+    height: auto;
+    width: 100%;
+}
+
+.row-buttons {
+    height: auto;
+    padding: 0 2;
+    align-horizontal: right;
+}
+
+.row-buttons Button {
+    margin-left: 1;
+}
+
+.title {
+    text-style: bold;
+    margin: 0 0 1 0;
+}
+
+.question {
+    text-style: bold;
+    margin: 1 0 1 0;
+}
+
+.muted {
+    color: $text-muted;
+}
+
+.ok {
+    color: $success;
+}
+
+.bad {
+    color: $error;
+}
+
+.banner {
+    border: round $primary;
+    padding: 0 2;
+    height: auto;
+    margin: 1 0;
+}
+
+Panel.detail {
+    margin: 1 0 0 0;
+    border: round $secondary;
+}
+
+Panel.detail Input {
+    margin: 0 0 0 0;
+}
+
+#choices, #prereq-list, #lists {
+    height: auto;
+}
+
+DataTable {
+    height: auto;
+}
+
+ProgressBar {
+    margin: 0 1;
+}
+
+ProgressBar Bar > .bar--bar {
+    color: $accent;
+}
+
+ProgressBar Bar > .bar--complete {
+    color: $success;
+}
+
+.prereq {
+    border: round $panel;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    height: auto;
+}
+
+.prereq.-done {
+    border: round $success;
+}
+
+.prereq.-failed {
+    border: round $error;
+}
+
+.prereq Horizontal {
+    height: auto;
+}
+
+.prereq Button {
+    margin-left: 1;
+    min-width: 12;
+}
+
+.summary-card {
+    border: double $primary;
+    padding: 1 2;
+    height: auto;
+    margin: 1 0;
+}
+
+.token {
+    text-style: bold;
+    color: $accent;
+}
+
+Checkbox {
+    height: auto;
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+Checkbox:focus {
+    background: $boost;
+}
+
+.item-detail {
+    color: $text-muted;
+    margin: 0 0 0 4;
+}
+
+.hidden {
+    display: none;
+}

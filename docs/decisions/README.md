@@ -22,6 +22,7 @@ and what it leaves open.
 | [0013](0013-agent-adapters.md) | Everything agent-specific sits behind an `AgentAdapter` with six slots; a generic pane adapter attaches to any tmux pane; Claude Code stays the default | Other coding agents |
 | [0014](0014-prerequisites.md) | Setup detects the package manager and installs missing system pieces (tmux, curl, Node, the agent, Ollama) one explicit yes at a time | Install path |
 | [0015](0015-curl-installer.md) | `curl ... install.sh | sh` installs uv, a managed Python and zordon with no sudo, then runs the wizard; Windows via WSL2 only | Install path |
+| [0016](0016-setup-tui.md) | `zordon setup` and `zordon uninstall` open a full-screen Textual UI on a terminal; the plain wizards stay as the fallback and the only logic | Install path |
 
 ## Writing one
 

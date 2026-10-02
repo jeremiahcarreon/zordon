@@ -75,3 +75,13 @@ def test_pinned_checksum_is_a_sha256_and_mismatch_refuses(tmp_path):
     out = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
     assert out.returncode != 0 and "checksum mismatch" in out.stderr
     assert not (tmp_path / "uvbin").exists()
+
+
+def test_uninstall_script_is_valid_and_asks_before_removing():
+    script = SCRIPT.parent / "uninstall.sh"
+    subprocess.run(["sh", "-n", str(script)], check=True)
+    text = script.read_text()
+    assert "zordon uninstall" in text  # prefers the full command
+    assert "rm -rf \"$ZHOME\"" in text and 'ask "Remove $ZHOME' in text  # never silent
+    code = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    assert not any("sudo " in ln for ln in code)

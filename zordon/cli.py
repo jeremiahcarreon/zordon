@@ -84,7 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--config", type=Path, default=None, help="config file (default: $ZORDON_HOME/config.toml)")
     setup_p.add_argument("--yes", action="store_true", help="take the detected defaults without asking")
     setup_p.add_argument("--no-download", action="store_true", help="only write the config; skip downloads and pulls")
+    setup_p.add_argument("--plain", action="store_true", help="question-and-answer mode instead of the full-screen TUI")
     setup_p.set_defaults(func=cmd_setup)
+
+    un = sub.add_parser("uninstall", help="remove zordon, its data, and (on request) what it installed")
+    un.add_argument("--yes", action="store_true", help="remove the isolated environment and data without asking; never touches outside items")
+    un.add_argument("--plain", action="store_true", help="question-and-answer mode instead of the full-screen TUI")
+    un.add_argument("--dry-run", action="store_true", help="show the plan only")
+    un.set_defaults(func=cmd_uninstall)
 
     doc = sub.add_parser("doctor", help="check dependencies, providers, models and binaries")
     doctor.add_arguments(doc)
@@ -196,18 +203,86 @@ def format_sessions(infos: Sequence[Any]) -> str:
     return "\n".join(out)
 
 
+def want_tui(args: argparse.Namespace) -> bool:
+    """The full-screen UI needs a terminal on both ends and no --plain/--yes."""
+    return not getattr(args, "plain", False) and not getattr(args, "yes", False) and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def run_setup_tui_or_none(config_path: Path | None, *, do_actions: bool, serve: Any = None) -> int | None:
+    """The TUI's exit code, or None when it is unavailable and the plain wizard should run."""
+    try:
+        from zordon.tui import TuiUnavailable  # noqa: PLC0415
+        from zordon.tui.setup import run_setup_tui  # noqa: PLC0415
+    except ImportError as e:
+        log.debug("setup TUI unavailable: %s", e)
+        return None
+    try:
+        return run_setup_tui(config_path, do_actions=do_actions, serve=serve)
+    except TuiUnavailable as e:
+        log.debug("setup TUI could not start: %s", e)
+        return None
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     from zordon import setup as wizard  # noqa: PLC0415
 
+    config_path = getattr(args, "config", None)
+    do_actions = not getattr(args, "no_download", False)
+    if want_tui(args):
+
+        def serve_now(extra: list[str]) -> int:
+            return main(["serve", *(["--config", str(config_path)] if config_path else []), "--no-setup", *extra])
+
+        code = run_setup_tui_or_none(config_path, do_actions=do_actions, serve=serve_now)
+        if code is not None:
+            return code
     try:
-        _cfg, _choices, problems = wizard.run(
-            getattr(args, "config", None), assume_yes=bool(getattr(args, "yes", False)), do_actions=not getattr(args, "no_download", False)
-        )
+        _cfg, _choices, problems = wizard.run(config_path, assume_yes=bool(getattr(args, "yes", False)), do_actions=do_actions)
     except wizard.SetupAborted as e:
         print(f"Setup stopped: {e}. Install a coding agent, then run `zordon setup` again.")
         return EXIT_MISSING
     except (OSError, ValueError, TypeError) as e:
         raise CliError(f"setup failed: {e}", EXIT_CONFIG) from e
+    return EXIT_OK if not problems else EXIT_MISSING
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    from zordon import uninstall as un  # noqa: PLC0415
+
+    plan = un.build_plan()
+    if want_tui(args) and not getattr(args, "dry_run", False):
+        try:
+            from zordon.tui import TuiUnavailable  # noqa: PLC0415
+            from zordon.tui.uninstall import run_uninstall_tui  # noqa: PLC0415
+
+            return run_uninstall_tui(plan)
+        except (ImportError, TuiUnavailable) as e:
+            log.debug("uninstall TUI unavailable: %s", e)
+    print("Zordon uninstall. Inside its environment (removed):")
+    for it in plan.inside:
+        print(f"  - {it.label}: {it.detail}")
+    if plan.outside:
+        print("Installed by Zordon on request, outside its environment (asked one by one):")
+        for it in plan.outside:
+            print(f"  - {it.label}: {it.detail}")
+    for n in plan.notes:
+        print(f"  note: {n}")
+    if getattr(args, "dry_run", False):
+        return EXIT_OK
+    chosen = list(plan.inside)
+    if getattr(args, "yes", False):
+        pass
+    else:
+        if input("Remove zordon and its data? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print("Nothing removed.")
+            return EXIT_OK
+        for it in plan.outside:
+            if input(f"Also remove {it.label}? [y/N]: ").strip().lower() in ("y", "yes"):
+                chosen.append(it)
+    problems = un.execute(chosen)
+    for p in problems:
+        print(f"  problem: {p}", file=sys.stderr)
+    print("Done." if not problems else "Done, with problems above.")
     return EXIT_OK if not problems else EXIT_MISSING
 
 
@@ -221,12 +296,33 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if first_run_needs_setup(args.config, getattr(args, "no_setup", False)):
         from zordon import setup as wizard  # noqa: PLC0415
 
-        print("No configuration yet; running the guided setup first (Ctrl-C to skip).")
-        try:
-            cfg, _choices, _problems = wizard.run(args.config)
-        except (KeyboardInterrupt, wizard.SetupAborted):
-            print("\nSetup skipped; writing defaults.")
+        extra: list[str] = []  # the wizard's Reach answer as serve flags (--tunnel / --bind tailscale)
+
+        def remember(argv: list[str]) -> int:
+            extra.extend(argv)
+            return 0
+
+        code = run_setup_tui_or_none(args.config, do_actions=True, serve=remember) if want_tui(args) else None
+        if code is not None:
+            from zordon.tui.setup import EXIT_CANCELLED  # noqa: PLC0415
+
+            if code == EXIT_CANCELLED:
+                print("Setup skipped; writing defaults.")
+            elif not extra:  # the user chose Exit on the summary card
+                print("Setup finished. Start with `zordon serve` when ready.")
+                return code
             cfg, _ = load_or_create(args.config)
+            if "--tunnel" in extra and args.tunnel is None:
+                args.tunnel = "config"
+            if "--bind" in extra and args.bind is None:
+                args.bind = "tailscale"
+        else:
+            print("No configuration yet; running the guided setup first (Ctrl-C to skip).")
+            try:
+                cfg, _choices, _problems = wizard.run(args.config)
+            except (KeyboardInterrupt, wizard.SetupAborted):
+                print("\nSetup skipped; writing defaults.")
+                cfg, _ = load_or_create(args.config)
         created = False
     else:
         cfg, created = load_or_create(args.config)

@@ -12,7 +12,7 @@
    Context                                                                                                                      
 
    README.md exists but is empty (0 bytes). pyproject.toml already points at it (readme = "README.md") and the sdist include list names it, so the package
-   metadata is blank until it has content. The repo is public (jeremiahcarreon/zordon) and has no commits yet, so the README will be part of the first
+   metadata is blank until it has content. The repo is public (operatorcarreon/zordon) and has no commits yet, so the README will be part of the first
    commit.
 
    The project is at the scaffolding stage: config.py, paths.py, bus.py, providers.py, session/state.py, routing/commands.py, transport/protocol.py and three

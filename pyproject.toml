@@ -41,6 +41,8 @@ dependencies = [
   # install; the models themselves are fetched by the setup wizard / `zordon doctor --download`.
   "faster-whisper>=1.0",
   "kokoro-onnx>=0.4; python_version < '3.14'",
+  # Setup and uninstall TUI (borders, mouse, progress). Lives in the isolated environment.
+  "textual>=0.80",
 ]
 
 [project.optional-dependencies]

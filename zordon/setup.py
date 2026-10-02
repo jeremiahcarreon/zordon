@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
-from zordon import assets, paths, prereqs
+from zordon import assets, manifest, paths, prereqs
 from zordon.config import Config
 
 Ask = Callable[[str], str]
@@ -380,6 +380,10 @@ def prerequisites(
         out.write(f"    {msg}\n")
         if ok:
             p.present = p.binary
+            try:
+                manifest.record("system", p.key, command=p.command or "", note=p.label)
+            except OSError:
+                pass
             if p.after:
                 out.write(f"    Next: {p.after}\n")
             if prereqs.login_command(p.key) and _yes(ask, f"Open {p.label} now to log in (exit it when done)?", default=True):
@@ -404,8 +408,19 @@ def _summary(d: Detected) -> str:
 # ---- actions ---------------------------------------------------------------------------
 
 
-def run_actions(c: Choices, cfg: Config, out: TextIO, *, runner: Callable[..., Any] = subprocess.run) -> list[str]:
-    """Do the downloads and pulls the choices imply. Returns human-readable problems."""
+def run_actions(
+    c: Choices,
+    cfg: Config,
+    out: TextIO,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    downloader: Callable[..., Path] | None = None,
+) -> list[str]:
+    """Do the downloads and pulls the choices imply. Returns human-readable problems.
+
+    ``downloader`` replaces :func:`zordon.assets.download` for the model and cloudflared
+    fetches (the TUI passes one that reports progress); ``None`` uses the default.
+    """
     problems: list[str] = []
     if c.normalizer == "ollama" and c.pull_ollama_model:
         binary = shutil.which("ollama")
@@ -415,6 +430,8 @@ def run_actions(c: Choices, cfg: Config, out: TextIO, *, runner: Callable[..., A
                 res = runner([binary, "pull", c.ollama_model], check=False)
                 if getattr(res, "returncode", 1) != 0:
                     problems.append(f"`ollama pull {c.ollama_model}` failed; run it by hand")
+                else:
+                    manifest.record("ollama-model", c.ollama_model, command=f"ollama pull {c.ollama_model}")
             except (OSError, subprocess.SubprocessError) as e:
                 problems.append(f"could not run ollama pull: {e}")
         else:
@@ -424,7 +441,7 @@ def run_actions(c: Choices, cfg: Config, out: TextIO, *, runner: Callable[..., A
         try:
             from zordon.doctor import DoctorOptions, model_checks  # noqa: PLC0415
 
-            for chk in model_checks(cfg, DoctorOptions(download=True)):
+            for chk in model_checks(cfg, DoctorOptions(download=True), downloader):
                 if chk.status not in ("OK", "SKIP"):
                     problems.append(f"{chk.name}: {chk.detail}")
         except Exception as e:  # noqa: BLE001
@@ -434,7 +451,7 @@ def run_actions(c: Choices, cfg: Config, out: TextIO, *, runner: Callable[..., A
         try:
             from zordon.doctor import download_cloudflared  # noqa: PLC0415
 
-            download_cloudflared()
+            download_cloudflared(downloader)
         except Exception as e:  # noqa: BLE001
             problems.append(f"cloudflared download failed: {e}")
     return problems
@@ -469,6 +486,12 @@ def run(
 ) -> tuple[Config, Choices, list[str]]:
     out = out if out is not None else sys.stdout
     cfg, _created = Config.load_or_create(config_path)
+    if os.environ.get("ZORDON_INSTALLED_UV"):
+        # install.sh put uv on this machine for us; uninstall may offer to take it away.
+        try:
+            manifest.record("uv", "uv", command="install.sh", removal=os.environ.get("UV_INSTALL_DIR", "") or str(Path.home() / ".local" / "share" / "uv"))
+        except OSError:
+            pass
     inner = ask
 
     def ask(prompt: str) -> str:  # noqa: F811 - EOF (piped stdin ran dry) means "take the default"

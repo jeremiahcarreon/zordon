@@ -123,6 +123,16 @@ The questions:
 `zordon serve --no-setup` skips it. `zordon doctor` checks every dependency and provider and
 prints a one-line fix for anything missing. `zordon token show` prints the token again.
 
+**Setup TUI.** On a terminal, `zordon setup` (and the first `zordon serve`) opens a full-screen
+version of the same wizard: a detection table, one screen per question with every option's
+trade-offs on a card you can click or pick with the arrow keys, a prerequisites screen with an
+Install button per missing piece and its output streamed live (sudo prompts take over the
+terminal and hand it back), a progress bar for the downloads, and a summary card with your token
+and the exact `zordon serve` command. Esc goes back, `q` asks before quitting, and nothing is
+written until the downloads step. `zordon setup --plain` is the question-and-answer form; it is
+also what runs when there is no terminal. `zordon uninstall` uses the same UI: what Zordon
+installed outside its environment is a checkbox each.
+
 ### After setup
 
 1. Open `http://127.0.0.1:8765`, paste the token. Nothing is spoken until a session is focused:

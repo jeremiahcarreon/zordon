@@ -15,7 +15,7 @@
    README.md exists but is empty (0 bytes). pyproject.toml already points at it
    (readme = "README.md") and the sdist include list names it, so the package
    metadata is blank until it has content. The repo is public
-   (jeremiahcarreon/zordon) and has no commits yet, so the README will be part
+   (operatorcarreon/zordon) and has no commits yet, so the README will be part
    of the first
    commit.
 

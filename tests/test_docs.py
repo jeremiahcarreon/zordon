@@ -198,3 +198,25 @@ def test_no_attribution_in_docs(path: Path):
     stripped = MODEL_ID_RE.sub("", text)
     m = MODEL_NAME_RE.search(stripped)
     assert not m, f"{path.relative_to(ROOT)} names a model outside a model id: {m.group(0)!r}"
+
+
+def test_fixtures_carry_no_personal_identifiers():
+    """Real captures are scrubbed with same-length placeholders before they are committed."""
+    import re
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    tracked = subprocess.run(["git", "ls-files", "-z", "eval", "tests", "docs"], cwd=root, capture_output=True, text=True).stdout.split("\0")
+    tracked = [t for t in tracked if t]
+    # Spelled in pieces so this file does not itself contain the identifiers it forbids.
+    user = b"jere" + b"miah"
+    host = b"the" + b"beast"
+    plugin = b"[CAVE" + b"MAN]"
+    bad = re.compile(user + rb"(?!carreon)|" + host + rb"|" + re.escape(plugin) + rb"|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|net|org)")
+    hits = []
+    for rel in tracked:
+        data = (root / rel).read_bytes()
+        m = bad.search(data)
+        if m:
+            hits.append(f"{rel}: {m.group(0)[:40]!r}")
+    assert not hits, hits
