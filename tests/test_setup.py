@@ -187,8 +187,8 @@ def test_prereqs_detect_commands_per_package_manager():
     assert tm.present is None and tm.command == "brew install tmux"
     assert env.get("claude-code").command == "npm install -g @anthropic-ai/claude-code" and env.get("claude-code").needs == ("node",)
     assert env.get("ollama").required is True
-    which = lambda n: "/usr/bin/apt-get" if n == "apt-get" else None  # noqa: E731
-    env2 = prereqs.detect(which=which, run=lambda *a, **k: None, want_agents=("codex",))
+    which = lambda n: f"/usr/bin/{n}" if n in ("apt-get", "sudo") else None  # noqa: E731
+    env2 = prereqs.detect(which=which, run=lambda *a, **k: None, want_agents=("codex",), root=False)
     assert env2.get("tmux").command == "sudo apt-get install -y tmux"
     assert env2.get("node").command == "sudo apt-get install -y nodejs npm" and env2.get("node").present is None
     assert env2.get("codex").required and not env2.get("claude-code").required
@@ -242,3 +242,14 @@ def test_wizard_prerequisites_offers_login_after_installing_an_agent(monkeypatch
     still = wiz.prerequisites(wiz.Choices(agent="claude-code"), scripted("y", "y"), io.StringIO(), env=env, runner=runner)
     assert still == []
     assert calls[0] == ["sh", "-c", "npm install -g @anthropic-ai/claude-code"] and calls[1] == ["claude"]
+
+
+def test_prereqs_drop_sudo_for_root_or_without_sudo():
+    which_apt = lambda n: f"/usr/bin/{n}" if n in ("apt-get", "sudo") else None  # noqa: E731
+    assert prereqs.detect_package_manager(which_apt, root=False) == ("apt-get", "sudo apt-get install -y {pkgs}")
+    assert prereqs.detect_package_manager(which_apt, root=True) == ("apt-get", "apt-get install -y {pkgs}")
+    no_sudo = lambda n: "/usr/bin/apt-get" if n == "apt-get" else None  # noqa: E731
+    assert prereqs.detect_package_manager(no_sudo, root=False) == ("apt-get", "apt-get install -y {pkgs}")
+    env = prereqs.detect(which=no_sudo, run=lambda *a, **k: None, want_agents=(), want_ollama=True, root=True)
+    assert env.get("tmux").command == "apt-get install -y tmux"
+    assert env.get("ollama").needs == ("curl",)

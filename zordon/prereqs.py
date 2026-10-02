@@ -65,9 +65,21 @@ class Environment:
         return next((p for p in self.checks if p.key == key), None)
 
 
-def detect_package_manager(which: Which = shutil.which) -> tuple[str | None, str | None]:
+def is_root() -> bool:
+    try:
+        return os.geteuid() == 0
+    except AttributeError:  # not POSIX
+        return False
+
+
+def detect_package_manager(which: Which = shutil.which, *, root: bool | None = None) -> tuple[str | None, str | None]:
+    """First package manager found, with its install template. ``sudo `` is dropped when
+    running as root (containers, some servers) or when sudo itself is not installed."""
+    root = is_root() if root is None else root
     for name, template in PACKAGE_MANAGERS:
         if which(name):
+            if template.startswith("sudo ") and (root or not which("sudo")):
+                template = template[len("sudo ") :]
             return name, template
     return None, None
 
@@ -90,8 +102,9 @@ def detect(
     run: Runner = subprocess.run,
     want_agents: tuple[str, ...] = ("claude-code",),
     want_ollama: bool = False,
+    root: bool | None = None,
 ) -> Environment:
-    pm, template = detect_package_manager(which)
+    pm, template = detect_package_manager(which, root=root)
     env = Environment(system=platform.system(), package_manager=pm, install_template=template, node_major=node_major(which, run))
 
     def pkg(pkgs: str) -> str | None:
@@ -154,6 +167,7 @@ def detect(
             "ollama",
             want_ollama,
             "curl -fsSL https://ollama.com/install.sh | sh" if env.system != "Darwin" else "brew install ollama",
+            needs=("curl",) if env.system != "Darwin" else (),
             after="start it with `ollama serve` (the installer usually does); Zordon pulls the model",
             present=which("ollama"),
         )
