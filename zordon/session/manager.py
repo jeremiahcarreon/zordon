@@ -1,21 +1,27 @@
-"""SessionThread: owns the tmux panes, the jsonl tails and the session state.
+"""SessionThread: owns the tmux panes, the transcript tails and the session state.
 
-One ``SessionManager`` thread polls every attached session each
-``config.output.poll_interval_ms``:
+Everything that is specific to one coding agent (how to launch it, what its
+prompts and screen look like, where its transcript lives, its permission modes)
+is behind ``zordon.agents.AgentAdapter``; each ``Session`` carries the adapter
+it was opened with. One ``SessionManager`` thread polls every attached session
+each ``config.output.poll_interval_ms``:
 
-1. ``tmux.pane_exists`` / ``alternate_on``: a missing pane is DETACHED; the
-   normal screen is only looked at for the trust dialog and for signs that Claude
-   Code is gone (the exit line, a shell prompt, or having left the alternate
-   screen), which make the session DETACHED after one confirming poll;
-2. ``capture`` -> ``screen.parse_screen`` -> ``screen.diff_screens``: new content
+1. ``tmux.pane_exists`` / ``alternate_on``: a missing pane is DETACHED; for an
+   agent that draws on the alternate screen the normal screen is only looked at
+   for the trust dialog and for signs that the agent is gone (the exit line, a
+   shell prompt, or having left the alternate screen), which make the session
+   DETACHED after ``EXIT_CONFIRM_POLLS`` confirming polls; a plain-screen agent
+   (the generic adapter) is polled on the normal screen and is gone when
+   ``adapter.exited`` holds for the same number of polls;
+2. ``capture`` -> ``adapter.parse`` -> ``screen.diff_screens``: new content
    lines go to ``bus.pane_lines`` with ``source="pane"`` when the session has no
-   jsonl (or ``output.source == "pane"``);
-3. ``prompts.detect_prompt`` on the parsed screen: ``PromptDetected`` once per
+   transcript source (or ``output.source == "pane"``);
+3. ``adapter.detect_prompt`` on the parsed screen: ``PromptDetected`` once per
    distinct prompt, ``PromptCleared`` when it leaves the screen;
-4. ``jsonl.poll()`` -> ``to_pane_lines`` -> ``bus.pane_lines`` with
+4. ``adapter.transcript_source(...).poll()`` -> ``bus.pane_lines`` with
    ``source="jsonl"`` in ``auto`` / ``jsonl`` mode;
 5. ``state.next_state`` over an ``Observation`` built from the above, plus the
-   second (Notification hook) and third (registry ``status``) prompt signals;
+   second (``adapter.hook_hint``) and third (``adapter.status_hint``) prompt signals;
 6. the idle watchdog: WORKING with no output for ``voice.idle_watchdog_seconds``
    and no prompt becomes STALLED, with one spoken ``Notice`` carrying the last
    pane lines.
@@ -28,18 +34,21 @@ thread itself, the command runs inline.
 
 Keystrokes: literal text goes through ``Tmux.send_literal`` (control characters
 stripped, ``send-keys -l``) and Enter is a separate call. Menu navigation only
-ever uses ``Up``/``Down``/``Enter``/``Escape``/``BTab`` from the allowlist. No
-keystroke is sent while the pane is off the alternate screen (a shell would run
-the text as a command) unless the prompt on screen is the trust dialog.
-``approve`` selects only the option labelled exactly ``Yes``; ``plan_approve``
-never selects the auto-mode option; ``set_permission_mode`` refuses
-``bypassPermissions``, steps past it a bounded number of times if it shows, and
-returns to the starting mode when the target is never reached.
+ever uses ``Up``/``Down``/``Enter``/``Escape``/``BTab`` from the allowlist. For
+an alternate-screen agent no keystroke is sent while the pane is off that screen
+(a shell would run the text as a command) unless the prompt on screen is the
+trust dialog; for a plain-screen agent keystrokes are refused once
+``adapter.exited`` says the agent is gone. ``approve`` selects only the
+adapter's plain yes option (an inline ``(y/n)`` prompt gets a literal ``y`` and
+Enter); ``plan_approve`` never selects the auto-mode option;
+``set_permission_mode`` refuses the adapter's forbidden modes, steps past them a
+bounded number of times if they show, and returns to the starting mode when the
+target is never reached.
 
-Launch: ``start``/``resume`` without an explicit mode pass ``--permission-mode
-default`` so a pane never comes up in Claude Code's built-in default (``auto`` in
-2.1.x). ``permission_summary`` speaks the mode that was actually observed (status
-row or jsonl record), waiting briefly for it instead of assuming one.
+Launch: ``start``/``resume`` without an explicit mode pass the adapter's
+``default_launch_mode`` so a pane never comes up in the agent's built-in default.
+``permission_summary`` speaks the mode that was actually observed (status row or
+transcript record), waiting briefly for it instead of assuming one.
 """
 
 from __future__ import annotations
@@ -60,6 +69,16 @@ from pathlib import Path
 from typing import Any
 
 from zordon import paths
+from zordon.agents import (
+    ADAPTERS,
+    DEFAULT_AGENT,
+    AgentAdapter,
+    HookRequest,
+    LaunchSpec,
+    get_adapter,
+)
+from zordon.agents import SessionInfo as AgentSessionInfo
+from zordon.agents.base import TranscriptSource
 from zordon.bus import (
     Bus,
     Notice,
@@ -71,10 +90,8 @@ from zordon.bus import (
     StateChanged,
 )
 from zordon.config import Config
-from zordon.session import discovery, hooks, permissions, prompts
-from zordon.session.jsonl import JsonlTail, to_pane_lines
 from zordon.session.prompts import PromptMatch
-from zordon.session.screen import Screen, diff_screens, held_tail, parse_screen
+from zordon.session.screen import Screen, diff_screens, held_tail
 from zordon.session.state import Observation, next_state
 from zordon.session.tmux import Tmux, TmuxError, strip_control
 from zordon.transcript.redaction import redact
@@ -88,25 +105,38 @@ COMMAND_TIMEOUT = 3.0
 ECHO_TIMEOUT = 1.5  # seconds for the screen to change after send_text
 REGISTRY_INTERVAL = 1.0  # seconds between registry status reads per session
 REGISTRY_WAITING_SCORE = 0.95
+HOOK_HINT_SCORE = 0.9  # fallback prompt score for a hook hint that carries none
 PANE_TAIL_LINES = 200
 MAX_BTAB_PRESSES = 6
 MAX_BYPASS_STEPS = 2  # how often bypass may show in one switch before giving up
 MAX_STUCK_READS = 2  # status row unchanged after this many presses: the TUI is not reacting
 BTAB_SETTLE = 0.25  # seconds for the status row to redraw after Shift+Tab
 MENU_SETTLE = 0.3  # seconds between selecting a plan option and typing feedback
-DEFAULT_LAUNCH_MODE = "default"  # start/resume without an explicit mode never inherit auto
-MODE_OBSERVE_TIMEOUT = 2.0  # seconds permission_summary waits for the status row / jsonl record
-EXIT_CONFIRM_POLLS = 2  # normal-screen exit signs must hold for this many consecutive polls
+MODE_OBSERVE_TIMEOUT = 2.0  # seconds permission_summary waits for the status row / transcript record
+EXIT_CONFIRM_POLLS = 2  # exit signs must hold for this many consecutive polls
 QUIET_IDLE_POLLS = 30  # 100 ms polls: three seconds of a quiet input box counts as idle
-STALL_TEXT = "Claude Code looks like it is waiting on something. The last lines were: "
 NO_CHANGE_TEXT = "I sent that, but nothing changed on screen."
-NO_TUI_TEXT = (
-    "Claude Code isn't on screen in that pane, so I won't type into it. Resume the session first."
-)
 TIMEOUT_DROPPED_TEXT = "The session thread was busy and that command was dropped; say it again."
 TIMEOUT_RUNNING_TEXT = (
-    "That is taking longer than usual; Claude Code may still carry it out, so wait before repeating it."
+    "That is taking longer than usual; the agent may still carry it out, so wait before repeating it."
 )
+
+
+def stall_text(agent_name: str) -> str:
+    return f"{agent_name} looks like it is waiting on something. The last lines were: "
+
+
+def no_tui_text(agent_name: str) -> str:
+    return f"{agent_name} isn't on screen in that pane, so I won't type into it. Resume the session first."
+
+
+def no_modes_text(agent_name: str) -> str:
+    return f"{agent_name} has no permission modes Zordon can switch."
+
+
+# The Claude Code wording, kept as constants for callers that match on it.
+STALL_TEXT = stall_text("Claude Code")
+NO_TUI_TEXT = no_tui_text("Claude Code")
 # A shell waiting for input: "user@host:~/dir$ ", "host% ", "# ", "(venv) user@host:~$ "...
 _SHELL_PROMPT_RE = re.compile(
     r"^(?:\(\S+\)\s*)?(?:\S+@\S+:\S*|\S+:\S+|~\S*|/\S*|[A-Za-z][\w.-]*)?\s*[$#%]\s*$"
@@ -155,6 +185,7 @@ class SessionSummary:
     state: SessionState
     permission_mode: str | None = None
     focused: bool = False
+    agent: str = DEFAULT_AGENT
 
 
 @dataclass
@@ -162,7 +193,9 @@ class Session:
     session_id: str
     cwd: str
     target: str
-    jsonl: JsonlTail | None = None
+    adapter: AgentAdapter
+    agent: str = DEFAULT_AGENT
+    transcript: TranscriptSource | None = None  # the adapter's clean transcript, once found
     state: SessionState = SessionState.WORKING
     detail: str = "starting"
     prev_screen: Screen | None = None
@@ -175,17 +208,17 @@ class Session:
     registry_status: str | None = None
     # bookkeeping
     title: str = ""
-    owned: bool = True  # Zordon opened the window (may kill it); False for registry panes
-    settings_path: Path | None = None
-    jsonl_path: Path | None = None
-    jsonl_from_start: bool = True
+    owned: bool = True  # Zordon opened the window (may kill it); False for registry / attached panes
+    settings_path: Path | None = None  # the first of ``settings_paths`` (the agent's settings file)
+    settings_paths: list[Path] = field(default_factory=list)  # removed when the pane goes
+    info: AgentSessionInfo | None = None  # discovery record for a resumed/attached session
     started_at: float = 0.0
     last_active: float = 0.0
     pane_tail: deque[str] = field(default_factory=lambda: deque(maxlen=PANE_TAIL_LINES))
     prompt_key: tuple[Any, ...] | None = None
     stall_notified: bool = False
     exit_notified: bool = False
-    hook_hint: hooks.HookHint | None = None
+    hook_hint: Any | None = None  # the adapter's hook hint (``session.hooks.HookHint`` for Claude Code)
     believed_prompt: PromptKind | None = None  # second/third-signal prompt the regex cannot see
     quiet_polls: int = 0  # consecutive polls with a quiet input box and unchanged content
     echo_deadline: float | None = None
@@ -195,7 +228,26 @@ class Session:
     held_flushed: str | None = None
     seen_alternate: bool = False
     normal_signature: int | None = None
-    exit_polls: int = 0  # consecutive normal-screen polls that looked like Claude Code is gone
+    exit_polls: int = 0  # consecutive polls that looked like the agent is gone
+    quiet_first_poll: bool = False  # attached to a pane that already has content: do not speak it
+
+    @property
+    def jsonl(self) -> TranscriptSource | None:
+        """Older name for ``transcript`` (the Claude Code source is a jsonl tail)."""
+        return self.transcript
+
+    @jsonl.setter
+    def jsonl(self, value: TranscriptSource | None) -> None:
+        self.transcript = value
+
+    @property
+    def jsonl_from_start(self) -> bool:
+        """A session Zordon started is replayed from the start; a resumed/attached one from the end."""
+        return self.info is None
+
+    @property
+    def display_name(self) -> str:
+        return self.adapter.info.display_name
 
 
 class SessionManager(threading.Thread):
@@ -213,6 +265,8 @@ class SessionManager(threading.Thread):
         hook_secret: str | None = None,
         clock: Callable[[], float] = time.monotonic,
         tmux_session: str = TMUX_SESSION,
+        adapters: dict[str, AgentAdapter] | None = None,
+        default_agent: str | None = None,
     ) -> None:
         super().__init__(name="SessionThread", daemon=True)
         self.bus = bus
@@ -224,6 +278,14 @@ class SessionManager(threading.Thread):
         self.hook_secret = hook_secret
         self.clock = clock
         self.tmux_session = tmux_session
+        self.default_agent = (default_agent or getattr(config.providers, "agent", None) or DEFAULT_AGENT).strip().lower()
+        self.adapters: dict[str, AgentAdapter] = dict(adapters) if adapters else self._build_adapters()
+        if self.default_agent not in self.adapters:
+            raise ValueError(f"default agent {self.default_agent!r} has no adapter; known: {sorted(self.adapters)}")
+        for adapter in self.adapters.values():
+            bind = getattr(adapter, "bind", None)
+            if callable(bind):
+                bind(tmux=self.tmux, zordon_home=self.zordon_home, claude_home=self.claude_home)
         self.sessions: dict[str, Session] = {}
         self._lock = threading.RLock()
         self._commands: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...], Future[Any]] | None] = (
@@ -237,6 +299,25 @@ class SessionManager(threading.Thread):
         # transport's Sessions snapshot; the agent may replace it.
         self.publish_sessions: Callable[[], None] | None = None
         self.polls = 0
+
+    def _build_adapters(self) -> dict[str, AgentAdapter]:
+        """Every registered adapter that imports; a missing optional one is skipped."""
+        out: dict[str, AgentAdapter] = {}
+        for key in ADAPTERS:
+            try:
+                out[key] = get_adapter(key, self.config)
+            except ImportError as e:
+                log.debug("agent adapter %s not present: %s", key, e)
+            except Exception as e:  # noqa: BLE001 - one broken adapter must not take the others down
+                log.warning("agent adapter %s unavailable: %s", key, e)
+        return out
+
+    def adapter_for(self, agent: str | None) -> AgentAdapter:
+        key = (agent or self.default_agent).strip().lower()
+        adapter = self.adapters.get(key)
+        if adapter is None:
+            raise SessionError(f"I don't know an agent called {agent!r}; known: {', '.join(sorted(self.adapters))}.")
+        return adapter
 
     # ---- thread ---------------------------------------------------------------------
 
@@ -333,20 +414,34 @@ class SessionManager(threading.Thread):
             self._apply(s, Observation(False, None, False, False, False, 0.0), now, None)
             return
 
-        self._locate_jsonl(s)
-        jsonl_lines = self._poll_jsonl(s)
+        self._locate_transcript(s)
+        jsonl_lines = self._poll_transcript(s)
         alt = self.tmux.alternate_on(s.target)
         lines = self.tmux.capture(s.target)
-        screen = parse_screen(lines)
+        adapter = s.adapter
+        screen = adapter.parse(lines)
 
-        if not alt:
-            self._poll_normal_screen(s, screen, jsonl_lines, now)
-            return
-
-        s.seen_alternate = True
-        s.exit_polls = 0
+        if adapter.uses_alternate_screen():
+            if not alt:
+                self._poll_normal_screen(s, screen, jsonl_lines, now)
+                return
+            s.seen_alternate = True
+            s.exit_polls = 0
+        elif adapter.exited(screen):
+            # A plain-screen agent: a shell prompt at the bottom means it is gone.
+            s.exit_polls += 1
+            if s.exit_polls >= EXIT_CONFIRM_POLLS:
+                log.info("%s: %s is gone (shell prompt)", sid[:8], s.display_name)
+                self._mark_exited(s, now)
+                return
+        else:
+            s.exit_polls = 0
         prev = s.prev_screen
         new_lines = diff_screens(prev, screen)
+        if s.quiet_first_poll:
+            s.quiet_first_poll = False
+            if prev is None:
+                new_lines = []  # what was on the pane before Zordon arrived is history
         if s.held_flushed is not None:
             if new_lines and new_lines[0] == s.held_flushed:
                 new_lines = new_lines[1:]
@@ -360,7 +455,7 @@ class SessionManager(threading.Thread):
         if new_lines and self._pane_source_active(s):
             for line in new_lines:
                 self.bus.pane_lines.put(PaneLine(session_id=sid, text=line, source="pane"))
-        mode = prompts.permission_mode_from_screen(screen)
+        mode = adapter.permission_mode_from_screen(screen)
         if mode:
             s.permission_mode = mode
 
@@ -368,20 +463,20 @@ class SessionManager(threading.Thread):
         if output_advanced:
             s.last_output_ts = now
         since = max(0.0, now - s.last_output_ts)
-        match = prompts.detect_prompt(screen)
+        match = adapter.detect_prompt(screen)
         self._check_echo(s, screen, now)
 
         watchdog = float(self.config.voice.idle_watchdog_seconds)
-        idle = prompts.is_idle_prompt(screen)
+        idle = adapter.is_idle(screen)
         # Stability rule: a quiet input box with unchanged content for a few polls is idle
         # even when no completion row is visible (showTurnDuration off, unknown wording).
-        if prompts.input_quiet(screen) and not content_changed and not jsonl_lines:
+        if adapter.input_quiet(screen) and not content_changed and not jsonl_lines:
             s.quiet_polls += 1
         else:
             s.quiet_polls = 0
         if not idle and s.quiet_polls >= QUIET_IDLE_POLLS and match is None and s.believed_prompt is None:
             idle = True
-        spinning = prompts.is_working(screen)
+        spinning = adapter.is_working(screen)
         working = spinning and since < watchdog
         score, override = self._second_opinions(s, match, now)
         if s.believed_prompt is not None and (match is not None or idle or spinning or content_changed):
@@ -400,10 +495,10 @@ class SessionManager(threading.Thread):
     def _poll_normal_screen(self, s: Session, screen: Screen, jsonl_lines: int, now: float) -> None:
         """The pane is not on the alternate screen: shell, trust dialog or the exit line.
 
-        Claude Code is treated as gone when the resume line is on screen, or (after
+        The agent is treated as gone when its exit line is on screen, or (after
         ``EXIT_CONFIRM_POLLS`` consecutive polls) when the pane shows a shell prompt
         or has left the alternate screen it was on before, with no trust dialog up.
-        Without this a crashed or never-started ``claude`` leaves a bare shell that
+        Without this a crashed or never-started agent leaves a bare shell that
         would receive voice text as commands.
         """
         sig = hash(tuple(screen.lines))
@@ -413,10 +508,10 @@ class SessionManager(threading.Thread):
             s.last_output_ts = now
         self._check_echo(s, screen, now)
         s.prev_screen = screen
-        if screen.exited:
+        if s.adapter.exited(screen):
             self._mark_exited(s, now)
             return
-        match = prompts.detect_prompt(screen)
+        match = s.adapter.detect_prompt(screen)
         if match is not None and match.kind is not PromptKind.TRUST:
             match = None  # only the trust dialog lives on the normal screen
         shell = bool(getattr(screen, "shell_prompt", False)) or looks_like_shell_prompt(screen.lines)
@@ -424,7 +519,7 @@ class SessionManager(threading.Thread):
             s.exit_polls += 1
             if s.exit_polls >= EXIT_CONFIRM_POLLS:
                 log.info(
-                    "%s: Claude Code is gone (%s)", s.session_id[:8],
+                    "%s: %s is gone (%s)", s.session_id[:8], s.display_name,
                     "shell prompt" if shell else "left the alternate screen",
                 )
                 self._mark_exited(s, now)
@@ -447,7 +542,11 @@ class SessionManager(threading.Thread):
             self._clear_prompt(s)
             changed = s.state is not SessionState.DETACHED
             s.state = SessionState.DETACHED
-            s.detail = "Claude Code exited; resume to start it again"
+            s.detail = (
+                f"{s.display_name} exited; resume to start it again"
+                if s.adapter.supports_resume()
+                else f"{s.display_name} exited; attach again when it is back"
+            )
             s.attached = False
             s.exit_polls = 0
             if self._focused == s.session_id:
@@ -458,9 +557,14 @@ class SessionManager(threading.Thread):
         self._flush_refocus()
         if not s.exit_notified:
             s.exit_notified = True
+            what_next = (
+                "Say resume, or pick the session again, to start it back up."
+                if s.adapter.supports_resume()
+                else "Attach to the pane again once it is running."
+            )
             self.bus.publish(
                 Notice(
-                    text="Claude Code exited. Say resume, or pick the session again, to start it back up.",
+                    text=f"{s.display_name} exited. {what_next}",
                     level="warning",
                     session_id=s.session_id,
                     speak=True,
@@ -476,27 +580,24 @@ class SessionManager(threading.Thread):
         if hint is not None and hint.active:
             hint.consume()
             if hint.kind == "prompt" and match is None:
-                score = max(score, hooks.HINT_PROMPT_SCORE)
+                score = max(score, float(getattr(hint, "score", HOOK_HINT_SCORE)))
                 override = True
             if not hint.active:
                 s.hook_hint = None
         if now - s.registry_checked >= REGISTRY_INTERVAL:
             s.registry_checked = now
-            s.registry_status = self._registry_status(s.session_id)
+            s.registry_status = self._status_hint(s)
         if match is None and s.registry_status == "waiting":
             score = max(score, REGISTRY_WAITING_SCORE)
         return score, override
 
-    def _registry_status(self, session_id: str) -> str | None:
+    def _status_hint(self, s: Session) -> str | None:
+        """The adapter's out-of-band status (Claude Code: the registry ``status``)."""
         try:
-            entry = discovery.load_registry(self.claude_home).get(session_id)
+            return s.adapter.status_hint(s.session_id)
         except Exception as e:  # noqa: BLE001
-            log.debug("registry read failed: %s", e)
+            log.debug("status hint failed: %s", e)
             return None
-        if not entry:
-            return None
-        status = entry.get("status")
-        return status if isinstance(status, str) else None
 
     def _apply(
         self,
@@ -552,7 +653,7 @@ class SessionManager(threading.Thread):
 
     def _unreadable_prompt_notice(self, s: Session) -> Notice:
         hint = s.hook_hint
-        lead = (hint.message if hint and hint.message else "Claude Code looks like it is waiting for permission")
+        lead = (hint.message if hint and hint.message else f"{s.display_name} looks like it is waiting for permission")
         tail = " ".join(self.last_pane_lines(s.session_id, 10)) or "nothing readable"
         return Notice(
             text=f"{lead}, but I can't read the prompt. The last lines were: {tail}",
@@ -571,7 +672,7 @@ class SessionManager(threading.Thread):
         tail = self.last_pane_lines(s.session_id, 10)
         events.append(
             Notice(
-                text=STALL_TEXT + (" ".join(tail) if tail else "nothing readable"),
+                text=stall_text(s.display_name) + (" ".join(tail) if tail else "nothing readable"),
                 level="warning",
                 session_id=s.session_id,
                 speak=True,
@@ -627,39 +728,39 @@ class SessionManager(threading.Thread):
 
     def _pane_source_active(self, s: Session) -> bool:
         src = self.config.output.source
-        return src == "pane" or (src == "auto" and s.jsonl is None)
+        return src == "pane" or (src == "auto" and s.transcript is None)
 
-    def _jsonl_source_active(self, s: Session) -> bool:
-        return self.config.output.source in ("auto", "jsonl") and s.jsonl is not None
+    def _transcript_source_active(self, s: Session) -> bool:
+        return self.config.output.source in ("auto", "jsonl") and s.transcript is not None
 
-    def _locate_jsonl(self, s: Session) -> None:
-        if s.jsonl is not None:
+    def _locate_transcript(self, s: Session) -> None:
+        """Ask the adapter for its clean transcript until it has one (the file may not exist yet)."""
+        if s.transcript is not None:
             return
-        path = s.jsonl_path or discovery.jsonl_path_for(s.cwd, s.session_id, self.claude_home)
-        s.jsonl_path = path
-        if not path.is_file():
+        try:
+            src = s.adapter.transcript_source(s.session_id, s.cwd, s.info)
+        except Exception as e:  # noqa: BLE001 - a broken transcript must not stop the pane feed
+            log.debug("%s: transcript source failed: %s", s.session_id[:8], e)
             return
-        if s.jsonl_from_start:
-            s.jsonl = JsonlTail(path, offset=0, session_id=s.session_id)
-        else:
-            s.jsonl = JsonlTail(path, start_at_end=True, session_id=s.session_id)
-        log.info("%s: following %s", s.session_id[:8], path.name)
+        if src is None:
+            return
+        s.transcript = src
+        log.info("%s: following %s", s.session_id[:8], getattr(src, "path", type(src).__name__))
 
-    def _poll_jsonl(self, s: Session) -> int:
-        """Publish new jsonl events as PaneLines; returns how many events were seen."""
-        if s.jsonl is None:
+    def _poll_transcript(self, s: Session) -> int:
+        """Publish new transcript events as PaneLines; returns how many were seen."""
+        if s.transcript is None:
             return 0
-        events = s.jsonl.poll()
-        if not events:
+        lines = s.transcript.poll()
+        if not lines:
             return 0
-        publish = self._jsonl_source_active(s)
-        for ev in events:
-            if ev.kind == "permission_mode":
-                s.permission_mode = ev.text
+        publish = self._transcript_source_active(s)
+        for line in lines:
+            if line.block == "permission_mode" and line.text:
+                s.permission_mode = line.text
             if publish:
-                for line in to_pane_lines(ev, s.session_id):
-                    self.bus.pane_lines.put(line)
-        return len(events)
+                self.bus.pane_lines.put(line)
+        return len(lines)
 
     def _remember_tail(self, s: Session, lines: list[str]) -> None:
         for line in lines:
@@ -669,32 +770,37 @@ class SessionManager(threading.Thread):
     # ---- SessionControl: reads -----------------------------------------------------------
 
     def list_sessions(self) -> list[SessionSummary]:
+        """Live sessions (started, resumed or attached) plus every adapter's resumable ones."""
         with self._lock:
             live = {sid: self._summary(s) for sid, s in self.sessions.items()}
         rows: list[SessionSummary] = list(live.values())
-        try:
-            found = discovery.list_sessions(self.claude_home, self.tmux)
-        except Exception:  # noqa: BLE001 - a broken store must not break the picker
-            log.exception("session discovery failed")
-            found = []
-        for info in found:
-            if info.session_id in live:
-                row = live[info.session_id]
-                if row.permission_mode is None:
-                    row.permission_mode = info.permission_mode
+        for key, adapter in self.adapters.items():
+            try:
+                if adapter.available() is None:
+                    continue  # not installed: nothing on disk to list
+                found = adapter.list_sessions()
+            except Exception:  # noqa: BLE001 - a broken store must not break the picker
+                log.exception("session discovery failed for %s", key)
                 continue
-            rows.append(
-                SessionSummary(
-                    session_id=info.session_id,
-                    directory=info.directory,
-                    title=info.display_title,
-                    last_active=info.last_active_ts or None,
-                    attached=False,
-                    running=info.running,
-                    state=SessionState.DETACHED,
-                    permission_mode=info.permission_mode,
+            for info in found:
+                if info.session_id in live:
+                    row = live[info.session_id]
+                    if row.permission_mode is None:
+                        row.permission_mode = info.permission_mode
+                    continue
+                rows.append(
+                    SessionSummary(
+                        session_id=info.session_id,
+                        directory=info.cwd,
+                        title=info.title or info.session_id[:8],
+                        last_active=info.last_active or None,
+                        attached=False,
+                        running=bool(info.extra.get("running")) or info.running_pid is not None,
+                        state=SessionState.DETACHED,
+                        permission_mode=info.permission_mode,
+                        agent=info.agent or key,
+                    )
                 )
-            )
         rows.sort(key=lambda r: (r.attached, r.last_active or 0.0), reverse=True)
         return rows
 
@@ -709,6 +815,7 @@ class SessionManager(threading.Thread):
             state=s.state,
             permission_mode=s.permission_mode,
             focused=s.session_id == self._focused,
+            agent=s.agent,
         )
 
     def focused(self) -> str | None:
@@ -744,20 +851,20 @@ class SessionManager(threading.Thread):
     def permission_summary(self, session_id: str) -> str:
         """One sentence about the mode the pane is really in and the configured rules.
 
-        The mode comes from the status row or the jsonl ``permission-mode`` record.
-        When neither has been seen yet the call waits up to ``MODE_OBSERVE_TIMEOUT``
-        for the poll loop to observe one (never when called from the session
-        thread itself); if it still is not known the sentence says so rather than
-        naming Claude Code's built-in default.
+        The mode comes from the status row or the transcript's permission-mode
+        record. When neither has been seen yet the call waits up to
+        ``MODE_OBSERVE_TIMEOUT`` for the poll loop to observe one (never when
+        called from the session thread itself); if it still is not known the
+        sentence says so rather than naming the agent's built-in default.
         """
         with self._lock:
             s = self.sessions.get(session_id)
-            cwd = s.cwd if s else None
+            cwd = s.cwd if s else ""
             active = s.permission_mode if s else None
+            adapter = s.adapter if s else self.adapter_for(None)
         if active is None and s is not None and s.attached:
             active = self._wait_for_mode(s)
-        summary = permissions.read_settings(self.claude_home, cwd)
-        return permissions.summary_sentence(summary, active)
+        return adapter.permission_summary(cwd, active)
 
     def _wait_for_mode(self, s: Session) -> str | None:
         if not self.is_alive() or threading.current_thread() is self:
@@ -782,8 +889,13 @@ class SessionManager(threading.Thread):
         """Start the poll loop (``threading.Thread.start``)."""
         threading.Thread.start(self)
 
-    def start(self, directory: str | None = None, permission_mode: str | None = None) -> str | None:  # type: ignore[override]
-        """``start(directory, mode)`` opens a new Claude Code session and returns its id.
+    def start(
+        self,
+        directory: str | None = None,
+        permission_mode: str | None = None,
+        agent: str | None = None,
+    ) -> str | None:  # type: ignore[override]
+        """``start(directory, mode, agent)`` opens a new session and returns its id.
 
         Without arguments it starts the thread itself, so an agent that calls
         ``.start()`` on every worker thread keeps working; ``start_thread`` is
@@ -792,31 +904,46 @@ class SessionManager(threading.Thread):
         if directory is None:
             self.start_thread()
             return None
-        return self._call(self._do_start, directory, permission_mode, timeout=10.0)
+        return self._call(self._do_start, directory, permission_mode, agent, timeout=10.0)
 
-    def _do_start(self, directory: str, permission_mode: str | None) -> str:
+    def _do_start(self, directory: str, permission_mode: str | None, agent: str | None = None) -> str:
+        adapter = self.adapter_for(agent)
         cwd = str(Path(directory).expanduser())
         if not os.path.isdir(cwd):
             raise SessionError(f"{directory} is not a directory")
+        if permission_mode:
+            permission_mode = adapter.normalize_mode(permission_mode)
         sid = str(uuid.uuid4())
-        settings_path = self._write_settings(sid)
-        command = discovery.new_session_command(sid, settings_path, permission_mode or DEFAULT_LAUNCH_MODE)
-        target = self._open_pane(cwd, sid, command)
-        self._register(sid, cwd, target, settings_path, owned=True, from_start=True, detail="starting")
-        log.info("started session %s in %s (%s)", sid[:8], cwd, target)
+        try:
+            spec = adapter.new_session(sid, cwd, permission_mode, self._hook_request(sid))
+        except NotImplementedError as e:
+            raise SessionError(str(e)) from e
+        target = self._open_pane(cwd, sid, spec)
+        self._register(sid, cwd, target, spec, adapter, owned=True, info=None, detail="starting")
+        log.info("started %s session %s in %s (%s)", adapter.info.key, sid[:8], cwd, target)
         return sid
 
-    def resume(self, session_id: str, permission_mode: str | None = None) -> None:
-        self._call(self._do_resume, session_id, permission_mode, timeout=10.0)
+    def resume(self, session_id: str, permission_mode: str | None = None, agent: str | None = None) -> None:
+        self._call(self._do_resume, session_id, permission_mode, agent, timeout=10.0)
 
-    def _do_resume(self, session_id: str, permission_mode: str | None) -> None:
+    def _do_resume(self, session_id: str, permission_mode: str | None, agent: str | None = None) -> None:
         with self._lock:
             existing = self.sessions.get(session_id)
             if existing is not None and existing.attached and existing.state is not SessionState.DETACHED:
                 self._focused = session_id
                 return
-        info = discovery.find_session(session_id, self.claude_home, self.tmux)
-        if info is not None and info.running:
+        adapter = existing.adapter if existing is not None and agent is None else self.adapter_for(agent)
+        info = adapter.find_session(session_id)
+        if info is None and agent is None and existing is None:
+            # The id may belong to another installed agent's store.
+            for other in self.adapters.values():
+                if other is adapter or other.available() is None:
+                    continue
+                info = other.find_session(session_id)
+                if info is not None:
+                    adapter = other
+                    break
+        if info is not None and (info.running_pid is not None or info.extra.get("running")):
             target = info.tmux_target
             if target and self.tmux.pane_exists(target):
                 self._register(
@@ -824,10 +951,10 @@ class SessionManager(threading.Thread):
                     info.cwd or (existing.cwd if existing else ""),
                     target,
                     None,
+                    adapter,
                     owned=False,
-                    from_start=False,
+                    info=info,
                     detail="attached to a running pane",
-                    jsonl_path=info.jsonl_path,
                 )
                 log.info("attached to running session %s at %s", session_id[:8], target)
                 return
@@ -835,63 +962,120 @@ class SessionManager(threading.Thread):
                 "That session is already running in another terminal. Close it there first, "
                 "or start a new session."
             )
+        if not adapter.supports_resume():
+            raise SessionError(f"{adapter.info.display_name} sessions can't be resumed; attach to its pane instead.")
         cwd = (info.cwd if info and info.cwd else None) or (existing.cwd if existing else None)
         if not cwd or not os.path.isdir(cwd):
             raise UnknownSession("I can't find that session's project directory.")
+        if permission_mode:
+            permission_mode = adapter.normalize_mode(permission_mode)
         if existing is not None and existing.owned and existing.target:
             try:
                 if self.tmux.pane_exists(existing.target):
                     self.tmux.kill_window(existing.target)
             except TmuxError as e:
                 log.debug("old pane for %s not killed: %s", session_id[:8], e)
-        settings_path = self._write_settings(session_id)
-        command = discovery.resume_command(session_id, settings_path, permission_mode or DEFAULT_LAUNCH_MODE)
-        target = self._open_pane(cwd, session_id, command)
-        self._register(
-            session_id,
-            cwd,
-            target,
-            settings_path,
-            owned=True,
-            from_start=False,
-            detail="resuming",
-            jsonl_path=info.jsonl_path if info else None,
-        )
-        log.info("resumed session %s in %s (%s)", session_id[:8], cwd, target)
+        try:
+            spec = adapter.resume_session(session_id, cwd, permission_mode, self._hook_request(session_id))
+        except NotImplementedError as e:
+            raise SessionError(str(e)) from e
+        if info is None:
+            info = AgentSessionInfo(agent=adapter.info.key, session_id=session_id, cwd=cwd)
+        target = self._open_pane(cwd, session_id, spec)
+        self._register(session_id, cwd, target, spec, adapter, owned=True, info=info, detail="resuming")
+        log.info("resumed %s session %s in %s (%s)", adapter.info.key, session_id[:8], cwd, target)
 
-    def _open_pane(self, cwd: str, sid: str, command: list[str]) -> str:
-        """Open the pane in the ``zordon`` tmux session. ``command`` comes from the
-        discovery builders, which are the only place a ``claude`` argv is made.
+    def attach(self, target: str, agent: str = "generic", cwd: str | None = None) -> str:
+        """Follow an existing tmux pane with ``agent``'s adapter; returns the new session id."""
+        return self._call(self._do_attach, target, agent, cwd, timeout=10.0)
+
+    def _do_attach(self, target: str, agent: str | None, cwd: str | None) -> str:
+        adapter = self.adapter_for(agent or "generic")
+        target = (target or "").strip()
+        if not target:
+            raise SessionError("Which pane? Give a tmux target like session:window.pane.")
+        try:
+            if not self.tmux.pane_exists(target):
+                raise UnknownSession(f"There is no tmux pane {target}.")
+        except TmuxError as e:
+            raise SessionError(f"I can't reach tmux: {e}") from e
+        with self._lock:
+            for s in self.sessions.values():
+                if s.target == target and s.attached:
+                    self._set_focus(s.session_id)
+                    return s.session_id
+        if not cwd:
+            cwd = self._pane_cwd(target) or ""
+        cwd = str(Path(cwd).expanduser()) if cwd else ""
+        sid = str(uuid.uuid4())
+        info = AgentSessionInfo(agent=adapter.info.key, session_id=sid, cwd=cwd, tmux_target=target)
+        self._register(sid, cwd, target, None, adapter, owned=False, info=info, detail="attached to a pane")
+        log.info("attached %s adapter to pane %s as %s", adapter.info.key, target, sid[:8])
+        return sid
+
+    def _pane_cwd(self, target: str) -> str | None:
+        getter = getattr(self.tmux, "pane_cwd", None)
+        if callable(getter):
+            try:
+                return getter(target) or None
+            except TmuxError:
+                return None
+        try:
+            for pane in self.tmux.list_panes():
+                if pane.target == target:
+                    return pane.cwd or None
+        except (TmuxError, AttributeError):
+            pass
+        return None
+
+    def _hook_request(self, sid: str) -> HookRequest | None:
+        """What an adapter with out-of-band prompt signals needs; None when hooks are off."""
+        if not self.hook_port or not self.hook_secret:
+            return None
+        return HookRequest(
+            port=int(self.hook_port),
+            secret=self.hook_secret,
+            host=self.config.server.bind,
+            zordon_home=self.zordon_home,
+            session_id=sid,
+        )
+
+    def _open_pane(self, cwd: str, sid: str, spec: LaunchSpec) -> str:
+        """Open the pane in the ``zordon`` tmux session. ``spec.command`` comes from the
+        adapter, which is the only place an agent's argv is made.
 
         ``Tmux.new_window`` creates the session when it does not exist, with this
         window as its first, so no idle shell window is left behind; it also scrubs
-        the session environment of provider keys and Claude Code's nesting markers.
+        the session environment of provider keys and the agent's nesting markers.
         """
         name = (os.path.basename(cwd.rstrip("/")) or sid[:8])[:20]
-        return self.tmux.new_window(self.tmux_session, name, cwd, command, PANE_WIDTH, PANE_HEIGHT)
+        return self.tmux.new_window(self.tmux_session, name, spec.cwd or cwd, spec.command, PANE_WIDTH, PANE_HEIGHT)
 
     def _register(
         self,
         sid: str,
         cwd: str,
         target: str,
-        settings_path: Path | None,
+        spec: LaunchSpec | None,
+        adapter: AgentAdapter,
         *,
         owned: bool,
-        from_start: bool,
+        info: AgentSessionInfo | None,
         detail: str,
-        jsonl_path: Path | None = None,
     ) -> None:
         now = self.clock()
+        settings_paths = list(spec.settings_paths) if spec is not None else []
         with self._lock:
             s = self.sessions.get(sid)
             if s is None:
-                s = Session(session_id=sid, cwd=cwd, target=target)
+                s = Session(session_id=sid, cwd=cwd, target=target, adapter=adapter, agent=adapter.info.key)
                 self.sessions[sid] = s
             else:
                 s.cwd = cwd or s.cwd
                 s.target = target
-                s.jsonl = None
+                s.adapter = adapter
+                s.agent = adapter.info.key
+                s.transcript = None
                 s.prev_screen = None
                 s.pane_tail.clear()
                 s.seen_alternate = False
@@ -907,9 +1091,10 @@ class SessionManager(threading.Thread):
             s.detail = detail
             s.attached = True
             s.owned = owned
-            s.settings_path = settings_path
-            s.jsonl_path = jsonl_path
-            s.jsonl_from_start = from_start
+            s.quiet_first_poll = not owned
+            s.settings_paths = settings_paths
+            s.settings_path = settings_paths[0] if settings_paths else None
+            s.info = info
             s.started_at = s.started_at or time.time()
             s.last_active = time.time()
             s.last_output_ts = now
@@ -920,21 +1105,14 @@ class SessionManager(threading.Thread):
                 s.focused = sid == self._focused
         self.bus.publish(StateChanged(sid, SessionState.WORKING, detail))
 
-    def _write_settings(self, sid: str) -> Path | None:
-        if not self.hook_port or not self.hook_secret:
-            return None
-        path = discovery.hook_settings_path(self.zordon_home, sid)
-        try:
-            host = discovery.hook_host(self.config.server.bind)
-            return discovery.write_hook_settings(path, self.hook_port, self.hook_secret, host=host)
-        except (OSError, ValueError) as e:
-            log.warning("hook settings not written (%s); launching without hooks", e)
-            return None
-
     def _remove_settings(self, s: Session) -> None:
-        if s.settings_path is None:
-            return
-        discovery.remove_hook_settings(s.settings_path)
+        """Delete the per-session files the adapter's LaunchSpec asked to clean up."""
+        for path in s.settings_paths:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError as e:
+                log.debug("could not remove %s: %s", path, e)
+        s.settings_paths = []
         s.settings_path = None
 
     def detach(self, session_id: str) -> None:
@@ -1048,23 +1226,35 @@ class SessionManager(threading.Thread):
         return s
 
     def _require_tui(self, s: Session, m: PromptMatch | None = None) -> None:
-        """Refuse keystrokes unless Claude Code's TUI (alternate screen) is on the pane.
+        """Refuse keystrokes unless the agent is really on the pane.
 
-        The trust dialog is the one prompt drawn on the normal screen, so it is
-        allowed when it is the current prompt. Anything else off the alternate
-        screen is a shell or a dead ``claude``, where text would run as a command.
+        For an alternate-screen agent (Claude Code) that means the alternate
+        screen is on; the trust dialog is the one prompt drawn on the normal
+        screen, so it is allowed when it is the current prompt. Anything else off
+        the alternate screen is a shell or a dead agent, where text would run as
+        a command. A plain-screen agent is checked with ``adapter.exited`` on a
+        fresh capture instead.
         """
-        try:
-            if self.tmux.alternate_on(s.target):
+        if not s.adapter.uses_alternate_screen():
+            try:
+                screen = s.adapter.parse(self.tmux.capture(s.target))
+            except TmuxError as e:
+                raise SessionError("I can't reach that pane right now.") from e
+            if not s.adapter.exited(screen):
                 return
-        except TmuxError as e:
-            raise SessionError("I can't reach that pane right now.") from e
-        current = m if m is not None else s.current_match
-        if current is not None and current.kind is PromptKind.TRUST:
-            return
-        log.warning("%s: refusing keystrokes; pane is not on the alternate screen", s.session_id[:8])
-        self.bus.publish(Notice(text=NO_TUI_TEXT, level="warning", session_id=s.session_id, speak=True))
-        raise SessionError(NO_TUI_TEXT)
+        else:
+            try:
+                if self.tmux.alternate_on(s.target):
+                    return
+            except TmuxError as e:
+                raise SessionError("I can't reach that pane right now.") from e
+            current = m if m is not None else s.current_match
+            if current is not None and current.kind is PromptKind.TRUST:
+                return
+        text = no_tui_text(s.display_name)
+        log.warning("%s: refusing keystrokes; %s is not on the pane", s.session_id[:8], s.display_name)
+        self.bus.publish(Notice(text=text, level="warning", session_id=s.session_id, speak=True))
+        raise SessionError(text)
 
     # ---- SessionControl: keystrokes -------------------------------------------------------
 
@@ -1104,13 +1294,16 @@ class SessionManager(threading.Thread):
             return False
         if m.kind is PromptKind.TRUST:
             return self._do_accept_trust(session_id)
-        yes = prompts.yes_option(m)
+        yes = s.adapter.yes_option(m)
         if yes is None:
             log.warning("%s: no plain Yes option; not approving", session_id[:8])
             return False
         chosen = m.option(yes)
-        if chosen is None or chosen.unsafe or chosen.label != "Yes":
+        if chosen is None or chosen.unsafe or _widens(chosen.label):
             return False
+        if m.extra.get("inline_yn"):
+            self._answer_inline(s, m, "y")
+            return True
         self._select(s, m, yes)
         return True
 
@@ -1123,10 +1316,13 @@ class SessionManager(threading.Thread):
             return False
         if m.kind is PromptKind.TRUST:
             return self._do_decline_trust(session_id)
-        no = prompts.no_option(m)
+        no = s.adapter.no_option(m)
         if no is None:
             self._require_tui(s, m)
             self.tmux.send_key(s.target, "Escape")
+            return True
+        if m.extra.get("inline_yn"):
+            self._answer_inline(s, m, "n")
             return True
         self._select(s, m, no)
         return True
@@ -1138,8 +1334,8 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.PLAN)
         if m is None:
             return False
-        manual = prompts.plan_manual_option(m)
-        if manual is None or manual == prompts.plan_auto_option(m):
+        manual = s.adapter.plan_approve_option(m)
+        if manual is None:
             return False
         chosen = m.option(manual)
         if chosen is None or chosen.unsafe:
@@ -1154,7 +1350,7 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.PLAN)
         if m is None:
             return False
-        revise = prompts.plan_revise_option(m)
+        revise = s.adapter.plan_revise_option(m)
         if revise is None:
             return False
         self._select(s, m, revise)
@@ -1181,7 +1377,7 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.QUESTION)
         if m is None:
             return False
-        idx = prompts.question_option(m, option)
+        idx = s.adapter.question_option(m, option)
         if idx is None:
             return False
         self._select(s, m, idx)
@@ -1194,7 +1390,7 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.TRUST)
         if m is None:
             return False
-        yes = next((o.index for o in m.options if o.label == "Yes, I trust this folder"), None)
+        yes = s.adapter.trust_accept_option(m)
         if yes is None:
             return False
         self._select(s, m, yes)
@@ -1207,7 +1403,7 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.TRUST)
         if m is None:
             return False
-        no = next((o.index for o in m.options if o.label == "No, exit"), None)
+        no = s.adapter.trust_decline_option(m)
         if no is None:
             self._require_tui(s, m)
             self.tmux.send_key(s.target, "Escape")
@@ -1216,7 +1412,7 @@ class SessionManager(threading.Thread):
         with self._lock:
             events = self._clear_prompt(s)
             s.state = SessionState.DETACHED
-            s.detail = "trust declined; Claude Code exited"
+            s.detail = f"trust declined; {s.display_name} exited"
         for ev in events:
             self.bus.publish(ev)
         self.bus.publish(StateChanged(session_id, SessionState.DETACHED, s.detail))
@@ -1232,8 +1428,17 @@ class SessionManager(threading.Thread):
         return s, m
 
     def _select(self, s: Session, m: PromptMatch, index: int) -> None:
-        """Move the pointer from the selected option to ``index`` and press Enter."""
+        """Move the pointer from the selected option to ``index`` and press Enter.
+
+        A lettered menu (``PromptMatch.extra["key<n>"]``, generic adapter) gets
+        the letter typed instead, with no Enter: such tools act on the key.
+        """
         self._require_tui(s, m)
+        letter = m.extra.get(f"key{index}")
+        if letter:
+            self.tmux.send_literal(s.target, letter)
+            log.info("%s: typed %r for option %d (%s)", s.session_id[:8], letter, index, _label(m, index))
+            return
         selected = m.selected.index if m.selected else 1
         steps = index - selected
         key = "Down" if steps > 0 else "Up"
@@ -1242,22 +1447,42 @@ class SessionManager(threading.Thread):
         self.tmux.send_key(s.target, "Enter")
         log.info("%s: selected option %d (%s)", s.session_id[:8], index, _label(m, index))
 
+    def _answer_inline(self, s: Session, m: PromptMatch, answer: str) -> None:
+        """An inline ``(y/n)`` prompt: type the single letter, then Enter."""
+        self._require_tui(s, m)
+        self.tmux.send_literal(s.target, answer)
+        self.tmux.send_enter(s.target)
+        log.info("%s: answered inline prompt with %r", s.session_id[:8], answer)
+
     # ---- SessionControl: permission mode --------------------------------------------------------
 
     def set_permission_mode(self, session_id: str, mode: str) -> bool:
-        target = permissions.normalize_target_mode(mode, by_voice=False)
+        with self._lock:
+            s = self.sessions.get(session_id)
+            adapter = s.adapter if s is not None else self.adapter_for(None)
+        if adapter.mode_cycle_key() is None:
+            self.bus.publish(
+                Notice(text=no_modes_text(adapter.info.display_name), level="warning", session_id=session_id, speak=True)
+            )
+            return False
+        target = adapter.normalize_mode(mode)
         return self._call(self._do_set_permission_mode, session_id, target, timeout=10.0)
 
     def _do_set_permission_mode(self, session_id: str, target: str) -> bool:
         s = self._live(session_id)
-        screen = parse_screen(self.tmux.capture(s.target))
-        if prompts.detect_prompt(screen) is not None or screen.input_box is None:
+        adapter = s.adapter
+        key = adapter.mode_cycle_key()
+        if key is None:
+            return False
+        screen = adapter.parse(self.tmux.capture(s.target))
+        if adapter.detect_prompt(screen) is not None or screen.input_box is None:
             log.info("%s: not switching mode while a prompt is up", session_id[:8])
             return False
         self._require_tui(s)
-        start = prompts.permission_mode_from_screen(screen)
+        start = adapter.permission_mode_from_screen(screen)
         if start is None:
             return False
+        forbidden = adapter.forbidden_modes()
         current = start
         bypass_steps = 0
         stuck = 0
@@ -1267,8 +1492,8 @@ class SessionManager(threading.Thread):
                 s.permission_mode = current
                 return True
             previous = current
-            current = self._press_btab(s)
-            if current in permissions.FORBIDDEN_TARGET_MODES:
+            current = self._press_cycle_key(s, key)
+            if current in forbidden:
                 bypass_steps += 1
                 if bypass_steps > MAX_BYPASS_STEPS:
                     reason = "bypass permissions keeps showing"
@@ -1288,17 +1513,18 @@ class SessionManager(threading.Thread):
             s.permission_mode = current
             return True
         if stuck < MAX_STUCK_READS:
-            current = self._return_to(s, start, current)
+            current = self._return_to(s, key, start, current)
         if current is not None:
             s.permission_mode = current
+        label = adapter.mode_label
         where = (
-            f"the pane is back in {permissions.mode_label(current)} mode"
+            f"the pane is back in {label(current)} mode"
             if current == start
-            else f"the pane shows {permissions.mode_label(current) if current else 'an unknown'} mode now"
+            else f"the pane shows {label(current) if current else 'an unknown'} mode now"
         )
         self.bus.publish(
             Notice(
-                text=f"I couldn't switch to {permissions.mode_label(target)} mode from here: {reason}; {where}.",
+                text=f"I couldn't switch to {label(target)} mode from here: {reason}; {where}.",
                 level="warning",
                 session_id=session_id,
                 speak=True,
@@ -1306,20 +1532,21 @@ class SessionManager(threading.Thread):
         )
         return False
 
-    def _press_btab(self, s: Session) -> str | None:
-        """One Shift+Tab, then the mode the status row shows after it settles."""
-        self.tmux.send_key(s.target, "BTab")
+    def _press_cycle_key(self, s: Session, key: str) -> str | None:
+        """One press of the adapter's mode key, then the mode the status row shows after it settles."""
+        self.tmux.send_key(s.target, key)
         time.sleep(BTAB_SETTLE)
-        return prompts.permission_mode_from_screen(parse_screen(self.tmux.capture(s.target)))
+        return s.adapter.permission_mode_from_screen(s.adapter.parse(self.tmux.capture(s.target)))
 
-    def _return_to(self, s: Session, start: str, current: str | None) -> str | None:
-        """Press BTab (bounded) until the status row shows ``start`` again, skipping bypass."""
+    def _return_to(self, s: Session, key: str, start: str, current: str | None) -> str | None:
+        """Press the mode key (bounded) until the status row shows ``start`` again, skipping forbidden modes."""
+        forbidden = s.adapter.forbidden_modes()
         for _ in range(MAX_BTAB_PRESSES):
             if current == start:
                 return current
             previous = current
-            current = self._press_btab(s)
-            if current is None or (current == previous and current not in permissions.FORBIDDEN_TARGET_MODES):
+            current = self._press_cycle_key(s, key)
+            if current is None or (current == previous and current not in forbidden):
                 break  # not reacting: stop pressing keys into a pane we cannot read
         if current != start:
             log.warning("%s: could not return the mode to %s (now %s)", s.session_id[:8], start, current)
@@ -1328,18 +1555,22 @@ class SessionManager(threading.Thread):
     # ---- SessionControl: hooks --------------------------------------------------------------------
 
     def hook_event(self, payload: dict[str, Any]) -> None:
-        if not hooks.payload_shape_ok(payload):
+        sid = payload.get("session_id") if isinstance(payload, dict) else None
+        if not isinstance(sid, str) or not sid:
             log.debug("ignoring malformed hook payload")
             return
-        sid = str(payload["session_id"])
-        hint = hooks.hint_for(payload)
         with self._lock:
             s = self.sessions.get(sid)
-            if s is None:
-                log.debug("hook event for unknown session %s", sid[:8])
-                return
+        if s is None:
+            log.debug("hook event for unknown session %s", sid[:8])
+            return
+        hint = s.adapter.hook_hint(payload)
+        if hint is None:
+            log.debug("%s: hook payload ignored by the %s adapter", sid[:8], s.agent)
+            return
+        with self._lock:
             s.hook_hint = hint
-        log.info("%s: hook %s/%s", sid[:8], payload.get("hook_event_name"), hint.notification_type)
+        log.info("%s: hook %s/%s", sid[:8], payload.get("hook_event_name"), getattr(hint, "notification_type", ""))
         self.wake()
 
 
@@ -1360,3 +1591,11 @@ def _signature(screen: Screen | None) -> tuple[Any, ...]:
 def _label(m: PromptMatch, index: int) -> str:
     o = m.option(index)
     return o.label if o else "?"
+
+
+_WIDENING = re.compile(r"always|don'?t ask|do not ask|for this session|auto[- ]?mode|switch to|all future|yolo", re.I)
+
+
+def _widens(label: str) -> bool:
+    """A yes-option label that widens permissions; never selected by ``approve``."""
+    return bool(_WIDENING.search(label))

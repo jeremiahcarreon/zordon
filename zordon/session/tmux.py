@@ -391,6 +391,14 @@ class Tmux:
     def alternate_on(self, target: str) -> bool:
         return self._display(target, "#{alternate_on}").strip() == "1"
 
+    def pane_cwd(self, target: str) -> str | None:
+        """``pane_current_path`` of ``target`` (None when the pane is gone)."""
+        try:
+            out = self._display(target, "#{pane_current_path}").strip()
+        except TmuxError:
+            return None
+        return out or None
+
     def pane_pid(self, target: str) -> int | None:
         try:
             out = self._display(target, "#{pane_pid}").strip()

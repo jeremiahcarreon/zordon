@@ -107,9 +107,12 @@
         <p class="muted small">Scan on the phone, then enter the token.</p>
       </div>
       <ul id="session-list" class="session-list"></ul>
-      <p id="sessions-empty" class="empty muted" hidden>No Claude Code sessions found.</p>
+      <p id="sessions-empty" class="empty muted" hidden>No sessions found.</p>
       <form id="new-session" class="card new-session" autocomplete="off">
         <h3>New session</h3>
+        <label class="field"><span>Agent</span>
+          <select id="new-agent" class="agent-select"></select>
+        </label>
         <label class="field"><span>Directory</span>
           <input id="new-dir" type="text" placeholder="/path/to/project" autocapitalize="off" autocorrect="off" spellcheck="false" required>
         </label>
@@ -117,6 +120,17 @@
           <select id="new-mode" class="mode-select"></select>
         </label>
         <button type="submit" class="btn primary wide">Start</button>
+      </form>
+      <form id="attach-pane" class="card new-session" autocomplete="off">
+        <h3>Attach to a tmux pane</h3>
+        <p class="muted small">Follow an agent that is already running in tmux. Zordon reads its screen and answers its prompts; it cannot start or resume it.</p>
+        <label class="field"><span>Pane</span>
+          <input id="attach-target" type="text" placeholder="session:window.pane" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        </label>
+        <label class="field"><span>Agent</span>
+          <select id="attach-agent" class="agent-select"></select>
+        </label>
+        <button type="submit" class="btn wide">Attach</button>
       </form>
     </div>
   </section>

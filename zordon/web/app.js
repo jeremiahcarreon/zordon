@@ -65,6 +65,8 @@
     lastInbound: 0,
     rttMs: null,
     hello: null,
+    agents: {}, // adapter key -> installed (from hello.agents)
+    defaultAgent: 'claude-code',
     focused: null,
     sessions: [],
     sessionsById: {},
@@ -433,6 +435,9 @@
     S.settings.tool_chatter = msg.tool_chatter;
     if (typeof msg.muted === 'boolean') S.settings.muted = msg.muted; // WEB-7: hello carries the agent's mute state
     S.settings.providers = msg.providers || {};
+    S.agents = msg.agents || {};
+    S.defaultAgent = msg.default_agent || 'claude-code';
+    renderAgentSelects();
     $('st-version').textContent = 'zordon ' + msg.version + ' (protocol ' + msg.protocol + ')';
     if (msg.tunnel_url && !S.tunnel) onTunnel({ type: 'tunnel', url: msg.tunnel_url, qr_svg: null });
     renderSettings();
@@ -940,6 +945,7 @@
             s.attached ? el('span', { class: 'badge', text: 'attached' }) : null,
             s.running ? el('span', { class: 'badge', text: 'running' }) : null,
             s.permission_mode ? el('span', { class: 'badge mode', text: s.permission_mode }) : null,
+            el('span', { class: 'badge agent', text: agentLabel(s.agent || 'claude-code') }),
             el('span', { class: 'muted small', text: relTime(s.last_active) }),
           ]),
         ]),
@@ -1035,6 +1041,47 @@
   // as its own option or, with `otherLabel`, a disabled placeholder (so a value the
   // client refuses to offer is never rendered as a choice). An empty `current` with
   // `otherLabel` shows a disabled "unknown" placeholder instead of a misleading default.
+  // Adapter keys as shown to people. Unknown keys fall back to the key itself.
+  var AGENT_LABELS = { 'claude-code': 'Claude Code', codex: 'Codex', generic: 'Generic pane' };
+
+  function agentLabel(key) {
+    return AGENT_LABELS[key] || key;
+  }
+
+  // Order: the configured default first, then installed adapters, then the rest.
+  function agentKeys() {
+    var keys = Object.keys(S.agents || {});
+    if (keys.indexOf(S.defaultAgent) === -1) keys.push(S.defaultAgent);
+    return keys.sort(function (a, b) {
+      if (a === S.defaultAgent) return -1;
+      if (b === S.defaultAgent) return 1;
+      var ia = S.agents[a] ? 0 : 1;
+      var ib = S.agents[b] ? 0 : 1;
+      return ia - ib || a.localeCompare(b);
+    });
+  }
+
+  // Fill an agent <select>: installed adapters enabled, the others disabled and labelled.
+  function fillAgentSelect(select, current) {
+    var keys = agentKeys();
+    clear(select);
+    var chosen = null;
+    keys.forEach(function (k) {
+      var installed = S.agents[k] !== false;
+      var opt = el('option', { value: k, text: agentLabel(k) + (installed ? '' : ' (not installed)') });
+      if (!installed) opt.disabled = true;
+      select.appendChild(opt);
+      if (chosen === null && installed && (k === current || current === undefined)) chosen = k;
+    });
+    if (chosen === null) chosen = keys.filter(function (k) { return S.agents[k] !== false; })[0] || keys[0] || '';
+    if (chosen) select.value = chosen;
+  }
+
+  function renderAgentSelects() {
+    fillAgentSelect($('new-agent'), S.defaultAgent);
+    fillAgentSelect($('attach-agent'), 'generic');
+  }
+
   function fillSelect(select, values, current, otherLabel) {
     clear(select);
     var seen = {};
@@ -1329,9 +1376,23 @@
       if (!dir) return;
       var mode = $('new-mode').value;
       if (P.PERMISSION_MODES.indexOf(mode) === -1) mode = 'default';
-      if (cmd('start', { directory: dir, permission_mode: mode })) {
+      var agent = $('new-agent').value || S.defaultAgent;
+      var args = { directory: dir, permission_mode: mode };
+      if (agent && agent !== S.defaultAgent) args.agent = agent;
+      if (cmd('start', args)) {
         $('new-dir').value = '';
-        toast('Starting a session in ' + basename(dir), 'info', 2500);
+        toast('Starting ' + agentLabel(agent) + ' in ' + basename(dir), 'info', 2500);
+      }
+    });
+    renderAgentSelects();
+    $('attach-pane').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var target = $('attach-target').value.trim();
+      if (!target) return;
+      var agent = $('attach-agent').value || 'generic';
+      if (cmd('attach', { target: target, agent: agent })) {
+        $('attach-target').value = '';
+        toast('Attaching to ' + target + ' as ' + agentLabel(agent), 'info', 2500);
       }
     });
 

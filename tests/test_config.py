@@ -75,3 +75,21 @@ def test_no_bypass_option_exists():
     dumped = str(cfg.to_dict()).lower()
     assert "bypass" not in dumped
     assert "dangerously" not in dumped
+
+
+def test_providers_agent_defaults_to_claude_code_and_is_validated():
+    from zordon.agents import ADAPTERS
+
+    cfg = Config.default()
+    assert cfg.providers.agent == "claude-code"
+    assert "agent" in cfg.to_dict()["providers"]
+    for key in ADAPTERS:
+        cfg.providers.agent = key
+        cfg.validate()
+    cfg.providers.agent = "vim"
+    with pytest.raises(ConfigError, match="providers.agent"):
+        cfg.validate()
+    loaded = Config.from_dict({"providers": {"agent": "generic"}})
+    assert loaded.providers.agent == "generic"
+    with pytest.raises(ConfigError):
+        Config.from_dict({"providers": {"agent": "nope"}})

@@ -618,3 +618,58 @@ def test_set_provider_voice_without_agent_support_is_a_clear_error(client: TestC
         err = recv_type(ws, "error")
         assert err["code"] == "unsupported"
         assert "voice" in err["message"]
+
+
+# ---- agent adapters ------------------------------------------------------------------------------
+
+
+def test_hello_lists_agents_and_sessions_carry_the_agent(client: TestClient, agent: FakeAgent):
+    with connected(client) as (ws, hello, sessions, _):
+        assert set(hello["agents"]) >= {"claude-code", "generic"}
+        assert all(isinstance(v, bool) for v in hello["agents"].values())
+        assert hello["agents"]["generic"] is True  # needs no binary
+        assert hello["default_agent"] == "claude-code"
+        assert all(s["agent"] == "claude-code" for s in sessions["sessions"])  # FakeSessionInfo has no agent field
+    agent.available_agents = lambda: {"claude-code": None, "codex": "/usr/bin/codex", "generic": ""}  # type: ignore[attr-defined]
+    agent.config.providers.agent = "codex"
+    agent.sessions.infos[0].agent = "generic"  # type: ignore[attr-defined]
+    with connected(client) as (ws, hello, sessions, _):
+        assert hello["agents"] == {"claude-code": False, "codex": True, "generic": True}
+        assert hello["default_agent"] == "codex"
+        assert sessions["sessions"][0]["agent"] == "generic"
+
+
+def test_attach_command_and_agent_on_start_resume(client: TestClient, agent: FakeAgent):
+    attached: list[tuple[str, str]] = []
+
+    def attach(target: str, agent_key: str = "generic") -> str:
+        attached.append((target, agent_key))
+        return "sess-attached"
+
+    agent.sessions.attach = attach  # type: ignore[attr-defined]
+    seen: list[tuple] = []
+    agent.sessions.start = lambda directory, permission_mode=None, agent=None: seen.append(("start", directory, permission_mode, agent)) or "sess-new"  # type: ignore[method-assign]
+    agent.sessions.resume = lambda session_id, permission_mode=None, agent=None: seen.append(("resume", session_id, permission_mode, agent))  # type: ignore[method-assign]
+    with connected(client) as (ws, *_):
+        ws.send_json({"type": "command", "name": "attach", "args": {"target": "work:@1.%3"}})
+        assert recv_type(ws, "sessions")["type"] == "sessions"
+        ws.send_json({"type": "command", "name": "attach", "args": {"target": "work:@1.%3", "agent": "codex"}})
+        recv_type(ws, "sessions")
+        ws.send_json({"type": "command", "name": "attach", "args": {}})
+        assert recv_type(ws, "error")["code"] == "bad_argument"
+        ws.send_json({"type": "command", "name": "start", "args": {"directory": "/tmp/p", "agent": "generic"}})
+        recv_type(ws, "sessions")
+        ws.send_json({"type": "command", "name": "start", "args": {"directory": "/tmp/q"}})
+        recv_type(ws, "sessions")
+        ws.send_json({"type": "command", "name": "resume", "args": {"session_id": "sess-2", "agent": "codex"}})
+        recv_type(ws, "sessions")
+    assert attached == [("work:@1.%3", "generic"), ("work:@1.%3", "codex")]
+    assert ("start", "/tmp/p", None, "generic") in seen
+    assert ("start", "/tmp/q", None, None) in seen  # no agent field: the manager's default
+    assert ("resume", "sess-2", None, "codex") in seen
+
+
+def test_attach_without_manager_support_is_a_clean_error(client: TestClient, agent: FakeAgent):
+    with connected(client) as (ws, *_):
+        ws.send_json({"type": "command", "name": "attach", "args": {"target": "work:@1.%3"}})
+        assert recv_type(ws, "error")["code"] == "unsupported"

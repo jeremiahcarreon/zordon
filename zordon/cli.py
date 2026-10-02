@@ -203,6 +203,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         _cfg, _choices, problems = wizard.run(
             getattr(args, "config", None), assume_yes=bool(getattr(args, "yes", False)), do_actions=not getattr(args, "no_download", False)
         )
+    except wizard.SetupAborted as e:
+        print(f"Setup stopped: {e}. Install a coding agent, then run `zordon setup` again.")
+        return EXIT_MISSING
     except (OSError, ValueError, TypeError) as e:
         raise CliError(f"setup failed: {e}", EXIT_CONFIG) from e
     return EXIT_OK if not problems else EXIT_MISSING
@@ -221,7 +224,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print("No configuration yet; running the guided setup first (Ctrl-C to skip).")
         try:
             cfg, _choices, _problems = wizard.run(args.config)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, wizard.SetupAborted):
             print("\nSetup skipped; writing defaults.")
             cfg, _ = load_or_create(args.config)
         created = False

@@ -50,6 +50,7 @@ class HookHint:
     notification_type: str = ""
     polls_left: int = HINT_POLLS
     notified: bool = False  # the spoken fallback notice has been published
+    score: float = HINT_PROMPT_SCORE  # prompt score the state machine sees while a prompt hint is live
 
     @property
     def active(self) -> bool:

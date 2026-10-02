@@ -1,0 +1,21 @@
+  >_ OpenAI Codex (v0.160.0)
+     ~/Code/project
+
+  Welcome to our little rectangle of possibility.
+
+› Run the test suite and fix what fails.
+
+• I'll start by running the tests.
+
+  Would you like to run the following command?
+
+  Reason: Run the project's unit tests to see what fails.
+
+  $ python -m pytest -q
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `python -m pytest` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

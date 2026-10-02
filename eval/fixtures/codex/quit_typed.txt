@@ -1,0 +1,45 @@
+
+  >_ OpenAI Codex (v0.160.0)
+     ~/Code/zordon/.scratch/codex
+
+  Welcome to our little rectangle of possibility.
+
+
+› List the files in this directory.
+
+
+■ unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-[masked]. You can find your API key at https://
+platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses, cf-ray: [masked], request id: req_[masked],
+auth error: 401, auth error code: invalid_api_key
+
+                                                                                 
+                                                                                          
+                                                                                            
+                                                                                             
+                                                                                              
+                                                                                              
+                                                                                               
+                                                                                                
+                                                                                                
+                                                                                                 
+                                                                                                
+                                                                                                
+                                                                                               
+                                                                                             
+                                                                                          
+                                                                                         
+                                                                                       
+
+
+                             
+
+                                                                                   
+                                                                                                                                                              
+                                                                                                                              
+                                                                                           
+› /quit  exit Codex                                                                                                                                             
+
+› /quit                            
+
+  Model 0.0 default · ~/Code/zordon/.scratch/codex    
+                                                                                                                                                               

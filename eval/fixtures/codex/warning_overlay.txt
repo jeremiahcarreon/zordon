@@ -1,0 +1,45 @@
+
+  >_ OpenAI Codex (v0.160.0)
+     ~/Code/zordon/.scratch/codex
+
+  Welcome to our little rectangle of possibility.
+
+
+
+
+
+
+
+
+
+                                                                                 
+                                                                                          
+                                                                                            
+                                                                                             
+                                                                                              
+                                                                                              
+                                                                                               
+                                                                                                
+                                                                                                
+                                                                                                 
+                                                                                                
+                                                                                                
+                                                                                               
+                                                                                             
+                                                                                          
+                                                                                         
+                                                                                       
+
+
+  Warnings · 1 of 1 · Startup
+
+  Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.
+
+
+
+
+
+                          
+
+                                                    
+  k keep & next · esc dismiss & close · ctrl+o copy · ←/→ warning · ↓ scroll                                                                                   

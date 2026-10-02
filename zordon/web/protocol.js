@@ -28,6 +28,7 @@
     'focus',
     'start',
     'resume',
+    'attach',
     'detach',
     'delete',
     'send_text',
@@ -139,6 +140,11 @@
     for (var k in v) if (Object.prototype.hasOwnProperty.call(v, k) && !isStr(v[k])) return false;
     return true;
   }
+  function isBoolDict(v) {
+    if (!isObj(v)) return false;
+    for (var k in v) if (Object.prototype.hasOwnProperty.call(v, k) && !isBool(v[k])) return false;
+    return true;
+  }
   function optional(v, pred) {
     return v === undefined || v === null || pred(v);
   }
@@ -160,7 +166,9 @@
         isBool(m.tool_chatter) &&
         isStrDict(m.providers) &&
         isInt(m.tts_sample_rate) &&
-        optional(m.tunnel_url, isStr)
+        optional(m.tunnel_url, isStr) &&
+        optional(m.agents, isBoolDict) &&
+        optional(m.default_agent, isStr)
       );
     },
     sessions: function (m) {
@@ -177,7 +185,8 @@
           !isBool(s.running) ||
           !isStr(s.state) ||
           !optional(s.permission_mode, isStr) ||
-          !optional(s.focused, isBool)
+          !optional(s.focused, isBool) ||
+          !optional(s.agent, isStr)
         ) {
           return false;
         }

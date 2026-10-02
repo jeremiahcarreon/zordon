@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from starlette import status
 from starlette.websockets import WebSocketDisconnected
 
+from zordon.agents import DEFAULT_AGENT, available_agents
 from zordon.bus import (
     Bus,
     Flush,
@@ -201,6 +202,7 @@ def to_session_summary(obj: Any, focused: str | None) -> P.SessionSummary:
         state=_enum_value(get("state", "detached")),
         permission_mode=get("permission_mode"),
         focused=bool(sid) and sid == focused,
+        agent=str(get("agent", "") or "claude-code"),
     )
 
 
@@ -602,6 +604,7 @@ class ClientConnection:
             "focus": self._cmd_focus,
             "start": self._cmd_start,
             "resume": self._cmd_resume,
+            "attach": self._cmd_attach,
             "detach": self._cmd_detach,
             "delete": self._cmd_delete,
             "send_text": self._cmd_send_text,
@@ -649,7 +652,11 @@ class ClientConnection:
         mode = _str_arg(args, "permission_mode")
         if mode is not None and (err := _check_mode(mode)) is not None:
             return err
-        self.agent.sessions.start(directory, mode)
+        agent = _str_arg(args, "agent")
+        if agent is not None:
+            self.agent.sessions.start(directory, mode, agent=agent)
+        else:
+            self.agent.sessions.start(directory, mode)
         return self._sessions()
 
     def _cmd_resume(self, args: dict[str, Any]) -> BaseModel:
@@ -659,7 +666,23 @@ class ClientConnection:
         mode = _str_arg(args, "permission_mode")
         if mode is not None and (err := _check_mode(mode)) is not None:
             return err
-        self.agent.sessions.resume(sid, mode)
+        agent = _str_arg(args, "agent")
+        if agent is not None:
+            self.agent.sessions.resume(sid, mode, agent=agent)
+        else:
+            self.agent.sessions.resume(sid, mode)
+        return self._sessions()
+
+    def _cmd_attach(self, args: dict[str, Any]) -> BaseModel:
+        """Follow an existing tmux pane (``target`` like ``session:window.pane``) with an adapter."""
+        target = _str_arg(args, "target")
+        if target is None:
+            return _bad_argument("target")
+        agent = _str_arg(args, "agent") or "generic"
+        attach = getattr(self.agent.sessions, "attach", None)
+        if not callable(attach):
+            return P.ErrorOut(message="attaching to a pane is not supported by this agent", code="unsupported")
+        attach(target, agent)
         return self._sessions()
 
     def _cmd_detach(self, args: dict[str, Any]) -> BaseModel:
@@ -850,7 +873,24 @@ class ClientConnection:
             tts_sample_rate=int(rate or DEFAULT_TTS_SAMPLE_RATE),
             tunnel_url=getattr(self.agent, "tunnel_url", None),
             muted=bool(settings.get("muted", False)),
+            agents=self._agents_installed(),
+            default_agent=self._default_agent(),
         )
+
+    def _agents_installed(self) -> dict[str, bool]:
+        """Adapter key -> whether its binary is on PATH (the generic adapter always is)."""
+        probe = getattr(self.agent, "available_agents", None)
+        try:
+            found = probe() if callable(probe) else available_agents(getattr(self.agent, "config", None))
+        except Exception:  # noqa: BLE001 - a broken probe must not stop hello
+            log.exception("agent availability probe failed")
+            return {}
+        return {str(k): v is not None for k, v in dict(found).items()}
+
+    def _default_agent(self) -> str:
+        cfg = getattr(self.agent, "config", None)
+        providers = getattr(cfg, "providers", None)
+        return str(getattr(providers, "agent", None) or DEFAULT_AGENT)
 
     def _sessions(self) -> P.Sessions:
         focused = self.agent.sessions.focused()

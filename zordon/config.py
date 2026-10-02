@@ -57,6 +57,9 @@ class ServerConfig:
 
 @dataclass
 class ProvidersConfig:
+    # The coding agent Zordon drives by default (``zordon.agents.ADAPTERS``):
+    # claude-code | codex | generic. A session may pick another at start/attach.
+    agent: str = "claude-code"
     stt: str = "faster-whisper"  # faster-whisper | openai | groq
     tts: str = "kokoro"  # kokoro | elevenlabs | openai
     normalizer: str = "auto"  # auto | anthropic | ollama | claude-cli | passthrough
@@ -219,6 +222,10 @@ class Config:
             raise ConfigError("output.source must be auto, jsonl or pane")
         if self.tunnel.provider not in ("cloudflared", "ngrok"):
             raise ConfigError("tunnel.provider must be cloudflared or ngrok")
+        from zordon.agents import ADAPTERS  # noqa: PLC0415 - avoid an import cycle at module load
+
+        if self.providers.agent not in ADAPTERS:
+            raise ConfigError(f"providers.agent must be one of {tuple(ADAPTERS)}")
 
     def is_loopback(self) -> bool:
         return self.server.bind in LOOPBACK

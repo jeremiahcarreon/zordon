@@ -119,6 +119,27 @@ visible to the tmux server and the Claude Code panes Zordon starts, so prefer
 `config.toml` when that matters. Keys never appear in logs, in the `hello` or
 `settings` messages, or in a transcript row.
 
+## The agent slot
+
+The coding agent Zordon drives is a fifth, different kind of slot: not a network
+service but a terminal program in a tmux pane, described by an adapter in
+`zordon/agents/` (see `docs/agents.md`). `providers.agent` picks it:
+
+```toml
+[providers]
+agent = "claude-code"       # claude-code | codex | generic
+```
+
+| Name | Binary | Needs | Notes |
+| --- | --- | --- | --- |
+| `claude-code` | `claude` | Claude Code installed and logged in | Default. Full fidelity: prompts, plan approval, questions, trust dialog, the session jsonl, the Notification hook and the permission settings are all read |
+| `codex` | `codex` (`npm install -g @openai/codex`) | Codex installed and signed in (`codex` once, interactively); set `CODEX_HOME` if the store is not `~/.codex` | Built from the Codex source and live onboarding captures of `codex-cli 0.160.0`; the approval modal is matched against the TUI's own snapshot strings and still needs a live re-capture by someone with a login. Approval policy is passed at launch (`on-request` default, `untrusted`, `on-failure`); `never`, `--yolo`, `--approve-for-me` and `danger-full-access` are refused. Prose comes from the rollout file under `$CODEX_HOME/sessions/`; there is no hook, so the pane is the only prompt signal. `ZORDON_CODEX_BINARY` points at a binary off `PATH` |
+| `generic` | none | an existing tmux pane | Attach to any pane; prompts are recognised by the shapes most tools share (`(y/n)`, numbered Yes/No menus); prose from the pane only |
+
+Codex itself needs its own sign-in (ChatGPT or an OpenAI API key, stored by Codex
+in `$CODEX_HOME/auth.json`); Zordon never reads or writes that file, and
+`providers.keys.openai` is for the speech providers only.
+
 ## Model and binary downloads
 
 `zordon doctor --download` fetches what the configured local providers need into

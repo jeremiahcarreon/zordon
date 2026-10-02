@@ -1,0 +1,18 @@
+  >_ OpenAI Codex (v0.160.0)
+     ~/Code/project
+
+› Install the dependencies.
+
+  Would you like to run the following command?
+
+  Reason: Install the packages listed in package.json.
+
+  $ npm install
+
+
+  1. Yes, proceed (y)
+› 2. Yes, and don't ask again for this command in this session (a)
+  3. No, continue without running it (d)
+  4. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

@@ -37,6 +37,7 @@ from typing import Any
 import numpy as np
 
 from zordon import __version__, paths
+from zordon.agents import ADAPTERS, AgentAdapter, get_adapter
 from zordon.bus import (
     Bus,
     Flush,
@@ -50,7 +51,7 @@ from zordon.bus import (
     Utterance,
     drain,
 )
-from zordon.config import VERBOSITY_LEVELS, Config
+from zordon.config import VERBOSITY_LEVELS, Config, ConfigError
 from zordon.output.normalizer import PassthroughNormalizer, make_normalizer
 from zordon.output.pipeline import PipelineThread
 from zordon.output.tts import SilenceTTS, make_tts
@@ -252,6 +253,9 @@ def build_providers(config: Config, overrides: dict[str, Any] | None = None) -> 
 # ---- spoken forms (pure) -------------------------------------------------------------
 
 
+DEFAULT_AGENT_NAME = "Claude Code"
+
+
 def prompt_speech(
     kind: PromptKind | str,
     title: str,
@@ -259,32 +263,38 @@ def prompt_speech(
     *,
     command: str | None = None,
     target_file: str | None = None,
+    agent_name: str = DEFAULT_AGENT_NAME,
 ) -> str:
-    """The short sentence Zordon speaks when a prompt appears on the focused session."""
+    """The short sentence Zordon speaks when a prompt appears on the focused session.
+
+    ``agent_name`` is the adapter's display name ("Claude Code", "Codex", "the agent").
+    """
     k = kind.value if isinstance(kind, PromptKind) else str(kind)
     title = (title or "").strip()
+    who = (agent_name or DEFAULT_AGENT_NAME).strip()
+    who = who[0].upper() + who[1:] if who else DEFAULT_AGENT_NAME
     if k == PromptKind.TRUST.value:
         return "This folder is not trusted yet. Say yes to trust it, or no."
     if k == PromptKind.PLAN.value:
         summary = _strip_prefix(title, "Plan ready:").strip() or "a plan"
-        return f"Claude Code has a plan ready: {_sentence(summary)} Approve, revise, or deny?"
+        return f"{who} has a plan ready: {_sentence(summary)} Approve, revise, or deny?"
     if k == PromptKind.QUESTION.value:
         question = _sentence(title or "a question")
         labels = [o for o in (options or []) if o.strip()][:MAX_SPOKEN_OPTIONS]
         if labels:
-            return f"Claude Code is asking: {question} Options are {_join(labels)}."
-        return f"Claude Code is asking: {question}"
+            return f"{who} is asking: {question} Options are {_join(labels)}."
+        return f"{who} is asking: {question}"
     # permission
     if command or title.startswith("Bash command:"):
         cmd = (command or _strip_prefix(title, "Bash command:")).strip()
-        return f"Claude Code wants to run a shell command: {_sentence(cmd)} Yes or no?"
+        return f"{who} wants to run a shell command: {_sentence(cmd)} Yes or no?"
     if target_file or title.startswith(("Create file", "Write file", "Write to")):
         name = (target_file or _strip_prefix(_strip_prefix(title, "Create file"), "Write file")).strip()
-        return f"Claude Code wants to create {_sentence(name)} Yes or no?"
+        return f"{who} wants to create {_sentence(name)} Yes or no?"
     if title.startswith(("Edit file", "Update file", "Modify file")):
         name = title.split(" ", 2)[-1].strip()
-        return f"Claude Code wants to edit {_sentence(name)} Yes or no?"
-    return f"Claude Code is asking for permission: {_sentence(title or 'to continue')} Yes or no?"
+        return f"{who} wants to edit {_sentence(name)} Yes or no?"
+    return f"{who} is asking for permission: {_sentence(title or 'to continue')} Yes or no?"
 
 
 def _strip_prefix(text: str, prefix: str) -> str:
@@ -372,6 +382,9 @@ class Agent:
             manager_kwargs["zordon_home"] = zordon_home
         if tmux_session is not None:
             manager_kwargs["tmux_session"] = tmux_session
+        self.adapters = self._build_adapters(config)
+        manager_kwargs["adapters"] = self.adapters
+        manager_kwargs["default_agent"] = config.providers.agent
         self.manager = SessionManager(self.bus, config, tmux, **manager_kwargs)
         self.sessions = _Sessions(self.manager, self._on_focus)
 
@@ -475,6 +488,40 @@ class Agent:
         except Exception as e:  # noqa: BLE001
             self.warnings.append(f"tts warm-up failed: {e}")
             log.warning("tts warm-up failed: %s", e)
+
+    # ---- agent adapters ----------------------------------------------------------------
+
+    @staticmethod
+    def _build_adapters(config: Config) -> dict[str, AgentAdapter]:
+        """Every registered adapter that imports; the configured default must be among them."""
+        out: dict[str, AgentAdapter] = {}
+        for key in ADAPTERS:
+            try:
+                out[key] = get_adapter(key, config)
+            except ImportError as e:
+                log.debug("agent adapter %s not present: %s", key, e)
+            except Exception as e:  # noqa: BLE001 - one broken adapter must not stop the others
+                log.warning("agent adapter %s unavailable: %s", key, e)
+        if config.providers.agent not in out:
+            raise ConfigError(f"providers.agent={config.providers.agent!r} has no working adapter")
+        return out
+
+    def available_agents(self) -> dict[str, str | None]:
+        """Adapter key -> binary path (None when not installed; '' for the generic adapter)."""
+        out: dict[str, str | None] = {}
+        for key, adapter in self.adapters.items():
+            try:
+                out[key] = adapter.available()
+            except Exception:  # noqa: BLE001
+                out[key] = None
+        return out
+
+    def _agent_name_of(self, session_id: str) -> str:
+        s = self.manager.sessions.get(session_id)
+        if s is not None:
+            return s.adapter.info.display_name
+        adapter = self.adapters.get(self.config.providers.agent)
+        return adapter.info.display_name if adapter is not None else DEFAULT_AGENT_NAME
 
     # ---- AgentAPI -----------------------------------------------------------------------
 
@@ -711,7 +758,9 @@ class Agent:
             if m is not None and getattr(m, "kind", None) == ev.kind:
                 command = getattr(m, "command", None)
                 target_file = getattr(m, "target_file", None)
-        text = prompt_speech(ev.kind, ev.title, ev.options, command=command, target_file=target_file)
+        text = prompt_speech(
+            ev.kind, ev.title, ev.options, command=command, target_file=target_file, agent_name=self._agent_name_of(ev.session_id)
+        )
         self.pipeline.speak_now(text, ev.session_id, PROMPT_LINE_KINDS.get(ev.kind, LineKind.PERMISSION_PROMPT))
 
     def _on_state(self, ev: StateChanged) -> None:

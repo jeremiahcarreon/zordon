@@ -1,0 +1,45 @@
+
+  >_ OpenAI Codex (v0.160.0)
+     ~/Code/zordon/.scratch/codex
+
+  Welcome to our little rectangle of possibility.
+
+
+› List the files in this directory.
+
+
+
+
+
+
+                                                                                 
+                                                                                          
+                                                                                            
+                                                                                             
+                                                                                              
+                                                                                              
+                                                                                               
+                                                                                                
+                                                                                                
+                                                                                                 
+                                                                                                
+                                                                                                
+                                                                                               
+                                                                                             
+                                                                                          
+                                                                                         
+                                                                                       
+
+
+                             
+
+                                                                                   
+
+
+• Working (0s • esc to interrupt)
+
+
+› Ask Codex to do anything         
+
+  Model 0.0 default · ~/Code/zordon/.scratch/codex · ⠙
+  ← for agents · ? for shortcuts                                                                                                                               

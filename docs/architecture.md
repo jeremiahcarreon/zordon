@@ -20,14 +20,21 @@ zordon/
   providers.py           STTProvider / TTSProvider / Normalizer / Router protocols
   doctor.py              dependency + provider checks, model/binary download
 
-  session/               owner: SessionThread
+  agents/                one adapter per coding agent (decision 0013)
+    base.py              AgentAdapter protocol, AgentInfo/LaunchSpec/SessionInfo, BaseAdapter (generic pane)
+    claude_code.py       ClaudeCodeAdapter: delegates to session/discovery, prompts, jsonl, hooks, permissions
+    codex.py             CodexAdapter (optional import; the registry tolerates its absence)
+    __init__.py          ADAPTERS registry, get_adapter, available_agents
+
+  session/               owner: SessionThread (agent-neutral; talks to adapters)
     tmux.py              the ONLY module that shells out to tmux
-    discovery.py         ~/.claude/projects + ~/.claude/sessions -> SessionInfo
-    jsonl.py             tail a session's jsonl for assistant blocks
-    screen.py            pure: diff two pane captures -> new stable lines
-    prompts.py           pure: regexes for permission / plan / question / trust prompts
+    discovery.py         Claude Code: ~/.claude/projects + ~/.claude/sessions -> SessionInfo, argv builders
+    jsonl.py             Claude Code: tail a session's jsonl for assistant blocks
+    screen.py            pure: parse a pane capture; diff two captures -> new stable lines
+    prompts.py           Claude Code: regexes for permission / plan / question / trust prompts
     state.py             pure: state machine transitions
-    permissions.py       read Claude Code settings -> PermissionSummary; mode switching
+    permissions.py       Claude Code: read settings -> PermissionSummary; mode names
+    hooks.py             Claude Code: Notification hook payloads -> hints
     manager.py           SessionThread + Session objects; watchdog; keystroke injection
 
   output/                owner: PipelineThread
@@ -66,6 +73,38 @@ zordon/
   web/                   static client (no build step)
     index.html app.js audio.js worklet.js style.css
 ```
+
+## Agent adapters
+
+Everything specific to one coding agent lives behind `zordon.agents.AgentAdapter`
+(decision record: `decisions/0013-agent-adapters.md`). The manager, state
+machine, pipeline, router, transport and client never import `discovery`,
+`prompts`, `jsonl`, `hooks` or `permissions` directly; each `Session` carries the
+adapter it was opened with and the manager calls `s.adapter.<slot>()`. An
+adapter supplies six slots:
+
+| Slot | Methods | Claude Code | Generic (`BaseAdapter`) |
+| --- | --- | --- | --- |
+| launch | `new_session`, `resume_session`, `supports_resume`, `allowed_modes`, `voice_switchable_modes`, `default_launch_mode`, `mode_cycle_key`, `normalize_mode`, `forbidden_modes` | `discovery.new_session_command` / `resume_command` with `--permission-mode default`, hook settings from a `HookRequest`, Shift+Tab mode cycle | cannot launch (`NotImplementedError`); attach only; no modes |
+| prompts | `detect_prompt`, `yes_option`, `no_option`, `plan_approve_option`, `plan_revise_option`, `question_option`, `trust_accept_option`, `trust_decline_option` | `prompts.*` on the real TUI shapes | `(y/n)`, `[Y/n]`, `Allow?` + numbered or lettered Yes/No menu at the bottom of the screen; widening labels marked unsafe |
+| screen | `parse`, `is_idle`, `is_working`, `input_quiet`, `exited`, `permission_mode_from_screen`, `uses_alternate_screen` | `screen.parse_screen` + `prompts.*`; alternate screen | `parse_screen` plus a bare `>`/`❯` input-box rule; spinner glyphs; a shell prompt means exited; normal screen |
+| discovery | `list_sessions`, `find_session`, `status_hint` | `~/.claude/projects` + registry (status is the third prompt signal) | nothing on disk |
+| transcript | `transcript_source` | the session jsonl, replayed from the start for a session Zordon started and from the end for a resumed/attached one | none: pane prose only |
+| wording | `info`, `permission_summary`, `mode_label`, `hook_hint` | "Claude Code", settings files, Notification hook hints | "the agent"; a sentence saying settings cannot be read |
+
+`SessionManager(adapters=..., default_agent=...)` takes the adapters the app
+built with `zordon.agents.get_adapter(key, config)`; `config.providers.agent`
+names the default (validated against `ADAPTERS`). The manager calls
+`adapter.bind(tmux=, zordon_home=, claude_home=)` once so adapters share its
+tmux client and home directories. `list_sessions()` unions every installed
+adapter's sessions and tags each row with `agent`. `attach(target, agent)`
+follows an existing tmux pane with any adapter (generic by default): the pane is
+polled like a started session, keystrokes are refused once `adapter.exited`
+holds, and what was on the pane before the attach is never spoken.
+
+How a generic prompt is answered is carried in `PromptMatch.extra`:
+`inline_yn` (type `y`/`n` then Enter), `key<n>` (type the letter of a lettered
+menu, no Enter); otherwise Up/Down and Enter move the pointer as for Claude Code.
 
 ## Threads and ownership
 
@@ -188,7 +227,8 @@ class Tunnel: start() -> str (url); stop(); provider: cloudflared | ngrok
 
 ## Safety invariants (tested)
 
-* No code path constructs a `claude` command line containing a permission-bypass flag; `discovery.resume_command` is the only constructor and `tests/test_safety.py` greps the package for the flag names.
+* No code path constructs a `claude` command line containing a permission-bypass flag; `discovery.resume_command` / `new_session_command` are the only constructors (reached through `ClaudeCodeAdapter`) and `tests/test_safety.py` greps the package for the flag names.
+* `approve()` never selects a yes option whose label widens permissions, for any adapter: the adapter's `yes_option` skips `unsafe` options and the manager re-checks the label.
 * `tmux.send_literal` strips C0 control characters and always uses `-l`; Enter is a separate call.
 * `commands.COMMANDS` is the only set the router may select from; `dispatcher` rejects anything else.
 * Permission prompts are never filtered by verbosity and are always spoken.
@@ -208,13 +248,14 @@ and returns quickly; long work happens on the SessionThread.
 
 ```python
 class SessionControl(Protocol):
-    def list_sessions(self) -> list[SessionSummaryLike]           # discovery + live state, for the picker
+    def list_sessions(self) -> list[SessionSummaryLike]           # live + every installed adapter's sessions, each row with .agent
     def focused(self) -> str | None                                 # focused session id
     def focus(self, session_id: str) -> None
     def state_of(self, session_id: str) -> SessionState
     def current_prompt(self, session_id: str) -> PromptDetected | None
-    def start(self, directory: str, permission_mode: str | None = None) -> str   # returns new session id
-    def resume(self, session_id: str, permission_mode: str | None = None) -> None
+    def start(self, directory: str, permission_mode: str | None = None, agent: str | None = None) -> str   # returns new session id; agent = adapter key, default config.providers.agent
+    def resume(self, session_id: str, permission_mode: str | None = None, agent: str | None = None) -> None
+    def attach(self, target: str, agent: str = "generic", cwd: str | None = None) -> str   # follow an existing tmux pane (session:window.pane); returns a synthetic session id
     def detach(self, session_id: str) -> None                       # stop following; pane keeps running
     def delete(self, session_id: str) -> None                       # kill the pane (caller already confirmed)
     def send_text(self, session_id: str, text: str) -> None         # literal keystrokes + separate Enter
@@ -227,10 +268,10 @@ class SessionControl(Protocol):
     def answer_question(self, session_id: str, option: int | str) -> bool   # AskUserQuestion option (1-based or label)
     def accept_trust(self, session_id: str) -> bool                 # trust dialog: Down + Enter (user confirmed first)
     def decline_trust(self, session_id: str) -> bool
-    def set_permission_mode(self, session_id: str, mode: str) -> bool  # default|acceptEdits|plan (voice); auto|dontAsk (tap only); never bypassPermissions
+    def set_permission_mode(self, session_id: str, mode: str) -> bool  # default|acceptEdits|plan (voice); auto|dontAsk (tap only); never bypassPermissions; False with a Notice when the adapter has no mode_cycle_key
     def permission_summary(self, session_id: str) -> str            # one spoken sentence about the active mode and rules
     def last_pane_lines(self, session_id: str, n: int = 10) -> list[str]
-    def hook_event(self, payload: dict) -> None                     # Notification hook from Claude Code (second signal)
+    def hook_event(self, payload: dict) -> None                     # Notification hook from Claude Code (second signal), routed to the session's adapter.hook_hint
 ```
 
 ## AgentAPI (what the transport needs from the agent)

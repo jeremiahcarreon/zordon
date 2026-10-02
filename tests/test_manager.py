@@ -1383,3 +1383,175 @@ def test_quiet_input_box_becomes_idle_without_a_completion_row(env):
     clock.advance(0.1)
     mgr.poll_once()
     assert mgr.state_of(sid) is SessionState.IDLE
+
+
+# ---- agent adapters: attach to an existing pane --------------------------------------------------
+
+
+GENERIC_YN = ["$ deploy-tool run", "About to push 3 commits to origin/main.", "Proceed? (y/n) "]
+GENERIC_MENU = ["Allow network access for the build?", "❯ 1. Yes", "  2. Yes, always allow", "  3. No"]
+GENERIC_IDLE = ["Build finished in 4.2 s.", "> "]
+
+
+def attach_generic(env, screen: list[str], *, target: str = "work:@3.%7", agent: str = "generic") -> str:
+    """Attach the manager to a scripted plain-screen pane showing ``screen``."""
+    mgr, bus, tmux, clock, proj = env
+    tmux.set_screen(target, screen, alt=False)
+    tmux.cwds = {target: str(proj)}
+    sid = mgr.attach(target, agent)
+    drain(bus)
+    drain_lines(bus)
+    tmux.calls.clear()
+    return sid
+
+
+def test_manager_builds_every_importable_adapter_and_binds_homes(env):
+    mgr, bus, tmux, clock, proj = env
+    assert "claude-code" in mgr.adapters and "generic" in mgr.adapters
+    assert mgr.default_agent == "claude-code"
+    claude = mgr.adapters["claude-code"]
+    assert claude.claude_home == mgr.claude_home and claude.tmux is tmux  # type: ignore[attr-defined]
+    assert mgr.adapter_for(None) is claude and mgr.adapter_for(" GENERIC ") is mgr.adapters["generic"]
+    with pytest.raises(M.SessionError):
+        mgr.adapter_for("vim")
+    sid = mgr.start(str(proj))
+    assert mgr.sessions[sid].agent == "claude-code" and mgr.sessions[sid].adapter is claude
+    with pytest.raises(M.SessionError):
+        mgr.start(str(proj), agent="generic")  # the generic adapter cannot launch anything
+    with pytest.raises(M.SessionError):
+        mgr.start(str(proj), agent="vim")
+
+
+def test_attach_follows_a_pane_and_detects_an_inline_yn_prompt(env):
+    mgr, bus, tmux, clock, proj = env
+    FakeTmux.pane_cwd = lambda self, target: getattr(self, "cwds", {}).get(target)  # type: ignore[attr-defined]
+    try:
+        sid = attach_generic(env, GENERIC_YN)
+    finally:
+        del FakeTmux.pane_cwd  # type: ignore[attr-defined]
+    s = mgr.sessions[sid]
+    assert discovery.UUID_RE.match(sid)
+    assert s.agent == "generic" and s.owned is False and s.target == "work:@3.%7"
+    assert s.cwd == str(proj)  # derived from the pane's current path
+    assert s.settings_paths == [] and s.transcript is None
+    assert tmux.windows == []  # nothing was launched
+    assert mgr.focused() == sid
+    mgr.poll_once()
+    ev = drain(bus)
+    assert states(ev) == [SessionState.AWAITING_PERMISSION]
+    prompt = next(e for e in ev if isinstance(e, PromptDetected))
+    assert prompt.kind is PromptKind.PERMISSION and prompt.title == "Proceed?"
+    assert prompt.options == ["Yes", "No"]
+    assert mgr.current_match(sid).extra["inline_yn"] == "1"
+    # approve: an inline (y/n) prompt gets a literal "y" and a separate Enter, never Down/Enter
+    assert mgr.approve(sid) is True
+    assert tmux.calls == [("literal", "work:@3.%7", "y"), ("enter", "work:@3.%7")]
+    tmux.calls.clear()
+    assert mgr.deny(sid) is True
+    assert tmux.calls == [("literal", "work:@3.%7", "n"), ("enter", "work:@3.%7")]
+    rows = mgr.list_sessions()
+    row = next(r for r in rows if r.session_id == sid)
+    assert row.agent == "generic" and row.attached and row.running
+
+
+def test_attach_menu_prompt_uses_pointer_navigation_and_refuses_widening_options(env):
+    mgr, bus, tmux, clock, proj = env
+    sid = attach_generic(env, GENERIC_MENU)
+    mgr.poll_once()
+    ev = drain(bus)
+    assert states(ev) == [SessionState.AWAITING_PERMISSION]
+    m = mgr.current_match(sid)
+    assert m is not None and [o.unsafe for o in m.options] == [False, True, False]
+    assert mgr.approve(sid) is True
+    assert tmux.keys() == ["Enter"]  # pointer already on Yes
+    tmux.calls.clear()
+    assert mgr.deny(sid) is True
+    assert tmux.keys() == ["Down", "Down", "Enter"]
+    # a menu whose only yes widens permissions is never approved
+    tmux.set_screen("work:@3.%7", ["Allow?", "❯ 1. Yes, always allow", "  2. No"], alt=False)
+    mgr.poll_once()
+    drain(bus)
+    tmux.calls.clear()
+    assert mgr.approve(sid) is False
+    assert tmux.calls == []
+    # lettered menus get the letter typed, with no Enter
+    tmux.set_screen("work:@3.%7", ["Apply the patch?", "[a] Approve", "[d] Deny"], alt=False)
+    mgr.poll_once()
+    drain(bus)
+    tmux.calls.clear()
+    assert mgr.approve(sid) is True
+    assert tmux.calls == [("literal", "work:@3.%7", "a")]
+
+
+def test_attached_pane_idle_text_exit_and_mode_switch(env):
+    mgr, bus, tmux, clock, proj = env
+    sid = attach_generic(env, GENERIC_IDLE)
+    target = "work:@3.%7"
+    mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.IDLE
+    assert drain_lines(bus) == []  # what was on the pane before the attach is history, not speech
+    tmux.set_screen(target, GENERIC_IDLE[:-1] + ["Tests: 12 passed.", "> "], alt=False)
+    mgr.poll_once()
+    assert [ln.text for ln in drain_lines(bus)] == ["Tests: 12 passed."]  # new prose comes from the pane
+    # keystrokes are allowed on the normal screen for a plain-screen agent
+    mgr.send_text(sid, "run the tests")
+    assert ("literal", target, "run the tests") in tmux.calls and ("enter", target) in tmux.calls
+    # no permission modes to switch: refused with a spoken notice, no keys sent
+    tmux.calls.clear()
+    drain(bus)
+    assert mgr.set_permission_mode(sid, "plan") is False
+    notices = [e for e in drain(bus) if isinstance(e, Notice)]
+    assert notices and "no permission modes" in notices[0].text and tmux.keys() == []
+    assert "permission settings" in mgr.permission_summary(sid)
+    # the agent exits: a shell prompt at the bottom for EXIT_CONFIRM_POLLS polls
+    tmux.set_screen(target, ["Build finished in 4.2 s.", "user@host:~/proj$ "], alt=False)
+    drain(bus)
+    mgr.poll_once()
+    assert mgr.state_of(sid) is not SessionState.DETACHED  # one poll is not enough
+    mgr.poll_once()
+    ev = drain(bus)
+    assert states(ev)[-1] is SessionState.DETACHED
+    assert "the agent exited" in mgr.sessions[sid].detail.lower()
+    notice = next(e for e in ev if isinstance(e, Notice))
+    assert "attach to the pane again" in notice.text.lower() and "resume" not in notice.text.lower()
+    with pytest.raises(M.SessionError):
+        mgr.send_text(sid, "hello?")
+    # resume is not a thing for the generic adapter
+    tmux.set_screen(target, GENERIC_IDLE, alt=False)
+    with pytest.raises(M.SessionError):
+        mgr.resume(sid)
+
+
+def test_attach_validates_the_target_and_reuses_an_existing_session(env):
+    mgr, bus, tmux, clock, proj = env
+    with pytest.raises(UnknownSession):
+        mgr.attach("nowhere:@9.%9", "generic")
+    with pytest.raises(M.SessionError):
+        mgr.attach("", "generic")
+    tmux.set_screen("work:@1.%1", GENERIC_IDLE, alt=False)
+    with pytest.raises(M.SessionError):
+        mgr.attach("work:@1.%1", "vim")
+    a = mgr.attach("work:@1.%1", "generic", cwd=str(proj))
+    b = mgr.attach("work:@1.%1", "generic")
+    assert a == b and mgr.sessions[a].cwd == str(proj)
+    # the Claude Code adapter can follow a pane too; it then polls like a started session
+    tmux.set_screen("work:@2.%2", lines_of("idle.txt"), alt=True)
+    c = mgr.attach("work:@2.%2", "claude-code", cwd=str(proj))
+    assert mgr.sessions[c].agent == "claude-code" and mgr.sessions[c].owned is False
+    mgr.poll_once()
+    assert mgr.state_of(c) is SessionState.IDLE
+    assert mgr.sessions[c].permission_mode == "default"
+
+
+def test_prompt_and_stall_wording_names_the_agent(env):
+    mgr, bus, tmux, clock, proj = env
+    assert M.STALL_TEXT.startswith("Claude Code") and M.NO_TUI_TEXT.startswith("Claude Code")
+    assert M.stall_text("Codex").startswith("Codex looks like")
+    sid = attach_generic(env, ["⠋ building..."])
+    mgr.poll_once()
+    clock.advance(float(mgr.config.voice.idle_watchdog_seconds) + 1)
+    mgr.poll_once()
+    ev = drain(bus)
+    assert SessionState.STALLED in states(ev) and mgr.state_of(sid) is SessionState.STALLED
+    stall = next(e for e in ev if isinstance(e, Notice))
+    assert stall.text.startswith("the agent looks like it is waiting on something")

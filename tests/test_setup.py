@@ -25,7 +25,12 @@ def scripted(*answers: str):
 
 
 def detected(**kw) -> wiz.Detected:
-    d = wiz.Detected(tmux="/usr/bin/tmux", claude="/usr/bin/claude", curl="/usr/bin/curl")
+    d = wiz.Detected(
+        tmux="/usr/bin/tmux",
+        claude="/usr/bin/claude",
+        curl="/usr/bin/curl",
+        agents={"claude-code": "/usr/bin/claude", "codex": None, "generic": ""},
+    )
     for k, v in kw.items():
         setattr(d, k, v)
     return d
@@ -46,7 +51,7 @@ def test_recommend_prefers_key_then_ollama_then_claude_cli_then_passthrough():
 def test_interview_defaults_on_enter_and_eof():
     out = io.StringIO()
     d = detected(ollama_server=True, ollama_models=["qwen2.5:3b-instruct"], gpu="RTX")
-    c = wiz.interview(d, scripted("", "", "", "", ""), out)  # Enter for every question, GPU question included
+    c = wiz.interview(d, scripted("", "", "", "", "", ""), out)  # Enter for every question, agent and GPU included
     assert (c.speech, c.normalizer, c.router, c.access) == ("local", "ollama", "keyword", "local")
     text = out.getvalue()
     for must in ("Local (recommended)", "Anthropic API key", "Your Claude login", "Built-in rules", "Phone anywhere"):
@@ -58,7 +63,7 @@ def test_interview_cloud_and_keys_and_tunnel():
     out = io.StringIO()
     d = detected()
     # speech=cloud, openai key, no elevenlabs, no groq, normalizer=anthropic + key, router=anthropic (key reused), access=tunnel
-    c = wiz.interview(d, scripted("2", "sk-openai-test", "n", "n", "2", "sk-ant-test", "3", "2"), out)
+    c = wiz.interview(d, scripted("", "2", "sk-openai-test", "n", "n", "2", "sk-ant-test", "3", "2"), out)
     assert c.speech == "cloud" and c.keys["openai"] == "sk-openai-test"
     assert c.normalizer == "anthropic" and c.keys["anthropic"] == "sk-ant-test"
     assert c.router == "anthropic" and c.access == "tunnel" and c.download_cloudflared is True
@@ -70,7 +75,7 @@ def test_interview_cloud_and_keys_and_tunnel():
 def test_interview_ollama_without_install_offers_installer_and_14b():
     out = io.StringIO()
     d = detected(gpu="RTX 4090")
-    c = wiz.interview(d, scripted("1", "1", "n", "y", "1", "1"), out)
+    c = wiz.interview(d, scripted("", "1", "1", "n", "y", "1", "1"), out)
     assert c.normalizer == "ollama" and c.install_ollama is False and c.pull_ollama_model is True
     assert c.ollama_model == "qwen2.5:14b-instruct"
     assert "Install it later from https://ollama.com" in out.getvalue()
@@ -136,3 +141,33 @@ def test_cli_setup_and_first_run_rule(monkeypatch, capsys):
 @pytest.mark.parametrize("answer,expected", [("y", True), ("", True), ("n", False), ("no", False)])
 def test_yes_parsing(answer, expected):
     assert wiz._yes(scripted(answer), "ok?", default=True) is expected
+
+
+# ---- agent step -----------------------------------------------------------------------
+
+
+def test_recommend_agent_prefers_claude_then_any_installed_then_generic():
+    assert wiz.recommend(detected(agents={"claude-code": "/x/claude", "codex": None, "generic": ""})).agent == "claude-code"
+    assert wiz.recommend(detected(agents={"claude-code": None, "codex": "/x/codex", "generic": ""})).agent == "codex"
+    assert wiz.recommend(detected(agents={"claude-code": None, "codex": None, "generic": ""})).agent == "generic"
+
+
+def test_interview_stops_when_no_agent_is_installed_unless_told_to_continue():
+    out = io.StringIO()
+    d = detected(claude=None, agents={"claude-code": None, "codex": None, "generic": ""})
+    with pytest.raises(wiz.SetupAborted):
+        wiz.interview(d, scripted("n"), out)
+    text = out.getvalue()
+    assert "No coding agent found" in text and "npm install -g @anthropic-ai/claude-code" in text
+    # Continue anyway: generic is the default, the rest of the interview proceeds on Enter.
+    c = wiz.interview(d, scripted("y", "", "", "", "", ""), io.StringIO())
+    assert c.agent == "generic"
+
+
+def test_interview_agent_choice_and_install_hint_for_missing_pick():
+    out = io.StringIO()
+    d = detected(agents={"claude-code": "/x/claude", "codex": None, "generic": ""})
+    c = wiz.interview(d, scripted("2", "", "", "", ""), out)
+    assert c.agent == "codex" and "npm install -g @openai/codex" in out.getvalue()
+    c = wiz.interview(d, scripted("3", "", "", "", ""), io.StringIO())
+    assert c.agent == "generic"

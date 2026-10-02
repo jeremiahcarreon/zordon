@@ -913,6 +913,10 @@ label.opt input {
   font-family: var(--mono);
 }
 
+.badge.agent {
+  border-style: dashed;
+}
+
 .s-actions {
   display: flex;
   flex-wrap: wrap;

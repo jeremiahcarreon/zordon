@@ -24,6 +24,7 @@ COMMANDS = (
     "focus",
     "start",
     "resume",
+    "attach",
     "detach",
     "delete",
     "send_text",
@@ -159,6 +160,8 @@ class Hello(_Strict):
     tts_sample_rate: int
     tunnel_url: str | None = None
     muted: bool = False  # the agent's mute state, so a fresh client renders the toggle right
+    agents: dict[str, bool] = Field(default_factory=dict)  # adapter key -> installed
+    default_agent: str = "claude-code"
 
 
 class SessionSummary(_Strict):
@@ -171,6 +174,7 @@ class SessionSummary(_Strict):
     state: str
     permission_mode: str | None = None
     focused: bool = False
+    agent: str = "claude-code"
 
 
 class Sessions(_Strict):

@@ -274,6 +274,30 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
   // ---- WEB-11: every AudioContext gets onstatechange ----
   ok(audioLog.contexts.length >= 1 && audioLog.contexts.every((c) => typeof c.onstatechange === 'function'), 'AudioContext created by onSpeech has onstatechange');
 
+  // ---- WEB-13: agent adapters in the picker ----
+  recv(hello({ agents: { 'claude-code': true, codex: false, generic: true }, default_agent: 'claude-code' }));
+  recv(sessions('s1'));
+  const agentOpts = $('new-agent').children.filter((c) => c.tagName === 'OPTION');
+  ok(agentOpts.length === 3 && agentOpts[0].attrs.value === 'claude-code', 'new-session agent select lists the adapters with the default first');
+  const codexOpt = agentOpts.find((o) => o.attrs.value === 'codex');
+  ok(codexOpt && codexOpt.disabled && /not installed/.test(codexOpt.textContent), 'an uninstalled agent is disabled and labelled');
+  ok($('new-agent').value === 'claude-code', 'the default agent is selected');
+  ok($('attach-agent').value === 'generic', 'the attach form defaults to the generic adapter');
+  $('new-dir').value = '/home/u/proj';
+  $('new-session').dispatch('submit');
+  const startCmd = cmds('start')[cmds('start').length - 1];
+  ok(startCmd && startCmd.args.agent === undefined, 'starting with the default agent sends no agent field');
+  $('new-agent').value = 'generic';
+  $('new-dir').value = '/home/u/proj';
+  $('new-session').dispatch('submit');
+  const startGeneric = cmds('start')[cmds('start').length - 1];
+  ok(startGeneric && startGeneric.args.agent === 'generic', 'a non-default agent is sent with start');
+  $('attach-target').value = 'work:@1.%3';
+  $('attach-pane').dispatch('submit');
+  const attachCmd = cmds('attach')[cmds('attach').length - 1];
+  ok(attachCmd && attachCmd.args.target === 'work:@1.%3' && attachCmd.args.agent === 'generic', 'the attach form sends the attach command with target and agent');
+  ok($('session-list').children.some((li) => /Claude Code/.test(li.textContent)), 'session rows carry the agent badge');
+
   console.log(`app_test: all passed (${passed} checks)`);
   process.exit(0);
 })().catch((e) => { console.error('app_test failed:', e); process.exit(1); });

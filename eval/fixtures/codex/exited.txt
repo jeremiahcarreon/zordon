@@ -1,0 +1,45 @@
+CODEX_HOME=$CODEX_HOME ./node_modules/.bin/codex
+user@host:~/Code/zordon/.scratch/codex$ CODEX_HOME=$CODEX_HOME ./node_modules/.bin/codex
+Disconnected from this task. Any running work continues.
+To reconnect, run:
+  codex resume 0c0c0c0c-0000-7000-8000-00000000000c
+Stop the current turn: run codex agents, select this task, and press x.
+user@host:~/Code/zordon/.scratch/codex$ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

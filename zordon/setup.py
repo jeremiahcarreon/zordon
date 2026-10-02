@@ -27,6 +27,10 @@ from zordon.config import Config
 Ask = Callable[[str], str]
 
 
+class SetupAborted(Exception):
+    """The user chose not to continue (e.g. no coding agent installed)."""
+
+
 # ---- detection -----------------------------------------------------------------------
 
 
@@ -46,6 +50,7 @@ class Detected:
     cloudflared: str | None = None
     tailscale: str | None = None
     models_present: list[str] = field(default_factory=list)
+    agents: dict[str, str | None] = field(default_factory=dict)  # adapter key -> binary path
     python: str = f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
@@ -53,6 +58,12 @@ def detect(ollama_url: str = "http://127.0.0.1:11434") -> Detected:
     d = Detected()
     d.tmux = shutil.which("tmux")
     d.claude = shutil.which("claude")
+    try:
+        from zordon.agents import available_agents  # noqa: PLC0415
+
+        d.agents = available_agents()
+    except Exception:  # noqa: BLE001
+        d.agents = {"claude-code": d.claude, "generic": ""}
     d.curl = shutil.which("curl")
     d.ollama_binary = shutil.which("ollama")
     d.cloudflared = assets.find_binary("cloudflared")
@@ -103,6 +114,7 @@ class Choices:
     download_models: bool = True
     download_cloudflared: bool = False
     ollama_model: str = "qwen2.5:3b-instruct"
+    agent: str = "claude-code"
 
 
 def recommend(d: Detected) -> Choices:
@@ -123,6 +135,13 @@ def recommend(d: Detected) -> Choices:
     elif d.anthropic_key_env:
         c.router = "anthropic"
     c.download_models = len(d.models_present) < 4
+    installed = [k for k, v in d.agents.items() if v and k != "generic"]
+    if "claude-code" in installed:
+        c.agent = "claude-code"
+    elif installed:
+        c.agent = installed[0]
+    else:
+        c.agent = "generic"
     return c
 
 
@@ -136,6 +155,8 @@ def apply(c: Choices, cfg: Config) -> Config:
     p.normalizer = c.normalizer
     p.ollama_model = c.ollama_model
     p.router = c.router
+    if hasattr(p, "agent"):
+        p.agent = c.agent
     for k, v in c.keys.items():
         if v:
             p.keys[k] = v
@@ -229,10 +250,52 @@ def _key(ask: Ask, out: TextIO, name: str, env: str, present: bool) -> str:
     return val
 
 
+AGENT_INTRO = """
+0. Coding agent: which terminal agent will Zordon talk to?
+"""
+
+AGENT_LINES = {
+    "claude-code": "Claude Code       Full support: prompts, plan approval, sessions, clean transcript.",
+    "codex": "Codex (OpenAI)    Sessions and approval prompts from its source; live captures still wanted.",
+    "generic": "Any tmux pane     Attach to a pane you already run (aider, gemini, q, ...). Prompts\n"
+    "                            found by common cues only; prose read from the screen.",
+}
+
+INSTALL_LINES = {
+    "claude-code": "npm install -g @anthropic-ai/claude-code   then run `claude` once to log in",
+    "codex": "npm install -g @openai/codex               then run `codex` once to sign in",
+}
+
+
+def _ask_agent(d: Detected, ask: Ask, out: TextIO, c: Choices) -> None:
+    keys = [k for k in ("claude-code", "codex", "generic") if k in d.agents or k == "generic"]
+    installed = {k for k, v in d.agents.items() if v}
+    out.write(AGENT_INTRO + "\n")
+    for i, k in enumerate(keys, 1):
+        state = "installed" if k in installed else ("" if k == "generic" else "NOT INSTALLED")
+        out.write(f"  [{i}] {AGENT_LINES.get(k, k):<75} {state}\n")
+    if not (installed - {"generic"}):
+        out.write(
+            "\n  No coding agent found on this machine. Zordon drives one; install it first:\n"
+            + "".join(f"    {v}\n" for v in INSTALL_LINES.values())
+            + "  You can finish setup now and come back; `zordon doctor` will keep reminding you.\n"
+        )
+        if not _yes(ask, "Continue setup anyway?", default=True):
+            raise SetupAborted("no coding agent installed")
+    default = keys.index(c.agent) + 1 if c.agent in keys else 1
+    pick = _pick(ask, out, "", default, len(keys))
+    c.agent = keys[pick - 1]
+    if c.agent != "generic" and c.agent not in installed:
+        out.write(f"  {c.agent} is not installed yet: {INSTALL_LINES.get(c.agent, '')}\n")
+    if c.agent == "generic":
+        out.write("  After `zordon serve`, use Attach in the web page with the pane target shown by `tmux list-panes -a`.\n")
+
+
 def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = None) -> Choices:
     c = defaults or recommend(d)
-    out.write("\nZordon setup. Four questions; Enter takes the default in brackets.\n")
+    out.write("\nZordon setup. Five questions; Enter takes the default in brackets.\n")
     out.write(_summary(d))
+    _ask_agent(d, ask, out, c)
 
     speech = _pick(ask, out, SPEECH_TEXT, 1 if c.speech == "local" else (2 if c.speech == "cloud" else 3), 3)
     c.speech = {1: "local", 2: "cloud", 3: "later"}[speech]
@@ -280,7 +343,8 @@ def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = Non
 def _summary(d: Detected) -> str:
     rows = [
         ("tmux", d.tmux or "MISSING (install tmux)"),
-        ("Claude Code", d.claude or "MISSING (install and log in)"),
+        ("Claude Code", d.claude or "not installed"),
+        ("Codex", d.agents.get("codex") or "not installed"),
         ("Ollama", "server running" if d.ollama_server else (d.ollama_binary or "not installed")),
         ("GPU", d.gpu or "none detected"),
         ("Models", ", ".join(d.models_present) or "none downloaded yet"),

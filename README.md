@@ -59,7 +59,10 @@ rendered pane. See `docs/architecture.md` and `docs/decisions/` for the reasonin
 - Linux or macOS, Python 3.12 or newer (the local Kokoro TTS needs 3.12 or 3.13; `kokoro-onnx` has no 3.14 build yet)
 - `tmux` 3.2 or newer
 - `curl` (Claude Code's hook handlers use it to tell Zordon about prompts; without it only pane detection runs)
-- Claude Code installed and logged in (`claude` on your `PATH`)
+- A coding agent in the terminal. Claude Code (`claude` on your `PATH`) has full support;
+  OpenAI's Codex CLI has an adapter built from its source and onboarding screens; any other
+  terminal agent (aider, Gemini CLI, Amazon Q, ...) works through the generic adapter by attaching
+  Zordon to the tmux pane it already runs in. See `docs/agents.md`.
 - A browser with microphone access: Safari on iOS, Chrome on Android, or any desktop browser
 
 Local speech runs on the CPU and needs about 1 GB of disk for models. A GPU is optional and
@@ -77,10 +80,12 @@ the terminal: it shows what it found on the machine (tmux, Claude Code, Ollama, 
 questions with the trade-offs written out, and then does the work: downloads the local speech
 models (~820 MB), pulls the Ollama model, fetches cloudflared if you chose the tunnel, writes
 `~/.zordon/config.toml` (mode `0600`) and prints your one-time token. Enter takes the detected
-default at every question, so the no-key path is four presses of Enter.
+default at every question, so the no-key path is a few presses of Enter. If no coding agent is
+installed it stops there, prints the install commands, and lets you finish later.
 
-The four questions:
+The questions:
 
+0. **Agent**: Claude Code, Codex, or attach to any tmux pane.
 1. **Speech**: local (Kokoro + faster-whisper, private, one download) or cloud (OpenAI,
    ElevenLabs, Groq; lowest latency, pay per use, needs keys).
 2. **Spoken English**: who rewrites Claude Code's terse output for speech. A local Ollama model

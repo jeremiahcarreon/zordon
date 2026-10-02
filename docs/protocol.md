@@ -21,8 +21,10 @@ HttpOnly session cookie; the WebSocket upgrade is refused (HTTP 403) without it.
 
 ### Commands
 
-`list_sessions`, `focus {session_id}`, `start {directory, permission_mode?}`,
-`resume {session_id}`, `detach {session_id}`, `delete {session_id, confirm}`,
+`list_sessions`, `focus {session_id}`, `start {directory, permission_mode?, agent?}`,
+`resume {session_id, permission_mode?, agent?}`, `attach {target, agent?}` (follow an
+existing tmux pane, `target` like `session:window.pane`; `agent` is an adapter key from
+`hello.agents`, default `generic`), `detach {session_id}`, `delete {session_id, confirm}`,
 `send_text {text}` (bypasses the router; used by the permission card buttons and
 the raw send button), `approve`, `deny`, `plan_approve`, `plan_revise {text}`,
 `plan_deny`, `answer {option}`, `stop` (sends Escape to the pane), `mute`,
@@ -35,8 +37,8 @@ the raw send button), `approve`, `deny`, `plan_approve`, `plan_revise {text}`,
 
 | type | fields | meaning |
 | --- | --- | --- |
-| `hello` | `protocol`, `version`, `focused_session`, `verbosity`, `tool_chatter`, `muted`, `providers`, `tts_sample_rate`, `tunnel_url` | First message after connect. `muted` is the agent's current mute state (voice `mute` or another client may have set it), so a fresh client renders its toggle right before any `settings` arrives. |
-| `sessions` | `sessions[]` of `{session_id, directory, title, last_active, attached, running, state, permission_mode, focused}` | Session picker contents. |
+| `hello` | `protocol`, `version`, `focused_session`, `verbosity`, `tool_chatter`, `muted`, `providers`, `tts_sample_rate`, `tunnel_url`, `agents`, `default_agent` | First message after connect. `muted` is the agent's current mute state (voice `mute` or another client may have set it), so a fresh client renders its toggle right before any `settings` arrives. `agents` maps each adapter key (`claude-code`, `codex`, `generic`) to whether it is installed; `default_agent` is `providers.agent` from config. |
+| `sessions` | `sessions[]` of `{session_id, directory, title, last_active, attached, running, state, permission_mode, focused, agent}` | Session picker contents. `agent` is the adapter key the session runs under. |
 | `speech` | `sentence_id`, `seq`, `generation`, `sample_rate`, `pcm` (base64 int16 LE mono), `final` | Audio to play. Discard if `generation` is older than the last `flush`. |
 | `flush` | `generation`, `sentence_id` (optional) | Barge-in: stop playback now, drop queued audio with an older generation. `sentence_id` is the sentence that was playing, when known; the client marks it and every later unfinished sentence as cut off. The `stop` command also produces one. |
 | `transcript` | `row_id`, `session_id`, `kind` (`spoken`/`user`/`notice`/`raw`), `text`, `raw_lines[]`, `ts`, `sentence_id`, `spoken` | One transcript row; tapping shows `raw_lines`. |
