@@ -18,7 +18,7 @@ while running. Local providers need model files; cloud providers need an API key
 
 | Name | Where it runs | Needs | Measured (3.9 s utterance) | Notes |
 | --- | --- | --- | --- | --- |
-| `faster-whisper` | Local, CPU or CUDA | `pip install zordon[local]`; model folder `faster-whisper-small.en/` | CPU int8, beam 5: **880-1045 ms**; CUDA fp16: **59-60 ms** (257 ms first call) | Default. `stt_model` (default `small.en`), `stt_device` (`cpu` or `cuda`). Hallucinates `' You'` on pure silence with `no_speech_prob` 0.86; Zordon drops segments with `no_speech_prob > 0.6` and runs its own VAD before sending audio |
+| `faster-whisper` | Local, CPU or CUDA | part of the core install; model folder `faster-whisper-small.en/` | CPU int8, beam 5: **880-1045 ms**; CUDA fp16: **59-60 ms** (257 ms first call) | Default. `stt_model` (default `small.en`), `stt_device` (`cpu` or `cuda`). Hallucinates `' You'` on pure silence with `no_speech_prob` 0.86; Zordon drops segments with `no_speech_prob > 0.6` and runs its own VAD before sending audio |
 | `openai` | OpenAI API | `providers.keys.openai` or `OPENAI_API_KEY` | not measured here | Whisper over HTTPS; the utterance leaves the machine |
 | `groq` | Groq API | `providers.keys.groq` or `GROQ_API_KEY` | not measured here | Whisper over HTTPS; the utterance leaves the machine |
 
@@ -29,7 +29,7 @@ faster-whisper reports no single confidence; Zordon derives one from the segment
 
 | Name | Where it runs | Needs | Measured | Notes |
 | --- | --- | --- | --- | --- |
-| `kokoro` | Local, CPU | `pip install zordon[local]`; `kokoro-v1.0.onnx` + `voices-v1.0.bin` | load 640-660 ms; 11-word sentence **440-590 ms** for 3.9 s of audio; "Done, tests pass." 266 ms | Default. 24 kHz output. One synthesis call per sentence; no streaming inside a sentence (decision 0005). `tts_voice` default `af_heart`; `tts_speed` 0.5-2.0 |
+| `kokoro` | Local, CPU | part of the core install; `kokoro-v1.0.onnx` + `voices-v1.0.bin` | load 640-660 ms; 11-word sentence **440-590 ms** for 3.9 s of audio; "Done, tests pass." 266 ms | Default. 24 kHz output. One synthesis call per sentence; no streaming inside a sentence (decision 0005). `tts_voice` default `af_heart`; `tts_speed` 0.5-2.0 |
 | `openai` | OpenAI API | `providers.keys.openai` or `OPENAI_API_KEY` | not measured here | Streams audio within a sentence; lower first-audio latency than Kokoro |
 | `elevenlabs` | ElevenLabs API | `providers.keys.elevenlabs` or `ELEVENLABS_API_KEY` | not measured here | Streams audio within a sentence |
 

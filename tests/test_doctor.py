@@ -172,7 +172,7 @@ def test_module_checks(local_cfg: Config):
         "module anthropic": OK,
     }
     missing = {c.name: c for c in doctor.check_modules(cfg, find_spec=lambda m: None)}
-    assert missing["module faster-whisper"].status == FAIL and 'zordon[local]' in missing["module faster-whisper"].fix
+    assert missing["module faster-whisper"].status == FAIL and "reinstall" in missing["module faster-whisper"].fix
     assert missing["module typesafe-sdk"].status == WARN  # the jev chain degrades to keyword
     assert [c.name for c in doctor.check_modules(local_cfg, find_spec=lambda m: object())] == ["module onnxruntime"]
     # The real find_spec works too (every dependency is installed in the venv).
@@ -301,8 +301,8 @@ def test_download_cloudflared_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
 def test_install_hints_follow_the_installer(monkeypatch: pytest.MonkeyPatch):
     """PKG-4: a pipx-managed interpreter gets `pipx inject`, anything else `pip install`."""
-    assert doctor.install_hint("local", pipx=False) == 'pip install "zordon[local]"'
-    assert doctor.install_hint("local", pipx=True) == "pipx inject zordon faster-whisper kokoro-onnx"
+    assert doctor.install_hint("local", pipx=False) == "pip install --upgrade --force-reinstall zordon"
+    assert doctor.install_hint("local", pipx=True) == "pipx reinstall zordon"
     assert doctor.install_hint("jev", pipx=True) == "pipx inject zordon typesafe-sdk"
     assert doctor.install_hint("", "anthropic", pipx=False) == "pip install anthropic"
     assert doctor.install_hint("", "anthropic", pipx=True) == "pipx inject zordon anthropic"
@@ -312,7 +312,7 @@ def test_install_hints_follow_the_installer(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(doctor.sys, "prefix", "/home/u/.local/pipx/venvs/zordon")
     cfg = Config.default()
     missing = {c.name: c for c in doctor.check_modules(cfg, find_spec=lambda m: None)}
-    assert missing["module faster-whisper"].fix == "pipx inject zordon faster-whisper kokoro-onnx"
+    assert missing["module faster-whisper"].fix == "pipx reinstall zordon"
     assert missing["module typesafe-sdk"].fix == "pipx inject zordon typesafe-sdk"
 
 

@@ -77,7 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--config", type=Path, default=None, help="config file (default: $ZORDON_HOME/config.toml)")
     serve.add_argument("--no-warm-up", action="store_true", help="do not load the TTS model before serving")
+    serve.add_argument("--no-setup", action="store_true", help="on a first run, write defaults instead of asking")
     serve.set_defaults(func=cmd_serve)
+
+    setup_p = sub.add_parser("setup", help="guided setup: choose providers, download models, write the config")
+    setup_p.add_argument("--config", type=Path, default=None, help="config file (default: $ZORDON_HOME/config.toml)")
+    setup_p.add_argument("--yes", action="store_true", help="take the detected defaults without asking")
+    setup_p.add_argument("--no-download", action="store_true", help="only write the config; skip downloads and pulls")
+    setup_p.set_defaults(func=cmd_setup)
 
     doc = sub.add_parser("doctor", help="check dependencies, providers, models and binaries")
     doctor.add_arguments(doc)
@@ -189,8 +196,37 @@ def format_sessions(infos: Sequence[Any]) -> str:
     return "\n".join(out)
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    from zordon import setup as wizard  # noqa: PLC0415
+
+    try:
+        _cfg, _choices, problems = wizard.run(
+            getattr(args, "config", None), assume_yes=bool(getattr(args, "yes", False)), do_actions=not getattr(args, "no_download", False)
+        )
+    except (OSError, ValueError, TypeError) as e:
+        raise CliError(f"setup failed: {e}", EXIT_CONFIG) from e
+    return EXIT_OK if not problems else EXIT_MISSING
+
+
+def first_run_needs_setup(path: Path | None, no_setup: bool) -> bool:
+    """A missing config on an interactive terminal means the wizard runs first."""
+    target = path or paths.config_path()
+    return not target.exists() and not no_setup and sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
-    cfg, created = load_or_create(args.config)
+    if first_run_needs_setup(args.config, getattr(args, "no_setup", False)):
+        from zordon import setup as wizard  # noqa: PLC0415
+
+        print("No configuration yet; running the guided setup first (Ctrl-C to skip).")
+        try:
+            cfg, _choices, _problems = wizard.run(args.config)
+        except KeyboardInterrupt:
+            print("\nSetup skipped; writing defaults.")
+            cfg, _ = load_or_create(args.config)
+        created = False
+    else:
+        cfg, created = load_or_create(args.config)
     if created:
         print(f"Wrote {cfg.path} (mode 0600).")
         print(f"Your session token is: {cfg.server.token}")

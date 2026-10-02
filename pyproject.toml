@@ -37,16 +37,18 @@ dependencies = [
   "onnxruntime>=1.17",
   "segno>=1.6",
   "tomli-w>=1.0",
+  # Local speech stack ships in the core install so `pipx install zordon` is the whole
+  # install; the models themselves are fetched by the setup wizard / `zordon doctor --download`.
+  "faster-whisper>=1.0",
+  "kokoro-onnx>=0.4; python_version < '3.14'",
 ]
 
 [project.optional-dependencies]
 # Local, private speech stack (default providers). Pulls CTranslate2 and the Kokoro ONNX runtime.
 # kokoro-onnx declares <3.14 itself; the marker keeps `zordon[local]` resolvable on 3.14
 # (faster-whisper still installs) and `zordon doctor` explains the missing TTS.
-local = [
-  "faster-whisper>=1.0",
-  "kokoro-onnx>=0.4; python_version < '3.14'",
-]
+# Kept as an empty alias: the local speech stack is part of the core install now.
+local = []
 # Jev (TypeSafe System One) router. 0.7.2 added the http2 extra; 0.8 is unreleased (decision 0006).
 jev = ["typesafe-sdk>=0.7.2,<0.8"]
 # Optional host-side mic/speaker when the agent runs on the same machine as the browser.

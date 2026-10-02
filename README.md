@@ -68,34 +68,47 @@ makes local speech-to-text roughly 15 times faster.
 ## Install
 
 ```bash
-pipx install "zordon[local]"
-zordon doctor --download      # fetches the local VAD, TTS and STT models (~820 MB)
+pipx install zordon
 zordon serve
 ```
 
-The first run writes `~/.zordon/config.toml` (mode `0600`) and prints a one-time token.
-Open `http://127.0.0.1:8765`, paste the token, tap **Talk**.
+That is the whole install. The first `zordon serve` finds no config and runs a guided setup in
+the terminal: it shows what it found on the machine (tmux, Claude Code, Ollama, GPU), asks four
+questions with the trade-offs written out, and then does the work: downloads the local speech
+models (~820 MB), pulls the Ollama model, fetches cloudflared if you chose the tunnel, writes
+`~/.zordon/config.toml` (mode `0600`) and prints your one-time token. Enter takes the detected
+default at every question, so the no-key path is four presses of Enter.
 
-`zordon doctor` checks every dependency and every configured provider and prints a one-line fix
-for anything missing. `zordon token show` prints the token again.
+The four questions:
 
-### First run, step by step
+1. **Speech**: local (Kokoro + faster-whisper, private, one download) or cloud (OpenAI,
+   ElevenLabs, Groq; lowest latency, pay per use, needs keys).
+2. **Spoken English**: who rewrites Claude Code's terse output for speech. A local Ollama model
+   (free, ~200 ms per sentence, speaks as Claude types), an Anthropic API key (best quality,
+   ~$0.001 per sentence), your own Claude login through headless Claude Code (no key, no extra
+   install, but 5-15 s per response so Zordon waits for a whole response), or none.
+3. **Routing**: built-in rules (free, instant, safe default), TypeSafe Jev, or an Anthropic key.
+4. **Reach**: this machine only, a public tunnel for your phone, Tailscale, or same Wi-Fi.
 
-1. `zordon doctor --download`, then `zordon serve`. Serving works without models or keys too,
-   but degraded: without the VAD model voice input is off, without a TTS provider nothing is
-   spoken; the startup warnings and `zordon doctor` say what to fix. No API key is needed:
-   without one, output is normalized by Claude Code itself (headless, under your existing
-   login) once each response is complete; with an Anthropic key it is normalized sentence
-   by sentence as it streams.
-2. Open the page, paste the token. Nothing is spoken until a session is focused: the picker
-   opens by itself; **Resume** a session or **Start** one in a directory.
-3. A brand-new directory shows Claude Code's trust dialog. Its highlighted default is
+`zordon setup` re-runs it any time; `zordon setup --yes` takes the defaults without asking;
+`zordon serve --no-setup` skips it. `zordon doctor` checks every dependency and provider and
+prints a one-line fix for anything missing. `zordon token show` prints the token again.
+
+### After setup
+
+1. Open `http://127.0.0.1:8765`, paste the token. Nothing is spoken until a session is focused:
+   the picker opens by itself; **Resume** a session or **Start** one in a directory.
+2. A brand-new directory shows Claude Code's trust dialog. Its highlighted default is
    "No, exit", which ends the session; answer the card (or say "yes") to trust the folder.
-4. Tap **Talk** and speak. Permission prompts are read aloud and shown as a card.
+3. Tap **Talk** and speak. Permission prompts are read aloud and shown as a card.
 
-### Without local models
+Serving works with pieces missing, but degraded: without the VAD model voice input is off,
+without a TTS provider nothing is spoken; the startup warnings and `zordon doctor` say what to
+fix.
 
-Cloud providers work out of the box once a key is set in `[providers.keys]` or the matching
+### Cloud providers
+
+Cloud providers work once a key is set in `[providers.keys]` or the matching
 environment variable (`OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `GROQ_API_KEY`,
 `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`):
 

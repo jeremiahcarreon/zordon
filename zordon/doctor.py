@@ -77,6 +77,9 @@ def install_hint(extra: str, package: str = "", *, pipx: bool | None = None) -> 
     """The command that installs ``extra`` (or ``package``) into the interpreter that
     runs zordon: ``pipx inject`` for a pipx install, otherwise ``pip install``."""
     pipx = installed_with_pipx() if pipx is None else pipx
+    if extra == "local":
+        # The local speech stack is part of the core install; a broken one means a broken install.
+        return "pipx reinstall zordon" if pipx else "pip install --upgrade --force-reinstall zordon"
     if extra:
         if pipx:
             return "pipx inject zordon " + " ".join(EXTRA_PACKAGES.get(extra, (package,)))

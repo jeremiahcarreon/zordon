@@ -411,6 +411,8 @@ def test_core_dependency_bounds():
     uvicorn = next(d for d in project["dependencies"] if d.startswith("uvicorn"))
     assert ">=0.35" in uvicorn
     assert project["requires-python"] == ">=3.12"
-    local = project["optional-dependencies"]["local"]
-    assert any(d.startswith("kokoro-onnx") and "python_version < '3.14'" in d for d in local)
+    core = project["dependencies"]
+    assert any(d.startswith("kokoro-onnx") and "python_version < '3.14'" in d for d in core)
+    assert any(d.startswith("faster-whisper") for d in core)
+    assert project["optional-dependencies"]["local"] == []  # kept as an alias only
     assert project["optional-dependencies"]["jev"] == ["typesafe-sdk>=0.7.2,<0.8"]
