@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from zordon.bus import PromptKind, SessionState as S
+from zordon.bus import PromptKind
+from zordon.bus import SessionState as S
 from zordon.session.state import Observation, next_state
 
 

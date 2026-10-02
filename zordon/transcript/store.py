@@ -161,7 +161,7 @@ class TranscriptStore:
                 (session_id, n),
             ).fetchall()
         rows: list[TranscriptRow] = []
-        for sid, sentence_id, ts, text, kind, spoken_flag in spoken:
+        for sid, sentence_id, ts, text, _kind, spoken_flag in spoken:
             rows.append(
                 TranscriptRow(
                     row_id=sid,

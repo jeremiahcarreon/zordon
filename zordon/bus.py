@@ -27,7 +27,7 @@ def now() -> float:
     return time.time()
 
 
-class LineKind(str, Enum):
+class LineKind(str, Enum):  # noqa: UP042 - StrEnum would change str(member)
     """Pre-pass classification of one output line (or block)."""
 
     PROSE = "prose"
@@ -47,7 +47,7 @@ class LineKind(str, Enum):
     UI = "ui"  # input box, status bar, box drawing, banners
 
 
-class SessionState(str, Enum):
+class SessionState(str, Enum):  # noqa: UP042
     IDLE = "idle"
     WORKING = "working"
     AWAITING_PERMISSION = "awaiting_permission"
@@ -57,7 +57,7 @@ class SessionState(str, Enum):
     DETACHED = "detached"
 
 
-class PromptKind(str, Enum):
+class PromptKind(str, Enum):  # noqa: UP042
     PERMISSION = "permission"
     PLAN = "plan"
     QUESTION = "question"
