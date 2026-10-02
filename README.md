@@ -56,7 +56,13 @@ rendered pane. See `docs/architecture.md` and `docs/decisions/` for the reasonin
 
 ## Requirements
 
-Zordon assumes nothing about your machine. The setup wizard checks each item below, shows
+**Linux, macOS, or Windows through WSL2.** Zordon drives the agent inside tmux, which has no
+native Windows build. On Windows: `wsl --install`, open the Ubuntu terminal, run the install
+line there, then open `http://localhost:8765` from your Windows browser (WSL2 forwards it; the
+microphone works because the browser is on Windows). Native PowerShell support would need a
+different pane backend and is not planned for the MVP.
+
+Zordon assumes nothing else about your machine. The setup wizard checks each item below, shows
 the exact install command for your package manager (apt, dnf, pacman, zypper, apk or brew),
 runs it only when you say yes (sudo prompts as usual), and offers to open the agent for its
 first login. `zordon doctor` prints the same commands as fixes.
@@ -74,6 +80,17 @@ Local speech runs on the CPU and needs about 1 GB of disk for models. A GPU is o
 makes local speech-to-text roughly 15 times faster.
 
 ## Install
+
+One line, no prerequisites beyond curl:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jeremiahcarreon/zordon/main/install.sh | sh
+```
+
+The script is short and worth reading first. It installs [uv](https://docs.astral.sh/uv/) into
+`~/.local/bin` (no sudo), lets uv fetch a managed Python 3.12 if the system has none, installs
+zordon as an isolated tool, and starts the guided setup. Nothing else happens without a yes.
+Already have Python 3.12+ and pipx? This works too:
 
 ```bash
 pipx install zordon
