@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Zordon">
+  <meta name="description" content="Voice interface for a Claude Code session: talk to it, hear it back, interrupt it.">
+  <title>Zordon</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg hidden aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M3 11.5 21 3l-7 18-3-7-8-2.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v16m0 0 6-6m-6 6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <!-- (1) token gate -->
+  <section id="gate" class="overlay" hidden>
+    <form id="gate-form" class="card gate-card" autocomplete="off">
+      <h1 class="brand">Zordon</h1>
+      <p class="muted">Enter the token printed by <code>zordon serve</code> or <code>zordon token show</code>.</p>
+      <label class="field">
+        <span>Token</span>
+        <input id="token" name="token" type="password" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+      </label>
+      <button type="submit" class="btn primary wide" id="gate-submit">Connect</button>
+      <p id="gate-msg" class="msg" role="status"></p>
+    </form>
+  </section>
+
+  <header id="top">
+    <button id="btn-sessions" class="icon-btn" type="button" aria-label="Sessions" title="Sessions"><svg><use href="#i-menu"/></svg></button>
+    <button id="focus-chip" class="focus-chip" type="button" title="Switch session">
+      <span id="focus-title" class="focus-title">No session</span>
+      <span id="focus-state" class="chip state-detached">offline</span>
+    </button>
+    <span id="conn-dot" class="dot conn-offline" role="img" aria-label="disconnected" title="disconnected"></span>
+    <button id="btn-settings" class="icon-btn" type="button" aria-label="Settings" title="Settings"><svg><use href="#i-gear"/></svg></button>
+  </header>
+
+  <!-- (4) transcript feed -->
+  <main id="feed">
+    <ol id="rows" aria-live="polite" aria-relevant="additions"></ol>
+    <p id="feed-empty" class="empty muted">Nothing yet. Pick a session, then talk or type.</p>
+  </main>
+  <button id="jump" class="jump" type="button" hidden><svg><use href="#i-down"/></svg><span id="jump-count"></span></button>
+
+  <footer id="bottom">
+    <!-- (5) prompt cards -->
+    <div id="prompts" aria-live="assertive"></div>
+
+    <div id="drop-hint" class="drop-hint" hidden>Drop to upload into the project</div>
+
+    <!-- (6) text input, (7) file drop -->
+    <form id="composer" class="composer" autocomplete="off">
+      <button type="button" id="btn-attach" class="icon-btn" aria-label="Attach file" title="Attach file"><svg><use href="#i-clip"/></svg></button>
+      <button type="button" id="btn-camera" class="icon-btn" aria-label="Take photo" title="Take photo"><svg><use href="#i-camera"/></svg></button>
+      <textarea id="text" rows="1" placeholder="Type to Claude Code" enterkeyhint="send" autocapitalize="sentences"></textarea>
+      <label class="raw-toggle" title="Send literally to the pane, bypassing the router">
+        <input type="checkbox" id="raw-send"><span>raw</span>
+      </label>
+      <button type="submit" id="btn-send" class="icon-btn send" aria-label="Send" title="Send"><svg><use href="#i-send"/></svg></button>
+    </form>
+    <input type="file" id="file-input" multiple hidden>
+    <input type="file" id="camera-input" accept="image/*" capture="environment" hidden>
+    <p id="upload-status" class="msg" hidden></p>
+
+    <!-- (3) call controls -->
+    <div id="call" class="call">
+      <button id="btn-mute" class="ctl" type="button" aria-pressed="false" disabled>Mute</button>
+      <button id="btn-talk" class="talk" type="button" aria-pressed="false">
+        <svg><use href="#i-mic"/></svg>
+        <span id="talk-label">Talk</span>
+        <span id="mic-level" class="level"></span>
+      </button>
+      <button id="btn-stop" class="ctl danger" type="button" title="Send Escape to Claude Code">Stop</button>
+      <button id="btn-repeat" class="ctl" type="button" title="Say the last sentence again">Repeat</button>
+    </div>
+  </footer>
+
+  <!-- (2) session picker -->
+  <section id="sessions" class="sheet" hidden aria-label="Sessions">
+    <div class="sheet-head">
+      <h2>Sessions</h2>
+      <button type="button" id="btn-refresh" class="btn small">Refresh</button>
+      <button type="button" id="btn-sessions-close" class="icon-btn" aria-label="Close"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="sheet-body">
+      <div id="tunnel" class="tunnel card" hidden>
+        <h3>Public URL</h3>
+        <a id="tunnel-url" class="tunnel-url" target="_blank" rel="noopener"></a>
+        <div id="tunnel-qr" class="qr"></div>
+        <p class="muted small">Scan on the phone, then enter the token.</p>
+      </div>
+      <ul id="session-list" class="session-list"></ul>
+      <p id="sessions-empty" class="empty muted" hidden>No Claude Code sessions found.</p>
+      <form id="new-session" class="card new-session" autocomplete="off">
+        <h3>New session</h3>
+        <label class="field"><span>Directory</span>
+          <input id="new-dir" type="text" placeholder="/path/to/project" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        </label>
+        <label class="field"><span>Permission mode</span>
+          <select id="new-mode" class="mode-select"></select>
+        </label>
+        <button type="submit" class="btn primary wide">Start</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- (8) settings drawer -->
+  <aside id="settings" class="sheet drawer" hidden aria-label="Settings">
+    <div class="sheet-head">
+      <h2>Settings</h2>
+      <button type="button" id="btn-settings-close" class="icon-btn" aria-label="Close"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="sheet-body">
+      <section class="card">
+        <h3>Status</h3>
+        <dl class="kv">
+          <dt>Connection</dt><dd id="st-conn">disconnected</dd>
+          <dt>State</dt><dd id="st-state">no session</dd>
+          <dt>Ping</dt><dd id="st-rtt">-</dd>
+          <dt>Barge-in</dt><dd id="st-bargein">-</dd>
+          <dt>Audio</dt><dd id="st-audio">not started</dd>
+          <dt>Agent</dt><dd id="st-version">-</dd>
+        </dl>
+      </section>
+      <section class="card">
+        <h3>Speech</h3>
+        <label class="field"><span>Verbosity</span>
+          <select id="set-verbosity">
+            <option value="minimal">minimal</option>
+            <option value="normal">normal</option>
+            <option value="technical">technical</option>
+          </select>
+        </label>
+        <label class="opt"><input type="checkbox" id="set-tool-chatter"><span>Tool chatter (running tests, searching...)</span></label>
+        <label class="opt"><input type="checkbox" id="set-agent-mute"><span>Mute spoken output (agent)</span></label>
+        <label class="opt"><input type="checkbox" id="set-speaker-mute"><span>Mute speaker on this device</span></label>
+      </section>
+      <section class="card">
+        <h3>Providers</h3>
+        <label class="field"><span>Speech to text</span><select id="set-stt"></select></label>
+        <label class="field"><span>Text to speech</span><select id="set-tts"></select></label>
+        <label class="field"><span>Voice</span><select id="set-voice"></select></label>
+      </section>
+      <section class="card">
+        <h3>Permissions</h3>
+        <label class="field"><span>Permission mode (focused session)</span>
+          <select id="set-mode" class="mode-select"></select>
+        </label>
+        <p class="muted small">Zordon never widens Claude Code's permissions. Allow and deny rules are edited in Claude Code's settings files.</p>
+      </section>
+    </div>
+  </aside>
+
+  <dialog id="confirm-dialog" class="dialog">
+    <form method="dialog">
+      <h3 id="confirm-title">Confirm</h3>
+      <p id="confirm-text"></p>
+      <div class="actions">
+        <button type="submit" value="cancel" class="btn">Cancel</button>
+        <button type="submit" value="ok" id="confirm-ok" class="btn danger">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="revise-dialog" class="dialog">
+    <form method="dialog">
+      <h3>What should change in the plan?</h3>
+      <textarea id="revise-text" rows="4" placeholder="Tell Claude what to change"></textarea>
+      <div class="actions">
+        <button type="submit" value="cancel" class="btn">Cancel</button>
+        <button type="submit" value="ok" id="revise-ok" class="btn primary">Send feedback</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- (9) toasts -->
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <script defer src="protocol.js"></script>
+  <script defer src="audio.js"></script>
+  <script defer src="app.js"></script>
+</body>
+</html>

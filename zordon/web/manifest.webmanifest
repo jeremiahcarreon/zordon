@@ -1,0 +1,19 @@
+{
+  "name": "Zordon",
+  "short_name": "Zordon",
+  "description": "Voice interface for a Claude Code session: talk to it, hear it back, interrupt it.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
