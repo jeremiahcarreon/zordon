@@ -5,7 +5,8 @@
 #
 # What it does, in order, and nothing else:
 #   1. checks the OS (Linux or macOS) and that curl or wget exists;
-#   2. installs uv into ~/.local/bin if it is not already there (no sudo);
+#   2. installs uv into ~/.local/bin if it is not already there (no sudo): a pinned
+#      release of uv's installer, verified against its SHA-256 before it runs;
 #   3. has uv install a managed Python 3.12 if the system has none, then
 #      installs zordon as an isolated tool (uv tool install);
 #   4. runs `zordon setup`, the guided setup, which detects what else is missing
@@ -23,6 +24,12 @@ REF="${ZORDON_REF:-main}"
 SOURCE="${ZORDON_SOURCE:-git+${REPO}@${REF}}"
 PYTHON_VERSION="${ZORDON_PYTHON:-3.12}"
 BIN_DIR="${UV_INSTALL_DIR:-$HOME/.local/bin}"
+
+# uv's installer, pinned to a release and verified before it runs. Bump both together:
+#   curl -fsSL https://github.com/astral-sh/uv/releases/download/<ver>/uv-installer.sh | sha256sum
+UV_VERSION="${ZORDON_UV_VERSION:-0.12.22}"
+UV_INSTALLER_SHA256="${ZORDON_UV_INSTALLER_SHA256:-58488ae8dbd0773134c92c85e901430e33f99d975bd7f929d26aa9ab0c2f9390}"
+UV_INSTALLER_URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-installer.sh"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'zordon install: %s\n' "$*" >&2; exit 1; }
@@ -50,10 +57,25 @@ else
 fi
 
 # ---- 2. uv ----------------------------------------------------------------------------
+sha256_of() {
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then shasum -a 256 "$1" | awk '{print $1}'
+  elif have openssl; then openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else die "need sha256sum, shasum or openssl to verify the uv installer"
+  fi
+}
+
 if ! have uv && [ ! -x "$BIN_DIR/uv" ]; then
-  say "Installing uv (Python installer and tool runner, no sudo) into $BIN_DIR ..."
+  say "Installing uv $UV_VERSION (Python installer and tool runner, no sudo) into $BIN_DIR ..."
+  TMP="$(mktemp -d 2>/dev/null || mktemp -d -t zordon)"
+  trap 'rm -rf "$TMP"' EXIT
+  fetch "$UV_INSTALLER_URL" > "$TMP/uv-installer.sh"
+  GOT="$(sha256_of "$TMP/uv-installer.sh")"
+  if [ "$GOT" != "$UV_INSTALLER_SHA256" ]; then
+    die "uv installer checksum mismatch (expected $UV_INSTALLER_SHA256, got $GOT). Refusing to run it. Check ${REPO} for an updated install.sh."
+  fi
   # The official installer honours UV_INSTALL_DIR and never touches the system Python.
-  fetch https://astral.sh/uv/install.sh | UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH="${UV_NO_MODIFY_PATH:-}" sh
+  UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH="${UV_NO_MODIFY_PATH:-}" sh "$TMP/uv-installer.sh"
 fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

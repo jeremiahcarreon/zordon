@@ -88,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/jeremiahcarreon/zordon/main/install
 ```
 
 The script is short and worth reading first. It installs [uv](https://docs.astral.sh/uv/) into
-`~/.local/bin` (no sudo), lets uv fetch a managed Python 3.12 if the system has none, installs
+`~/.local/bin` (no sudo; a pinned uv release whose installer is checksum-verified before it runs), lets uv fetch a managed Python 3.12 if the system has none, installs
 zordon as an isolated tool, and starts the guided setup. Nothing else happens without a yes.
 Already have Python 3.12+ and pipx? This works too:
 

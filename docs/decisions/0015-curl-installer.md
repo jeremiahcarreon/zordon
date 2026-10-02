@@ -24,6 +24,15 @@ neither should still get from zero to the wizard with one command.
   MSYS/Cygwin/Git-Bash with the WSL2 instructions. Native Windows would need a
   non-tmux pane backend and is out of scope.
 
+## Pinned uv
+
+The script fetches `uv-installer.sh` from a fixed uv release (0.12.22 at the
+time of writing) and compares its SHA-256 against a constant before running
+it; a mismatch refuses and points at the repository for an updated script.
+Bumping uv means updating the version and the checksum together (the comment
+in the script has the one-liner). `ZORDON_UV_VERSION` and
+`ZORDON_UV_INSTALLER_SHA256` override both for testing.
+
 ## Verified
 
 Ran in an isolated prefix (`UV_INSTALL_DIR`, `UV_TOOL_DIR`, `UV_PYTHON_INSTALL_DIR`,
@@ -33,6 +42,6 @@ produced a config and token. The piped, no-terminal branch also completed.
 
 ## Open
 
-- Pin the uv installer to a release and verify a checksum once the project
-  publishes releases of its own; today both uv and zordon track `main`.
+- zordon itself still tracks `main` of its repository; pin a tag once there
+  are releases.
 - Publish to PyPI so the source becomes `zordon` instead of a git URL.

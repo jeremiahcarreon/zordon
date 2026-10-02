@@ -17,7 +17,9 @@ def test_is_valid_posix_sh():
 
 def test_script_does_only_the_documented_steps():
     text = SCRIPT.read_text()
-    assert "astral.sh/uv/install.sh" in text  # uv, no sudo
+    assert "releases/download/${UV_VERSION}/uv-installer.sh" in text  # pinned uv release, no sudo
+    assert "UV_INSTALLER_SHA256" in text and "checksum mismatch" in text  # verified before it runs
+    assert "astral.sh/uv/install.sh" not in text  # never the moving target
     assert "uv python install" in text  # managed Python
     assert "uv tool install" in text  # isolated zordon
     assert "zordon setup" in text  # hands over to the wizard
@@ -55,3 +57,21 @@ def test_script_runs_with_no_setup_flag_in_dry_mode(tmp_path, monkeypatch):
     assert "uv python install 3.12" in calls
     assert "uv tool install --python 3.12 zordon @ git+https://github.com/jeremiahcarreon/zordon@main" in calls
     assert "Skipping setup" in out.stdout
+
+
+def test_pinned_checksum_is_a_sha256_and_mismatch_refuses(tmp_path):
+    import re
+
+    text = SCRIPT.read_text()
+    m = re.search(r'UV_INSTALLER_SHA256="\$\{ZORDON_UV_INSTALLER_SHA256:-([0-9a-f]{64})\}"', text)
+    assert m, "the pinned checksum must be a 64-hex sha256"
+    # A fake fetch (curl) serves a different installer; the script must refuse to run it.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    curl = bindir / "curl"
+    curl.write_text("#!/bin/sh\necho 'echo tampered'\n")
+    curl.chmod(0o755)
+    env = {"HOME": str(tmp_path), "PATH": f"{bindir}:/usr/bin:/bin", "UV_INSTALL_DIR": str(tmp_path / "uvbin"), "ZORDON_NO_SETUP": "1"}
+    out = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
+    assert out.returncode != 0 and "checksum mismatch" in out.stderr
+    assert not (tmp_path / "uvbin").exists()
