@@ -1,0 +1,45 @@
+                                                                                        [48;5;235m                                                                        
+[38;5;246m[49m  ⎿  /plan to preview[39m                                                                   [48;5;235m                                                                      [38;5;246m✕[39m 
+[38;5;153m[49m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m  [38;5;73m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m   [1m[38;5;153mReady to code?[0m                                                       
+
+   Here is Claude's plan:                                                                                                                                       
+  [38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m   [1;3;4mPlan: write README.md for Zordon[0m                                                                             
+
+   [1mContext[0m                                                                                                                      
+
+   [38;5;153mREADME.md[39m exists but is empty (0 bytes). [38;5;153mpyproject.toml[39m already points at it ([38;5;153mreadme = "README.md"[39m) and the sdist include list names it, so the package
+   metadata is blank until it has content. The repo is public ([38;5;153mjeremiahcarreon/zordon[39m) and has no commits yet, so the README will be part of the first
+   commit.
+
+   The project is at the scaffolding stage: [38;5;153mconfig.py[39m, [38;5;153mpaths.py[39m, [38;5;153mbus.py[39m, [38;5;153mproviders.py[39m, [38;5;153msession/state.py[39m, [38;5;153mrouting/commands.py[39m, [38;5;153mtransport/protocol.py[39m and three
+   test files exist. [38;5;153mzordon/cli.py[39m does not exist, so [38;5;153mzordon serve[39m, [38;5;153mzordon doctor[39m and [38;5;153m--tunnel[39m do not run yet. The design doc schedules the full "install
+   from README alone" README for build step 6.
+
+   So the README written now must be honest about status: describe what Zordon is and how it will be used, mark clearly what works today, and be structured
+   so later build steps fill sections in rather than rewrite them.
+
+   [1mApproach
+
+[0m   Write one file: [38;5;153m/home/operator/Code/zordon/README.md[39m. No other files change.
+
+   Source every claim from existing files rather than inventing:
+
+   ┌──────────────────┬─────────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────┐
+   │  README section  │                                     Content                                     │                    Source                     │
+   ├──────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+   │ Title + one-line │ Full-duplex voice for a Claude Code session in tmux: talk, hear it back,        │ [38;5;153mpyproject.toml[39m description                    │
+   │  pitch           │ interrupt                                                                       │                                               │
+   ├──────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤     [38;5;246m↓
+[39m  [38;5;73m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m   [38;5;246mClaude has written up a plan and is ready to execute. Would you like to proceed?
+
+[39m   [38;5;153m❯[39m [38;5;246m1. [38;5;153mYes, and use auto mode[39m                                                                                                                                
+     [38;5;246m2. [39mYes, manually approve edits                                                                                                                             
+     [38;5;246m3. Tell Claude what to change[39m               
+        [38;5;246mshift+tab to approve with this feedback[39m                                                                                                                 
+           
+   [38;5;246mctrl+g to edit in VS Code · ~/.claude/plans/plan-how-you-would-modular-teacup.md[39m                                                                            

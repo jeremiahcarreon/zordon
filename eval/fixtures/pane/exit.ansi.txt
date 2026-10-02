@@ -1,0 +1,39 @@
+[1m[32moperator@hostname[0m:[1m[34m~/Code/zordon[0m$ env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --permission-mode default
+[33mPermission deny rule (../../.claude/settings.json): Write(.env) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.env) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(.env.*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.env.*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(**/.env) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(**/.env.*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env.*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(/home/operator/.claude/settings.json) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/home/operator/.claude/settings.json) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(/home/operator/.claude/CLAUDE.md) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/home/operator/.claude/CLAUDE.md) instead (Edit rules cover all file-editing tools).
+
+[2m[39mResume this session with:
+claude --resume 0b0b0b0b-0000-4000-8000-00000000000b
+[0;1m[32moperator@hostname[0m:[1m[34m~/Code/zordon[0m$ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

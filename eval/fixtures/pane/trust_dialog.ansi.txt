@@ -1,0 +1,39 @@
+[1m[32moperator@hostname[0m:[1m[34m~/Code/zordon[0m$ env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude --permission-mode default
+[33mPermission deny rule (../../.claude/settings.json): Write(.env) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.env) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(.env.*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.env.*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(**/.env) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(**/.env.*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env.*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(/home/operator/.claude/settings.json) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/home/operator/.claude/settings.json) instead (Edit rules cover all file-editing tools).
+Permission deny rule (../../.claude/settings.json): Write(/home/operator/.claude/CLAUDE.md) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/home/operator/.claude/CLAUDE.md) instead (Edit rules cover all file-editing tools).
+
+[38;5;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m [1m[38;5;220mAccessing[0m [1m[38;5;220mworkspace:
+
+[0m [1m/home/operator/Code/zordon
+
+[0m Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ [38;5;246m]8;id=zaxmda;https://code.claude.com/docs/en/security\Security guide]8;;\
+
+[39m [38;5;153m❯[39m [38;5;153mNo,[39m [38;5;153mexit
+[39m   Yes, I trust this folder
+
+ [38;5;246mEnter[39m [38;5;246mto[39m [38;5;246mconfirm[39m [38;5;246m·[39m [38;5;246mEsc[39m [38;5;246mto[39m [38;5;246mcancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

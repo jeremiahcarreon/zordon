@@ -1,0 +1,45 @@
+                                                                                                                                                                
+  ⎿  /plan to preview                                                                                                                                         ✕ 
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   Ready to code?                                                       
+
+   Here is Claude's plan:                                                                                                                                       
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   Plan: write README.md for Zordon                                                                             
+
+   Context                                                                                                                      
+
+   README.md exists but is empty (0 bytes). pyproject.toml already points at it (readme = "README.md") and the sdist include list names it, so the package
+   metadata is blank until it has content. The repo is public (jeremiahcarreon/zordon) and has no commits yet, so the README will be part of the first
+   commit.
+
+   The project is at the scaffolding stage: config.py, paths.py, bus.py, providers.py, session/state.py, routing/commands.py, transport/protocol.py and three
+   test files exist. zordon/cli.py does not exist, so zordon serve, zordon doctor and --tunnel do not run yet. The design doc schedules the full "install
+   from README alone" README for build step 6.
+
+   So the README written now must be honest about status: describe what Zordon is and how it will be used, mark clearly what works today, and be structured
+   so later build steps fill sections in rather than rewrite them.
+
+   Approach
+
+   Write one file: /home/operator/Code/zordon/README.md. No other files change.
+
+   Source every claim from existing files rather than inventing:
+
+   ┌──────────────────┬─────────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────┐
+   │  README section  │                                     Content                                     │                    Source                     │
+   ├──────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+   │ Title + one-line │ Full-duplex voice for a Claude Code session in tmux: talk, hear it back,        │ pyproject.toml description                    │
+   │  pitch           │ interrupt                                                                       │                                               │
+   ├──────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤     ↓
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+   ❯ 1. Yes, and use auto mode                                                                                                                                
+     2. Yes, manually approve edits                                                                                                                             
+     3. Tell Claude what to change               
+        shift+tab to approve with this feedback                                                                                                                 
+           
+   ctrl+g to edit in VS Code · ~/.claude/plans/plan-how-you-would-modular-teacup.md                                                                            
