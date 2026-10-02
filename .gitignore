@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Project runtime state (never commit)
+.zordon/
+*.db
+*.sqlite
+*.log
+
+# Secrets
+.env
+.env.*
+config.toml
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Probe artifacts
+probe.txt
+.scratch/

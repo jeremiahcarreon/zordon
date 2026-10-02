@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zordon"
+version = "0.1.0"
+description = "Full-duplex voice interface for a Claude Code session running in tmux: talk to it, hear it back, interrupt it."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12,<3.14"
+authors = [{ name = "Jeremiah Carreon" }]
+keywords = ["voice", "tmux", "claude-code", "speech", "tts", "stt"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Software Development",
+]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "anthropic>=1.0",
+  "httpx>=0.27",
+  "numpy>=1.26",
+  "onnxruntime>=1.17",
+  "segno>=1.6",
+  "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+# Local, private speech stack (default providers). Pulls CTranslate2 and the Kokoro ONNX runtime.
+local = [
+  "faster-whisper>=1.0",
+  "kokoro-onnx>=0.4",
+]
+# Jev (TypeSafe System One) router.
+jev = ["typesafe-sdk>=0.7"]
+# Optional host-side mic/speaker when the agent runs on the same machine as the browser.
+hostaudio = ["sounddevice>=0.4"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "websockets>=12",
+]
+
+[project.scripts]
+zordon = "zordon.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jeremiahcarreon/zordon"
+Issues = "https://github.com/jeremiahcarreon/zordon/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zordon"]
+
+[tool.hatch.build.targets.sdist]
+include = ["zordon", "docs", "eval", "tests", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+markers = [
+  "integration: needs tmux and/or network; skipped by default",
+  "provider: needs a configured provider API key or local model",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501"]
