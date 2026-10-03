@@ -309,8 +309,37 @@ def cmd_start(args: argparse.Namespace) -> int:
     print(f"zordon is running in the background (pid {st.pid}).")
     print(f"  page: http://{display_host(getattr(args, 'bind', None) or cfg.server.bind)}:{getattr(args, 'port', None) or cfg.server.port}")
     print(f"  log:  {st.log}")
+    if getattr(args, "tunnel", None):
+        url = _wait_for_tunnel_url(timeout_s=60.0)
+        if url:
+            from zordon.transport.qr import terminal_qr  # noqa: PLC0415
+
+            print(f"  tunnel: {url}")
+            print(terminal_qr(url))
+            print("  Scan the code, then enter the token from `zordon token show`.")
+        else:
+            print("  tunnel: not up yet; `zordon status --qr` shows it once cloudflared connects (see `zordon logs`).")
     print("  zordon status · zordon logs -f · zordon stop")
     return EXIT_OK
+
+
+def _wait_for_tunnel_url(*, timeout_s: float) -> str | None:
+    import time  # noqa: PLC0415
+
+    from zordon import daemon  # noqa: PLC0415
+
+    p = tunnel_url_path()
+    p.unlink(missing_ok=True) if p.exists() and not daemon.status().running else None
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if p.exists():
+            url = p.read_text().strip()
+            if url:
+                return url
+        if not daemon.status().running:
+            return None
+        time.sleep(0.5)
+    return None
 
 
 def cmd_stop(args: argparse.Namespace) -> int:

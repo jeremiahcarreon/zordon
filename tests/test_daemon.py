@@ -142,3 +142,26 @@ def test_status_shows_the_tunnel_url_written_by_serve(monkeypatch, capsys):
     assert "█" in out or "▄" in out  # the QR
     cli._write_tunnel_url(None)
     assert not cli.tunnel_url_path().exists()
+
+
+def test_start_with_tunnel_prints_the_url_once_serve_writes_it(monkeypatch, capsys):
+    from zordon import cli, daemon
+
+    class Proc:
+        pid = 4343
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kw):
+        kw["stdout"].write(b"Zordon listening on http://127.0.0.1:8765\n")
+        kw["stdout"].flush()
+        cli._write_tunnel_url("https://brisk-fox-99.trycloudflare.com")  # what serve does when cloudflared connects
+        return Proc()
+
+    monkeypatch.setattr(daemon, "_alive", lambda pid: pid == 4343)
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+    assert main(["start", "--tunnel"]) == 0
+    out = capsys.readouterr().out
+    assert "tunnel: https://brisk-fox-99.trycloudflare.com" in out and "zordon token show" in out
+    cli._write_tunnel_url(None)

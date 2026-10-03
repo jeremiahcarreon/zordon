@@ -74,9 +74,10 @@ def zordon_argv() -> list[str]:
     return [sys.executable, "-m", "zordon"]
 
 
-def start(extra_args: Sequence[str] = (), *, wait_s: float = 8.0, popen=subprocess.Popen) -> Status:
+def start(extra_args: Sequence[str] = (), *, wait_s: float = 8.0, popen=None) -> Status:
     """Launch ``zordon serve`` detached. Raises RuntimeError when it is already running or
     dies before it is listening."""
+    popen = popen or subprocess.Popen  # resolved at call time so tests can substitute it
     st = status()
     if st.running:
         raise RuntimeError(f"zordon is already running (pid {st.pid}); `zordon stop` first or `zordon restart`")
