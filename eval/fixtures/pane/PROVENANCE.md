@@ -77,3 +77,5 @@ fixture with the one described change.
 | exit_shell_only | exit | Claude Code never started: shell prompt, `No conversation found with session ID`, shell prompt |
 | exit_crash_no_resume_line | exit | the `Resume this session with:` lines replaced by a Node error and stack line |
 | spinner_verb_accent_frames | streaming_frames | the spinner verb replaced by `Sautéing` in every frame (frames file) |
+
+| onboarding_theme, onboarding_login, onboarding_login_browser | first-run screens of a never-configured Claude Code (normal screen): text-style picker, login-method menu, browser sign-in URL (URL masked) |

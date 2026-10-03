@@ -532,3 +532,13 @@ def test_stale_prompt_block_with_output_below_it_is_not_a_prompt():
     footer = next(i for i, line in enumerate(stale) if "Esc to cancel · Tab to amend" in line)
     lines = stale[: footer + 1] + ["", "✻ Worked for 1s · done 8:36 PM", "", "❯ Run the shell command: ls"]
     assert detect_prompt(lines) is None
+
+
+def test_first_run_onboarding_screens_are_recognised(pane_fixture):
+    from zordon.session.prompts import detect_onboarding
+
+    assert detect_onboarding(pane_fixture("onboarding_theme.txt").splitlines()) == "theme"
+    assert detect_onboarding(pane_fixture("onboarding_login.txt").splitlines()) == "login"
+    assert detect_onboarding(pane_fixture("onboarding_login_browser.txt").splitlines()) == "login_browser"
+    for plain in ("idle.txt", "trust_dialog.txt", "exit.txt", "bash_permission.txt"):
+        assert detect_onboarding(pane_fixture(plain).splitlines()) is None

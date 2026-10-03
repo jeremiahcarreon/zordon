@@ -126,6 +126,8 @@ class AgentAdapter(Protocol):
     # ---- out-of-band signals (optional; BaseAdapter answers None) ---------------------
     def hook_hint(self, payload: dict[str, Any]) -> Any | None: ...
     def status_hint(self, session_id: str) -> str | None: ...
+    def onboarding(self, screen: Screen) -> str | None: ...
+    def logged_in(self) -> bool | None: ...
 
     # ---- permissions / wording ----------------------------------------------------
     def forbidden_modes(self) -> frozenset[str]: ...
@@ -390,6 +392,15 @@ class BaseAdapter:
 
     def status_hint(self, session_id: str) -> str | None:
         return None  # no registry
+
+    def onboarding(self, screen: Screen) -> str | None:
+        """First-run screen the agent shows before it is usable (None for most agents).
+        Known stages: "theme" (Enter accepts the default), "login", "login_browser"."""
+        return None
+
+    def logged_in(self) -> bool | None:
+        """True/False when the adapter can tell whether the agent has credentials; None if unknown."""
+        return None
 
     # ---- permissions / wording ----------------------------------------------------
     def forbidden_modes(self) -> frozenset[str]:

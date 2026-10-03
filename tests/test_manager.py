@@ -1513,7 +1513,7 @@ def test_attached_pane_idle_text_exit_and_mode_switch(env):
     assert states(ev)[-1] is SessionState.DETACHED
     assert "the agent exited" in mgr.sessions[sid].detail.lower()
     notice = next(e for e in ev if isinstance(e, Notice))
-    assert "attach to the pane again" in notice.text.lower() and "resume" not in notice.text.lower()
+    assert "attach to the pane again" in notice.text.lower() and "start the agent there first" in notice.text.lower() and "resume" not in notice.text.lower()
     with pytest.raises(M.SessionError):
         mgr.send_text(sid, "hello?")
     # resume is not a thing for the generic adapter
@@ -1555,3 +1555,47 @@ def test_prompt_and_stall_wording_names_the_agent(env):
     assert SessionState.STALLED in states(ev) and mgr.state_of(sid) is SessionState.STALLED
     stall = next(e for e in ev if isinstance(e, Notice))
     assert stall.text.startswith("the agent looks like it is waiting on something")
+
+
+# ---- first-run onboarding -------------------------------------------------------------------
+
+
+def test_theme_picker_is_accepted_and_login_screen_is_explained_not_declared_exited(env):
+    """A freshly installed Claude Code shows its theme picker and login menu on the normal
+    screen; that is not an exit. Theme: Enter. Login: one spoken notice telling the user
+    where to sign in, keystrokes refused with the same explanation."""
+    mgr, bus, tmux, clock, proj = env
+    sid = mgr.start(str(proj))
+    target = mgr.sessions[sid].target
+    tmux.set_screen(target, lines_of("onboarding_theme.txt"), alt=False)
+    for _ in range(4):
+        clock.advance(0.1)
+        mgr.poll_once()
+    assert ("enter", target) in tmux.calls  # default theme accepted once
+    assert tmux.calls.count(("enter", target)) == 1
+    assert mgr.state_of(sid) is not SessionState.DETACHED
+    tmux.calls.clear()
+    drain(bus)
+    tmux.set_screen(target, lines_of("onboarding_login.txt"), alt=False)
+    for _ in range(4):
+        clock.advance(0.1)
+        mgr.poll_once()
+    ev = drain(bus)
+    assert mgr.state_of(sid) is SessionState.STALLED and "login" in mgr.sessions[sid].detail
+    notices = [e for e in ev if isinstance(e, Notice)]
+    assert len(notices) == 1 and "not logged in" in notices[0].text and "tmux attach -t" in notices[0].text and notices[0].speak
+    assert not any(isinstance(e, StateChanged) and e.state is SessionState.DETACHED for e in ev)
+    with pytest.raises(Exception, match="waiting for you to log in"):
+        mgr.send_text(sid, "hello")
+    assert not any(c[0] == "literal" for c in tmux.calls)
+    drain(bus)  # the refusal itself is spoken; that is not a second onboarding notice
+    # The browser/code screen is the same stage family: no second notice.
+    tmux.set_screen(target, lines_of("onboarding_login_browser.txt"), alt=False)
+    mgr.poll_once()
+    assert not [e for e in drain(bus) if isinstance(e, Notice)]
+    # Once logged in the TUI appears on the alternate screen and life goes on.
+    tmux.set_screen(target, lines_of("idle.txt"), alt=True)
+    for _ in range(3):
+        clock.advance(0.1)
+        mgr.poll_once()
+    assert mgr.state_of(sid) is SessionState.IDLE

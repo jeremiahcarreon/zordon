@@ -218,6 +218,9 @@ class Session:
     prompt_key: tuple[Any, ...] | None = None
     stall_notified: bool = False
     exit_notified: bool = False
+    onboarding_stage: str | None = None  # first-run screen currently showing (theme/login)
+    onboarding_notified: bool = False
+    theme_enter_sent: bool = False
     hook_hint: Any | None = None  # the adapter's hook hint (``session.hooks.HookHint`` for Claude Code)
     believed_prompt: PromptKind | None = None  # second/third-signal prompt the regex cannot see
     quiet_polls: int = 0  # consecutive polls with a quiet input box and unchanged content
@@ -508,6 +511,11 @@ class SessionManager(threading.Thread):
             s.last_output_ts = now
         self._check_echo(s, screen, now)
         s.prev_screen = screen
+        stage = s.adapter.onboarding(screen)
+        if stage is not None:
+            self._handle_onboarding(s, stage, now)
+            return
+        s.onboarding_stage = None
         if s.adapter.exited(screen):
             self._mark_exited(s, now)
             return
@@ -537,6 +545,44 @@ class SessionManager(threading.Thread):
         )
         self._apply(s, obs, now, match, screen=screen)
 
+    def _handle_onboarding(self, s: Session, stage: str, now: float) -> None:
+        """The agent's first-run screens live on the normal screen. Theme: accept the default.
+        Login: cannot be done for the user; say exactly where to do it and wait."""
+        s.exit_polls = 0
+        s.last_output_ts = now
+        changed = stage != s.onboarding_stage
+        s.onboarding_stage = stage
+        if stage == "theme":
+            if not s.theme_enter_sent:
+                s.theme_enter_sent = True
+                try:
+                    self.tmux.send_enter(s.target)
+                    log.info("%s: accepted %s's default text style", s.session_id[:8], s.display_name)
+                except TmuxError:
+                    log.debug("could not send Enter to the theme picker", exc_info=True)
+            return
+        detail = f"{s.display_name} needs its first-time login"
+        if changed:
+            with self._lock:
+                s.state = SessionState.STALLED
+                s.detail = detail
+            self.bus.publish(StateChanged(s.session_id, SessionState.STALLED, detail))
+        if not s.onboarding_notified:
+            s.onboarding_notified = True
+            where = f"tmux attach -t {self.tmux_session}" if s.owned else "the terminal where it runs"
+            self.bus.publish(
+                Notice(
+                    text=(
+                        f"{s.display_name} is installed but not logged in. In a terminal run: {where}; "
+                        "pick your login method and finish signing in, then press Ctrl-b then d to detach. "
+                        "I'll pick up the session as soon as it is ready."
+                    ),
+                    level="warning",
+                    session_id=s.session_id,
+                    speak=True,
+                )
+            )
+
     def _mark_exited(self, s: Session, now: float) -> None:
         with self._lock:
             self._clear_prompt(s)
@@ -560,7 +606,7 @@ class SessionManager(threading.Thread):
             what_next = (
                 "Say resume, or pick the session again, to start it back up."
                 if s.adapter.supports_resume()
-                else "Attach to the pane again once it is running."
+                else "Nothing is running in that pane now. Start the agent there first (for Claude Code: run `claude`), then attach to the pane again."
             )
             self.bus.publish(
                 Notice(
@@ -1251,7 +1297,13 @@ class SessionManager(threading.Thread):
             current = m if m is not None else s.current_match
             if current is not None and current.kind is PromptKind.TRUST:
                 return
-        text = no_tui_text(s.display_name)
+        if s.onboarding_stage in ("login", "login_browser"):
+            text = (
+                f"{s.display_name} is waiting for you to log in before it can take requests. "
+                f"Run `tmux attach -t {self.tmux_session}` in a terminal and finish signing in."
+            )
+        else:
+            text = no_tui_text(s.display_name)
         log.warning("%s: refusing keystrokes; %s is not on the pane", s.session_id[:8], s.display_name)
         self.bus.publish(Notice(text=text, level="warning", session_id=s.session_id, speak=True))
         raise SessionError(text)

@@ -13,6 +13,7 @@ settings (``session/permissions.py``). The manager only ever sees the
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 from collections.abc import Sequence
@@ -277,6 +278,21 @@ class ClaudeCodeAdapter(BaseAdapter):
         return hooks.hint_for(payload)
 
     # ---- permissions / wording ----------------------------------------------------
+
+    def onboarding(self, screen: Screen) -> str | None:
+        return prompts.detect_onboarding(screen)
+
+    def logged_in(self) -> bool | None:
+        """Credentials on disk (``.credentials.json`` under the Claude config dir) or an
+        API key in the environment. None when the binary itself is missing."""
+        if not self.available():
+            return None
+        home = paths.claude_home()
+        if (home / ".credentials.json").exists():
+            return True
+        if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            return True
+        return False
 
     def permission_summary(self, cwd: str, active_mode: str | None) -> str:
         summary = permissions.read_settings(self.home, cwd or None)

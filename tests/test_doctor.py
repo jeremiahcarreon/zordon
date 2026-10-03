@@ -54,6 +54,12 @@ def local_cfg() -> Config:
     return cfg
 
 
+def _logged_in() -> None:
+    creds = paths.claude_home() / ".credentials.json"
+    creds.parent.mkdir(parents=True, exist_ok=True)
+    creds.write_text("{}")
+
+
 def by_name(report: doctor.Report) -> dict[str, Check]:
     return {c.name: c for c in report.checks}
 
@@ -357,6 +363,7 @@ def test_probe_is_off_by_default_and_skips_without_keys(local_cfg: Config, fake_
 
 
 def test_run_checks_table_and_exit_code(local_cfg: Config, fake_bin: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    _logged_in()
     monkeypatch.setattr(assets, "find_binary", lambda name: None)
     report = doctor.run_checks(local_cfg)
     names = by_name(report)
@@ -387,6 +394,7 @@ def test_main_json_shape(local_cfg: Config, fake_bin: Path, monkeypatch: pytest.
 
 
 def test_main_exit_zero_when_everything_is_in_place(local_cfg: Config, fake_bin: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    _logged_in()
     local_cfg.save(paths.config_path())
     monkeypatch.setattr(assets, "find_binary", lambda name: "/opt/bin/cloudflared")
     monkeypatch.setattr(doctor, "model_checks", lambda cfg, opts, downloader=None: [Check("model silero_vad.onnx", OK, "fake")])
@@ -397,6 +405,7 @@ def test_main_exit_zero_when_everything_is_in_place(local_cfg: Config, fake_bin:
 
 
 def test_main_download_flag_reaches_the_downloader(local_cfg: Config, fake_bin: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    _logged_in()
     local_cfg.save(paths.config_path())
     calls: list[str] = []
 
@@ -434,3 +443,9 @@ def test_doctor_never_runs_the_real_claude_or_tmux_when_absent(local_cfg: Config
     monkeypatch.setenv("PATH", str(empty))
     names = by_name(doctor.run_checks(local_cfg))
     assert names["tmux"].status == FAIL and names["claude"].status == FAIL
+
+
+def test_claude_login_check(fake_bin: Path):
+    assert doctor.check_claude_login().status == doctor.FAIL
+    _logged_in()
+    assert doctor.check_claude_login().status == doctor.OK

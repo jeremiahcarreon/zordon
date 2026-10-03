@@ -160,6 +160,29 @@ def detect(
             present=which("claude"),
         )
     )
+    claude_present = which("claude")
+    logged_in: bool | None = None
+    if claude_present and "claude-code" in want_agents:
+        try:
+            from zordon.agents.claude_code import ClaudeCodeAdapter  # noqa: PLC0415
+
+            logged_in = ClaudeCodeAdapter(None).logged_in()
+        except Exception:  # noqa: BLE001
+            logged_in = None
+    env.checks.append(
+        Prereq(
+            "claude-login",
+            "Claude Code login",
+            "Claude Code must be signed in before it can take requests",
+            "",
+            bool(claude_present) and "claude-code" in want_agents and logged_in is False,
+            "claude",
+            needs=("claude-code",),
+            after="sign in with your Claude account when it asks, then exit it",
+            present=("yes" if logged_in else None) if claude_present else "n/a",
+            detail="interactive: opens Claude Code in this terminal; finish the sign-in and exit it",
+        )
+    )
     env.checks.append(
         Prereq(
             "codex",
@@ -262,8 +285,13 @@ def plan_steps(env: Environment, missing: list[Prereq] | None = None) -> list[St
         if p.command and not p.pkg and p.command.startswith("npm "):
             steps.append(Step(f"Install {p.label}", p.command, [p.key], "npm", terminal=False))
     for p in missing:
+        if p.key == "claude-login":
+            continue
         if p.command and not p.pkg and not p.command.startswith("npm "):
             steps.append(Step(f"Install {p.label}", p.command, [p.key], "script", terminal=True))
+    for p in missing:
+        if p.key == "claude-login" and p.command:
+            steps.append(Step("Sign in to Claude Code", p.command, [p.key], "login", terminal=True))
     return steps
 
 

@@ -36,6 +36,7 @@ from zordon.session.screen import (
     USER_ECHO,
     Screen,
     parse_screen,
+    strip_ansi,
 )
 
 PROMPTS_VERSION = "claude-code-2.1.287"
@@ -686,3 +687,27 @@ def tail(lines: Sequence[str], n: int = 25) -> list[str]:
 
 
 _ = _screen  # keep the module reference for callers that want screen.* via prompts
+
+
+# ---- first-run onboarding (normal screen, before the TUI) ------------------------------------
+
+ONBOARDING_THEME = re.compile(r"^\s*Choose the text style that looks best with your terminal")
+ONBOARDING_LOGIN = re.compile(r"^\s*Select login method:")
+ONBOARDING_BROWSER = re.compile(r"Browser didn't open\? Use the url below|^\s*Paste code here if prompted")
+ONBOARDING_WELCOME = re.compile(r"^\s*Welcome to Claude Code v\d")
+
+
+def detect_onboarding(lines: Sequence[str] | Screen) -> str | None:
+    """Claude Code's first-run screens: ``"theme"`` (text style picker; Enter accepts the
+    default), ``"login"`` (login method menu) or ``"login_browser"`` (sign-in URL / code
+    paste). None otherwise. These are drawn on the normal screen, so without this a
+    not-yet-logged-in Claude Code looks like a crashed one."""
+    scr = _as_screen(lines)
+    text = [strip_ansi(ln) for ln in scr.lines]
+    if any(ONBOARDING_BROWSER.search(ln) for ln in text):
+        return "login_browser"
+    if any(ONBOARDING_LOGIN.match(ln) for ln in text):
+        return "login"
+    if any(ONBOARDING_THEME.match(ln) for ln in text):
+        return "theme"
+    return None

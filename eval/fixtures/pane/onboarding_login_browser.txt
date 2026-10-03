@@ -1,0 +1,45 @@
+Welcome to Claude Code v2.1.288
+..........................................................
+
+     *                                       █████▓▓░
+                                 *         ███▓░     ░░
+            ░░░░░░                        ███▓░
+    ░░░   ░░░░░░░░░░                      ███▓░
+   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓
+                                             ░▓▓███▓▓░
+ *                                 ░░░░
+                                 ░░░░░░░░
+                               ░░░░░░░░░░░░░░░░
+       █████████                                        *
+      ██▄█████▄██                        *
+       █████████      *
+.......█ █   █ █..........................................
+
+ Browser didn't open? Use the url below to sign in (c to copy)
+
+https://example.invalid/oauth/authorize?code=true&client_id=MASKED&redirect_uri=MASKED&scope=MASKED&code_challenge=MASKED&state=MASKED
+[MASKED continuation of the sign-in URL]
+[MASKED continuation of the sign-in URL]
+
+
+ Paste code here if prompted >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

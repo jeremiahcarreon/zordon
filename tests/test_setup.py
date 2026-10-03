@@ -170,13 +170,17 @@ def test_interview_agent_choice_and_install_hint_for_missing_pick():
 from zordon import prereqs  # noqa: E402
 
 
-def fake_env(missing: set[str], pm: str = "apt-get") -> prereqs.Environment:
+def fake_env(missing: set[str], pm: str = "apt-get", logged_in: bool = True) -> prereqs.Environment:
     which = lambda name: None if name in missing else f"/usr/bin/{name}"  # noqa: E731
 
     class R:
         returncode = 0
         stdout = "v20.1.0"
 
+    if logged_in:
+        creds = paths.claude_home() / ".credentials.json"
+        creds.parent.mkdir(parents=True, exist_ok=True)
+        creds.write_text("{}")
     env = prereqs.detect(which=which, run=lambda *a, **k: R(), want_agents=("claude-code",), want_ollama=True)
     return env
 
@@ -315,3 +319,15 @@ def test_path_hint_only_when_the_installer_extended_path(monkeypatch, tmp_path):
     assert f"source {tmp_path / 'env'}" in wiz.path_hint()
     cfg = Config.default()
     assert "cannot see `zordon` yet" in wiz.next_steps(wiz.Choices(), cfg)
+
+
+def test_login_is_a_prerequisite_step_when_claude_is_installed_but_signed_out():
+    env = fake_env(set(), logged_in=False)
+    login = env.get("claude-login")
+    assert login is not None and login.required and login.present is None
+    steps = prereqs.plan_steps(env)
+    assert [st.kind for st in steps] == ["login"] and steps[-1].command == "claude" and steps[-1].terminal
+    env2 = fake_env(set(), logged_in=True)
+    assert env2.get("claude-login").present == "yes" and prereqs.plan_steps(env2) == []
+    env3 = fake_env({"claude"}, logged_in=False)
+    assert env3.get("claude-login").present == "n/a"  # no binary: the install step comes first

@@ -812,7 +812,8 @@ class PrereqScreen(WizardScreen):
         def on_step(st: prereqs.Step) -> None:
             self.app.call_from_thread(self._step_started, st)
 
-        results = prereqs.run_steps(self.steps, self.wizard.env, run=runner, log=lambda line: log.write_from_thread(line), on_step=on_step)
+        batch = [st for st in self.steps if st.kind != "login"]  # sign-in is interactive: offered after
+        results = prereqs.run_steps(batch, self.wizard.env, run=runner, log=lambda line: log.write_from_thread(line), on_step=on_step)
         self.app.call_from_thread(self._batch_done, results)
 
     def _step_started(self, st: prereqs.Step) -> None:
@@ -847,22 +848,35 @@ class PrereqScreen(WizardScreen):
         pending = [r for r in self.query(PrereqRow) if r.state != "done"]
         nxt.label = "Continue anyway" if pending else "Continue"
         self.query_one("#back", Button).disabled = False
-        agents_done = [r.prereq for r in self.query(PrereqRow) if r.state == "done" and prereqs.login_command(r.prereq.key)]
-        if agents_done and self.wizard.runner is None:
-            self._offer_login(agents_done[0])
+        needs_login = [
+            r for r in self.query(PrereqRow)
+            if (r.state == "done" and prereqs.login_command(r.prereq.key)) or (r.prereq.key == "claude-login" and r.state not in ("done", "skipped"))
+        ]
+        if needs_login and self.wizard.runner is None:
+            self._offer_login(needs_login[0])
         else:
+            for r in needs_login:
+                if self.wizard.runner is not None and r.prereq.key == "claude-login":
+                    prereqs.open_for_login("claude-code", run=self.wizard.runner)
+                    r.set_state("done", "signed in")
             nxt.focus()
 
-    def _offer_login(self, p: prereqs.Prereq) -> None:
+    def _offer_login(self, row: PrereqRow) -> None:
+        p = row.prereq
+        agent_key = "claude-code" if p.key == "claude-login" else p.key
+        label = "Claude Code" if p.key == "claude-login" else p.label
+
         def answer(yes: bool) -> None:
             if yes:
                 with self.app.suspend():
-                    print(f"\n  ◆ Opening {p.label} so you can log in. Exit it when done.\n", flush=True)
-                    prereqs.open_for_login(p.key, run=subprocess.run)
+                    print(f"\n  ◆ Opening {label} so you can log in. Exit it when done.\n", flush=True)
+                    prereqs.open_for_login(agent_key, run=subprocess.run)
+                if p.key == "claude-login":
+                    row.set_state("done", "signed in")
             self.query_one("#next", Button).focus()
 
         self.app.push_screen(
-            Confirm(f"Log in to {p.label} now?", f"{p.label} is installed. It opens in this terminal; exit it when you are done and setup resumes.", yes="Open it", no="Later"),
+            Confirm(f"Log in to {label} now?", f"{label} is installed. It opens in this terminal; exit it when you are done and setup resumes.", yes="Open it", no="Later"),
             answer,
         )
 

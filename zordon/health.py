@@ -227,6 +227,15 @@ def check_agent(agent: Any) -> Item:
     if path is None:
         fix = FIX_CLAUDE if key == "claude-code" else f"install {display} so its binary is on PATH"
         return Item("agent", FAIL, f"{display} not found on PATH", fix)
+    adapters = getattr(agent, "adapters", None) or {}
+    adapter = adapters.get(key) if isinstance(adapters, dict) else None
+    logged = getattr(adapter, "logged_in", None)
+    try:
+        state = logged() if callable(logged) else None
+    except Exception:  # noqa: BLE001
+        state = None
+    if state is False:
+        return Item("agent", FAIL, f"{display} is installed but not logged in", f"run `{found.get(key) and key.split('-')[0] or 'claude'}` once in a terminal and sign in (or `tmux attach -t zordon` when a session is waiting on it)")
     return Item("agent", OK, f"{display} at {path}" if path else display)
 
 

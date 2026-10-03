@@ -185,6 +185,21 @@ def check_claude(which: Which = shutil.which, run: Run = subprocess.run) -> Chec
     return compare_prompts_version(line)
 
 
+def check_claude_login() -> Check | None:
+    """Credentials present for Claude Code (``.credentials.json`` or an API key in the env)."""
+    try:
+        from zordon.agents.claude_code import ClaudeCodeAdapter  # noqa: PLC0415
+
+        state = ClaudeCodeAdapter(None).logged_in()
+    except Exception:  # noqa: BLE001
+        return None
+    if state is None:
+        return None
+    if state:
+        return Check("claude login", OK, "credentials found")
+    return Check("claude login", FAIL, "Claude Code is installed but not logged in", "run `claude` once in a terminal and sign in, then exit it")
+
+
 def compare_prompts_version(version_line: str, prompts_version: str | None = None) -> Check:
     """OK when the installed Claude Code matches the release the prompt regexes were
     captured from (``session/prompts.PROMPTS_VERSION``), WARN otherwise: most releases
@@ -604,6 +619,9 @@ def run_checks(
     checks.append(check_python())
     checks.append(check_tmux(which, run))
     checks.append(check_claude(which, run))
+    login = check_claude_login()
+    if login is not None:
+        checks.append(login)
     checks.append(check_curl(which))
     checks.append(check_claude_home())
     checks.append(check_config_file(Path(cfg_path)))
