@@ -43,6 +43,9 @@ dependencies = [
   "kokoro-onnx>=0.4; python_version < '3.14'",
   # Setup and uninstall TUI (borders, mouse, progress). Lives in the isolated environment.
   "textual>=0.80",
+  # Jev router (TypeSafe System One): pure Python, small; a configured key must never be
+  # ignored because an extra was not installed.
+  "typesafe-sdk>=0.7.2,<0.8",
 ]
 
 [project.optional-dependencies]
@@ -52,7 +55,8 @@ dependencies = [
 # Kept as an empty alias: the local speech stack is part of the core install now.
 local = []
 # Jev (TypeSafe System One) router. 0.7.2 added the http2 extra; 0.8 is unreleased (decision 0006).
-jev = ["typesafe-sdk>=0.7.2,<0.8"]
+# Kept as an empty alias: the TypeSafe SDK is part of the core install now.
+jev = []
 # Optional host-side mic/speaker when the agent runs on the same machine as the browser.
 hostaudio = ["sounddevice>=0.4"]
 dev = [

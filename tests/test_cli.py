@@ -415,7 +415,8 @@ def test_core_dependency_bounds():
     assert any(d.startswith("kokoro-onnx") and "python_version < '3.14'" in d for d in core)
     assert any(d.startswith("faster-whisper") for d in core)
     assert project["optional-dependencies"]["local"] == []  # kept as an alias only
-    assert project["optional-dependencies"]["jev"] == ["typesafe-sdk>=0.7.2,<0.8"]
+    assert any(d.startswith("typesafe-sdk>=0.7.2,<0.8") for d in core)
+    assert project["optional-dependencies"]["jev"] == []  # alias only
 
 
 def test_setup_summary_is_printed_after_the_tui_closes(monkeypatch, capsys):

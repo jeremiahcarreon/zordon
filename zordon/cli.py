@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import signal
 import subprocess
@@ -87,6 +88,35 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--no-download", action="store_true", help="only write the config; skip downloads and pulls")
     setup_p.add_argument("--plain", action="store_true", help="question-and-answer mode instead of the full-screen TUI")
     setup_p.set_defaults(func=cmd_setup)
+
+    st = sub.add_parser("start", help="run zordon serve detached from this terminal (log in ~/.zordon/serve.log)")
+    st.add_argument("--bind", default=None)
+    st.add_argument("--port", type=int, default=None)
+    st.add_argument("--tunnel", nargs="?", const="config", default=None, metavar="PROVIDER")
+    st.add_argument("--config", type=Path, default=None)
+    st.set_defaults(func=cmd_start)
+    sp = sub.add_parser("stop", help="stop the detached zordon")
+    sp.set_defaults(func=cmd_stop)
+    rs = sub.add_parser("restart", help="stop and start the detached zordon (picks up an installed update)")
+    rs.add_argument("--tunnel", nargs="?", const="config", default=None, metavar="PROVIDER")
+    rs.set_defaults(func=cmd_restart)
+    stt = sub.add_parser("status", help="is zordon running, where, and is it healthy")
+    stt.set_defaults(func=cmd_status)
+    lg = sub.add_parser("logs", help="show the detached zordon's log")
+    lg.add_argument("-n", type=int, default=60, help="lines (default 60)")
+    lg.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    lg.set_defaults(func=cmd_logs)
+    sv = sub.add_parser("service", help="start at login and restart on failure (systemd --user or launchd)")
+    sv_sub = sv.add_subparsers(dest="service_command", metavar="action")
+    svi = sv_sub.add_parser("install", help="write, enable and start the service")
+    svi.add_argument("--tunnel", nargs="?", const="config", default=None, metavar="PROVIDER")
+    svi.add_argument("--bind", default=None)
+    svi.set_defaults(func=cmd_service_install)
+    svu = sv_sub.add_parser("uninstall", help="stop, disable and remove the service")
+    svu.set_defaults(func=cmd_service_uninstall)
+    svs = sv_sub.add_parser("status", help="is the service installed and active")
+    svs.set_defaults(func=cmd_service_status)
+    sv.set_defaults(func=cmd_service_status)
 
     up = sub.add_parser("update", help="check for and install a newer zordon (restart picks it up)")
     up.add_argument("--check", action="store_true", help="only report whether an update exists")
@@ -251,6 +281,150 @@ def cmd_setup(args: argparse.Namespace) -> int:
     except (OSError, ValueError, TypeError) as e:
         raise CliError(f"setup failed: {e}", EXIT_CONFIG) from e
     return EXIT_OK if not problems else EXIT_MISSING
+
+
+def _serve_extra(args: argparse.Namespace) -> list[str]:
+    extra: list[str] = []
+    if getattr(args, "bind", None):
+        extra += ["--bind", str(args.bind)]
+    if getattr(args, "port", None):
+        extra += ["--port", str(args.port)]
+    t = getattr(args, "tunnel", None)
+    if t:
+        extra += ["--tunnel"] if t == "config" else ["--tunnel", str(t)]
+    if getattr(args, "config", None):
+        extra += ["--config", str(args.config)]
+    return extra
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    from zordon import daemon  # noqa: PLC0415
+
+    cfg, _ = load_or_create(getattr(args, "config", None))
+    try:
+        st = daemon.start(_serve_extra(args))
+    except RuntimeError as e:
+        raise CliError(str(e), EXIT_ERROR) from e
+    print(f"zordon is running in the background (pid {st.pid}).")
+    print(f"  page: http://{display_host(getattr(args, 'bind', None) or cfg.server.bind)}:{getattr(args, 'port', None) or cfg.server.port}")
+    print(f"  log:  {st.log}")
+    print("  zordon status · zordon logs -f · zordon stop")
+    return EXIT_OK
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    from zordon import daemon  # noqa: PLC0415
+
+    before = daemon.status()
+    st = daemon.stop()
+    if before.running:
+        print(f"stopped zordon (pid {before.pid}).")
+    elif before.stale:
+        print("zordon was not running (removed a stale pid file).")
+    else:
+        print("zordon is not running.")
+    return EXIT_OK if not st.running else EXIT_ERROR
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    from zordon import daemon  # noqa: PLC0415
+
+    daemon.stop()
+    return cmd_start(args)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    from zordon import daemon, service  # noqa: PLC0415
+
+    st = daemon.status()
+    cfg, _ = load_or_create(None)
+    if st.running:
+        print(f"zordon is running (pid {st.pid}) at http://{display_host(cfg.server.bind)}:{cfg.server.port}")
+        print(f"  log: {st.log}")
+        health = _fetch_health(cfg)
+        if health:
+            print(f"  health: {health}")
+    else:
+        print("zordon is not running." + (" (stale pid file removed)" if st.stale else ""))
+        if st.stale:
+            st.pidfile.unlink(missing_ok=True)
+    svc = service.info()
+    if svc.kind != "none":
+        state = "active" if svc.active else ("installed, not active" if svc.installed else "not installed")
+        print(f"  service ({svc.kind}): {state}")
+    return EXIT_OK if st.running else EXIT_ERROR
+
+
+def _fetch_health(cfg: Config) -> str:
+    """One-line health from the running agent's unauthenticated liveness endpoint plus the
+    pid; the full report needs the browser (cookie) or `zordon doctor`."""
+    import httpx  # noqa: PLC0415
+
+    try:
+        r = httpx.get(f"http://{display_host(cfg.server.bind)}:{cfg.server.port}/healthz", timeout=2.0)
+        return f"responding (version {r.json().get('version', '?')})" if r.status_code == 200 else f"HTTP {r.status_code}"
+    except Exception as e:  # noqa: BLE001
+        return f"not responding ({type(e).__name__})"
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    from zordon import daemon  # noqa: PLC0415
+
+    path = daemon.log_path()
+    if not path.exists():
+        print(f"no log yet at {path}")
+        return EXIT_ERROR
+    print(daemon.tail(int(getattr(args, "n", 60))))
+    if getattr(args, "follow", False):
+        import time  # noqa: PLC0415
+
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            try:
+                while True:
+                    chunk = fh.read()
+                    if chunk:
+                        sys.stdout.write(chunk.decode("utf-8", "replace"))
+                        sys.stdout.flush()
+                    else:
+                        time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass
+    return EXIT_OK
+
+
+def cmd_service_install(args: argparse.Namespace) -> int:
+    from zordon import service  # noqa: PLC0415
+
+    extra = _serve_extra(args)
+    info = service.install(extra)
+    if info.kind == "none":
+        print(info.note)
+        return EXIT_MISSING
+    print(f"{info.kind} service {'active' if info.active else 'installed but not active'}: {info.path}")
+    if info.note:
+        print(f"  {info.note}")
+    return EXIT_OK if info.active else EXIT_ERROR
+
+
+def cmd_service_uninstall(args: argparse.Namespace) -> int:
+    from zordon import service  # noqa: PLC0415
+
+    info = service.uninstall()
+    print(f"{info.kind}: {info.note}" if info.kind != "none" else info.note)
+    return EXIT_OK
+
+
+def cmd_service_status(args: argparse.Namespace) -> int:
+    from zordon import service  # noqa: PLC0415
+
+    info = service.info()
+    if info.kind == "none":
+        print(info.note)
+        return EXIT_MISSING
+    state = "active" if info.active else ("installed, not active" if info.installed else "not installed")
+    print(f"{info.kind} service: {state}" + (f" ({info.path})" if info.installed else ""))
+    return EXIT_OK if info.active else EXIT_ERROR
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -506,9 +680,12 @@ def check_dependencies(*, need_tunnel: str | None, which: Any = None) -> None:
 
 def serve(cfg: Config, *, tunnel_provider: str | None, warm_up: bool = True, skip_update: bool = False) -> int:
     """Run the whole thing until a signal arrives. Returns the exit code."""
+    from zordon import daemon  # noqa: PLC0415
     from zordon.app import Agent  # noqa: PLC0415
     from zordon.transport.server import create_app, run_server, serve_in_thread  # noqa: PLC0415
 
+    if os.environ.get("ZORDON_DETACHED"):
+        daemon.write_pidfile_for_current_process()
     ensure_local_services(cfg)
     agent = Agent(cfg)
     for w in agent.warnings:
@@ -535,6 +712,8 @@ def serve(cfg: Config, *, tunnel_provider: str | None, warm_up: bool = True, ski
         code = e.code
     finally:
         shutdown(tunnel, stop_server, agent)
+        if os.environ.get("ZORDON_DETACHED"):
+            daemon.clear_pidfile_if_mine()
     return code
 
 

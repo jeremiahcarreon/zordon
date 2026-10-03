@@ -186,6 +186,21 @@ for per-sentence normalization as text streams.
 
 See `docs/providers.md` for every slot, model, and cost note.
 
+## Running in the background
+
+```bash
+zordon start            # detached; log in ~/.zordon/serve.log
+zordon status           # pid, URL, health, service state
+zordon logs -f
+zordon restart          # also picks up an installed update
+zordon stop
+```
+
+To start at login and restart on failure: `zordon service install` writes a systemd user unit
+(Linux) or a launchd agent (macOS), enables and starts it; `--tunnel` and `--bind` are passed
+through. `zordon service status|uninstall` manage it. On Linux, `loginctl enable-linger $USER`
+keeps it running after you log out. Containers without systemd use `zordon start`.
+
 ## Updates and health
 
 Installs track the GitHub repository until there is a PyPI release. On every `zordon serve`,

@@ -101,13 +101,14 @@ def make_router(config: Config) -> Router:
         log.warning("unknown providers.router=%r; using the jev chain", pref)
         pref = "jev"
     chain: list[Router] = [KeywordRouter()]
+    reasons: list[str] = []
 
     if pref == "jev":
-        jev = _try_jev(config)
+        jev = _try_jev(config, reasons)
         if jev is not None:
             chain.append(jev)
     if pref in ("jev", "anthropic"):
-        haiku = _try_haiku(config)
+        haiku = _try_haiku(config, reasons)
         if haiku is not None:
             chain.append(haiku)
     if pref == "ollama":
@@ -123,10 +124,13 @@ def make_router(config: Config) -> Router:
             pref,
         )
     log.info("active routers: %s", ", ".join(r.name for r in chain))
-    return FallbackRouter(chain, confidence_threshold=config.voice.router_confidence)
+    fb = FallbackRouter(chain, confidence_threshold=config.voice.router_confidence)
+    fb.skipped = reasons  # why configured providers are absent, for health and doctor
+    fb.preference = pref
+    return fb
 
 
-def _try_jev(config: Config) -> Router | None:
+def _try_jev(config: Config, reasons: list[str] | None = None) -> Router | None:
     try:
         from zordon.routing.typesafe import JevRouter  # noqa: PLC0415
 
@@ -137,10 +141,12 @@ def _try_jev(config: Config) -> Router | None:
         )
     except ProviderNotConfigured as e:
         log.info("jev router not configured: %s", e)
+        if reasons is not None:
+            reasons.append(f"jev: {e}")
         return None
 
 
-def _try_haiku(config: Config) -> Router | None:
+def _try_haiku(config: Config, reasons: list[str] | None = None) -> Router | None:
     try:
         from zordon.routing.anthropic import HaikuRouter  # noqa: PLC0415
 
@@ -150,6 +156,8 @@ def _try_haiku(config: Config) -> Router | None:
         )
     except ProviderNotConfigured as e:
         log.info("anthropic router not configured: %s", e)
+        if reasons is not None:
+            reasons.append(f"anthropic: {e}")
         return None
 
 

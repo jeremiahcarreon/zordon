@@ -369,12 +369,13 @@ def check_router(agent: Any) -> Item:
     else:
         names = [str(getattr(router, "name", "?") or "?")]
     if names == ["keyword"]:
-        return Item(
-            "router",
-            WARN,
-            "keyword router only: shim commands and yes/no work; everything else is typed to the agent",
-            FIX_ROUTER,
-        )
+        skipped = getattr(router, "skipped", None) or []
+        pref = getattr(router, "preference", None)
+        why = ("; ".join(str(r) for r in skipped)) if skipped else ""
+        detail = "keyword router only: shim commands and yes/no work; everything else is typed to the agent"
+        if why:
+            detail += f" (configured {pref or 'router'} unavailable: {why})"
+        return Item("router", WARN, detail, FIX_ROUTER)
     return Item("router", OK, " -> ".join(names))
 
 
