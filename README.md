@@ -194,6 +194,7 @@ zordon status           # pid, URL, health, service state
 zordon logs -f
 zordon restart          # also picks up an installed update
 zordon stop
+zordon start --tunnel   # detached with the public tunnel; `zordon status --qr` shows the URL and code
 ```
 
 To start at login and restart on failure: `zordon service install` writes a systemd user unit

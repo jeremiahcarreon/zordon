@@ -127,3 +127,18 @@ def test_service_install_systemd_writes_unit_and_enables(monkeypatch, tmp_path):
 def test_cli_stop_when_nothing_runs(capsys):
     assert main(["stop"]) == 0
     assert "not running" in capsys.readouterr().out
+
+
+def test_status_shows_the_tunnel_url_written_by_serve(monkeypatch, capsys):
+    from zordon import cli, daemon
+
+    cli._write_tunnel_url("https://quiet-ocean-1234.trycloudflare.com")
+    assert cli.tunnel_url_path().read_text().strip().endswith("trycloudflare.com")
+    monkeypatch.setattr(daemon, "status", lambda: daemon.Status(True, 4242, daemon.pid_path(), daemon.log_path()))
+    monkeypatch.setattr(cli, "_fetch_health", lambda cfg: "responding")
+    assert main(["status", "--qr"]) == 0
+    out = capsys.readouterr().out
+    assert "tunnel: https://quiet-ocean-1234.trycloudflare.com" in out and "zordon token show" in out
+    assert "█" in out or "▄" in out  # the QR
+    cli._write_tunnel_url(None)
+    assert not cli.tunnel_url_path().exists()

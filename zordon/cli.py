@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--tunnel", nargs="?", const="config", default=None, metavar="PROVIDER")
     rs.set_defaults(func=cmd_restart)
     stt = sub.add_parser("status", help="is zordon running, where, and is it healthy")
+    stt.add_argument("--qr", action="store_true", help="also print the tunnel URL as a QR code")
     stt.set_defaults(func=cmd_status)
     lg = sub.add_parser("logs", help="show the detached zordon's log")
     lg.add_argument("-n", type=int, default=60, help="lines (default 60)")
@@ -344,6 +345,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         health = _fetch_health(cfg)
         if health:
             print(f"  health: {health}")
+        tp = tunnel_url_path()
+        if tp.exists():
+            url = tp.read_text().strip()
+            print(f"  tunnel: {url}   (token: zordon token show)")
+            if getattr(args, "qr", False) and url:
+                from zordon.transport.qr import terminal_qr  # noqa: PLC0415
+
+                print(terminal_qr(url))
     else:
         print("zordon is not running." + (" (stale pid file removed)" if st.stale else ""))
         if st.stale:
@@ -736,7 +745,27 @@ def start_tunnel(agent: Any, provider: str, port: int) -> Any:
     print(terminal_qr(url))
     print("Scan the code, then enter the token from `zordon token show`.")
     agent.set_tunnel_url(url)
+    _write_tunnel_url(url)
     return tunnel
+
+
+def tunnel_url_path() -> Path:
+    return paths.zordon_home() / "tunnel.url"
+
+
+def _write_tunnel_url(url: str | None) -> None:
+    """Keep the live tunnel URL where `zordon status` can show it (the detached server has no
+    terminal). Removed on shutdown."""
+    p = tunnel_url_path()
+    try:
+        if url:
+            paths.ensure_private_dir(p.parent)
+            p.write_text(url + "\n")
+            os.chmod(p, 0o600)
+        else:
+            p.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def wait_for_signal(signals: Sequence[int] = (signal.SIGINT, signal.SIGTERM)) -> None:
@@ -773,6 +802,7 @@ def shutdown(tunnel: Any, stop_server: Any, agent: Any) -> None:
             tunnel.stop()
         except Exception:  # noqa: BLE001
             log.exception("tunnel stop failed")
+        _write_tunnel_url(None)
     if stop_server is not None:
         try:
             stop_server()
