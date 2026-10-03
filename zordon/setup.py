@@ -516,7 +516,22 @@ def next_steps(c: Choices, cfg: Config) -> str:
         "Then open the page, pick or start a session, tap Talk.",
         "Re-run this any time with `zordon setup`; `zordon doctor` checks everything.",
     ]
+    hint = path_hint()
+    if hint:
+        lines += ["", hint]
     return "\n".join(lines) + "\n"
+
+
+def path_hint() -> str:
+    """When the installer had to add zordon's directory to PATH itself, the user's own shell
+    does not have it yet. ZORDON_PATH_HINT carries the directory from install.sh."""
+    d = os.environ.get("ZORDON_PATH_HINT", "").strip()
+    if not d:
+        return ""
+    env_file = Path(d) / "env"
+    if env_file.exists():
+        return f"This shell cannot see `zordon` yet. Run:  source {env_file}   (or open a new terminal)."
+    return f'This shell cannot see `zordon` yet. Run:  export PATH="{d}:$PATH"   (or open a new terminal).'
 
 
 def run(

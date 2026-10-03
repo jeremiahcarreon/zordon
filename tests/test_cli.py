@@ -416,3 +416,16 @@ def test_core_dependency_bounds():
     assert any(d.startswith("faster-whisper") for d in core)
     assert project["optional-dependencies"]["local"] == []  # kept as an alias only
     assert project["optional-dependencies"]["jev"] == ["typesafe-sdk>=0.7.2,<0.8"]
+
+
+def test_setup_summary_is_printed_after_the_tui_closes(monkeypatch, capsys):
+    """The token and the serve command must land in the plain terminal, where they can be copied."""
+    from zordon import cli, paths
+
+    cfg = Config.default()
+    cfg.save(paths.config_path())
+    monkeypatch.setattr(cli, "want_tui", lambda args: True)
+    monkeypatch.setattr(cli, "run_setup_tui_or_none", lambda *a, **k: 0)
+    assert cli.main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert cfg.server.token in out and "Start with:  zordon serve" in out

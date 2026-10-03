@@ -304,3 +304,14 @@ def test_run_actions_reports_when_the_ollama_server_cannot_start(monkeypatch):
     c = wiz.Choices(normalizer="ollama", pull_ollama_model=True, download_models=False, speech="later")
     problems = wiz.run_actions(c, Config.default(), io.StringIO(), runner=lambda *a, **k: None)
     assert problems and "server is not running" in problems[0]
+
+
+def test_path_hint_only_when_the_installer_extended_path(monkeypatch, tmp_path):
+    monkeypatch.delenv("ZORDON_PATH_HINT", raising=False)
+    assert wiz.path_hint() == ""
+    monkeypatch.setenv("ZORDON_PATH_HINT", str(tmp_path))
+    assert 'export PATH="' in wiz.path_hint()
+    (tmp_path / "env").write_text("export PATH=...\n")
+    assert f"source {tmp_path / 'env'}" in wiz.path_hint()
+    cfg = Config.default()
+    assert "cannot see `zordon` yet" in wiz.next_steps(wiz.Choices(), cfg)

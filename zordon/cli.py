@@ -241,6 +241,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
         code = run_setup_tui_or_none(config_path, do_actions=do_actions, serve=serve_now)
         if code is not None:
+            print_setup_summary(config_path)
             return code
     try:
         _cfg, _choices, problems = wizard.run(config_path, assume_yes=bool(getattr(args, "yes", False)), do_actions=do_actions)
@@ -270,6 +271,24 @@ def cmd_update(args: argparse.Namespace) -> int:
     ok, msg = upd.apply(channel)
     print(msg)
     return EXIT_OK if ok else EXIT_MISSING
+
+
+def print_setup_summary(config_path: Path | None) -> None:
+    """After the full-screen setup closes, leave the token, the serve command and the PATH
+    hint in the plain terminal, where they can be selected and copied."""
+    from zordon import setup as wizard  # noqa: PLC0415
+
+    target = config_path or paths.config_path()
+    if not target.exists():
+        return
+    try:
+        cfg = Config.load(target)
+    except Exception:  # noqa: BLE001
+        return
+    choices = wizard.Choices()
+    if cfg.server.bind not in ("127.0.0.1", "localhost", "::1"):
+        choices.access = "lan"
+    print(wizard.next_steps(choices, cfg), end="")
 
 
 def start_update_check(agent: Any, cfg: Config, *, skip: bool) -> None:

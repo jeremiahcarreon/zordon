@@ -131,9 +131,10 @@ if ! have uv && [ ! -x "$BIN_DIR/uv" ]; then
 else
   done_ "uv already present"
 fi
+PATH_HINT=""
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) PATH="$BIN_DIR:$PATH"; export PATH ;;
+  *) PATH="$BIN_DIR:$PATH"; export PATH; PATH_HINT="$BIN_DIR" ;;
 esac
 have uv || die "uv did not install; see https://docs.astral.sh/uv/getting-started/installation/"
 
@@ -153,13 +154,14 @@ spin "Installing zordon into its own environment" zordon_install
 TOOL_BIN="$(uv tool dir --bin 2>/dev/null || printf '%s' "$BIN_DIR")"
 case ":$PATH:" in
   *":$TOOL_BIN:"*) ;;
-  *) PATH="$TOOL_BIN:$PATH"; export PATH ;;
+  *) PATH="$TOOL_BIN:$PATH"; export PATH; PATH_HINT="${PATH_HINT:-$TOOL_BIN}" ;;
 esac
 have zordon || die "zordon installed but is not on PATH; add $TOOL_BIN to PATH and run: zordon setup"
 done_ "zordon $(zordon --version 2>/dev/null | awk '{print $2}') ready"
 
 # ---- 4. guided setup -------------------------------------------------------------------
 export ZORDON_TOOL_MANAGER=uv
+[ -n "$PATH_HINT" ] && export ZORDON_PATH_HINT="$PATH_HINT"
 if [ -n "$INSTALLED_UV" ]; then
   export ZORDON_INSTALLED_UV=1 UV_INSTALL_DIR="$BIN_DIR"
 fi
@@ -167,6 +169,7 @@ fi
 if [ -n "${ZORDON_NO_SETUP:-}" ]; then
   say ""
   say "  Skipping setup (ZORDON_NO_SETUP set). Run: ${B}zordon setup${R}"
+  [ -n "$PATH_HINT" ] && say "  This shell cannot see zordon yet: ${B}source $PATH_HINT/env${R} (or open a new terminal)."
   exit 0
 fi
 
