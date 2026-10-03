@@ -492,7 +492,7 @@ def test_no_focused_session(tmp_path: Path):
     assert h.sessions.called("focus") == [("s2",)]
     h.sessions._focused = None
     h.say("run the tests")
-    assert "No session is focused" in h.said()[-1]
+    assert h.said()[-1].startswith("No project is open.")  # work goes nowhere in admin mode
     assert h.sessions.called("send_text") == []
     h.say("stop")
     assert h.said()[-1] == "No session is focused."

@@ -132,6 +132,43 @@ _EXTRA_PHRASES: dict[str, tuple[str, ...]] = {
     ),
     "delete": ("delete this session", "kill the session", "delete session", "kill session", "kill it", "delete it"),
     "detach": ("detach from this session", "stop following", "unfollow", "stop following this session", "detach from the session"),
+    "list_projects": (
+        "list projects",
+        "list the projects",
+        "list my projects",
+        "what projects do i have",
+        "what projects are there",
+        "which projects do i have",
+        "show projects",
+        "show me the projects",
+        "show my projects",
+        "projects",
+        "read out the projects",
+    ),
+    "new_project": (
+        "new project",
+        "start a new project",
+        "create a new project",
+        "make a new project",
+        "start new project",
+        "begin a new project",
+    ),
+    "admin": (
+        "pause",
+        "pause the project",
+        "pause this project",
+        "admin mode",
+        "go to admin mode",
+        "admin",
+        "back to projects",
+        "go back to projects",
+        "leave the project",
+        "leave this project",
+        "close the project",
+        "close this project",
+        "stop working on this",
+        "put this project away",
+    ),
 }
 
 # Pattern-based commands: things with an argument the user says inline.
@@ -161,6 +198,12 @@ _FOCUS_PATTERN = re.compile(
     r"^(?:focus|select)(?: on)?(?: the)? (?P<name2>.+?)(?P<cue2> session| project)?$"
 )
 _FOCUS_NOISE = frozenset({"next", "previous", "other", "last", "first"})
+# "open the api project", "continue zordon", "work on the website project": a saved
+# project by name. Checked before the focus pattern so a project that is not running
+# is started rather than "not found".
+_PROJECT_PATTERN = re.compile(
+    r"^(?:open|continue|resume|work on|reopen|load|start)(?: up)?(?: the| my)?(?: project)? (?P<name>.+?)(?: project)?$"
+)
 
 # Transcript-query cues: anchored at the start after optional lead-ins. All of
 # these ask ABOUT something that already happened; none asks for new work.
@@ -342,9 +385,30 @@ class KeywordRouter:
                 return self._shim("set_permission_mode", PATTERN_CONFIDENCE, None)
             return self._shim("set_permission_mode", PATTERN_CONFIDENCE if arg else WEAK_CONFIDENCE, arg)
 
+        project = self._match_project(sq, ctx)
+        if project is not None:
+            return project
         focus = self._match_focus(sq, ctx)
         if focus is not None:
             return focus
+        return None
+
+    def _match_project(self, sq: str, ctx: RouteContext) -> RouteResult | None:
+        names = list(getattr(ctx, "project_names", []) or [])
+        m = _PROJECT_PATTERN.match(sq)
+        if not m:
+            return None
+        name = (m.group("name") or "").strip()
+        if not name or name in ("a new project", "new project"):
+            return None
+        hits = fuzzy_match_sessions(name, names) if names else []
+        if len(hits) == 1:
+            return self._shim("open_project", PATTERN_CONFIDENCE, hits[0])
+        if hits:
+            return self._shim("open_project", PATTERN_CONFIDENCE, name)
+        if sq.startswith(("open", "continue", "reopen", "load")) and (" project" in sq or names):
+            # Named like a project but no match: the dispatcher reads the list back.
+            return self._shim("open_project", FOCUS_CUE_CONFIDENCE, name)
         return None
 
     def _match_focus(self, sq: str, ctx: RouteContext) -> RouteResult | None:

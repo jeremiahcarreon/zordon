@@ -90,6 +90,15 @@ from zordon.bus import (
     StateChanged,
 )
 from zordon.config import Config
+from zordon.projects import (
+    BYPASS_MODE,
+    Project,
+    ProjectError,
+    ProjectStore,
+    create_directory,
+    inside_home,
+    new_project,
+)
 from zordon.session.prompts import PromptMatch
 from zordon.session.screen import Screen, diff_screens, held_tail
 from zordon.session.state import Observation, next_state
@@ -128,6 +137,24 @@ def stall_text(agent_name: str) -> str:
 
 def no_tui_text(agent_name: str) -> str:
     return f"{agent_name} isn't on screen in that pane, so I won't type into it. Resume the session first."
+
+
+def scope_reason(path: str, scope_dir: str, agent_home: Path) -> str | None:
+    """None when ``path`` may be edited; else the reason to deny (decision 0018)."""
+    if not path:
+        return "Zordon could not tell which file this edits; edits are limited to the project folder"
+    try:
+        raw = os.path.expanduser(path) if path.startswith("~") else path
+        if not os.path.isabs(raw):
+            raw = os.path.join(scope_dir, raw)  # Claude Code resolves relative paths against the cwd
+        candidate = os.path.realpath(raw)
+    except (OSError, ValueError):
+        return "Zordon could not resolve this path; edits are limited to the project folder"
+    allowed = [os.path.realpath(scope_dir), os.path.realpath(str(agent_home))]
+    for root in allowed:
+        if candidate == root or candidate.startswith(root.rstrip("/") + "/"):
+            return None
+    return f"This project is limited to {scope_dir}; {path} is outside it. Zordon blocked the edit."
 
 
 def no_modes_text(agent_name: str) -> str:
@@ -233,6 +260,9 @@ class Session:
     normal_signature: int | None = None
     exit_polls: int = 0  # consecutive polls that looked like the agent is gone
     quiet_first_poll: bool = False  # attached to a pane that already has content: do not speak it
+    project_id: str | None = None  # the project this session belongs to (decision 0018)
+    bypass_allowed: bool = False  # launched for a project created in bypass mode: its warning may be accepted
+    scope_dir: str | None = None  # file edits outside this directory (and ~/.claude) are denied by the hook
 
     @property
     def jsonl(self) -> TranscriptSource | None:
@@ -290,6 +320,7 @@ class SessionManager(threading.Thread):
             if callable(bind):
                 bind(tmux=self.tmux, zordon_home=self.zordon_home, claude_home=self.claude_home)
         self.sessions: dict[str, Session] = {}
+        self.projects = ProjectStore(self.zordon_home / "projects.json")
         self._lock = threading.RLock()
         self._commands: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...], Future[Any]] | None] = (
             queue.Queue()
@@ -952,19 +983,24 @@ class SessionManager(threading.Thread):
             return None
         return self._call(self._do_start, directory, permission_mode, agent, timeout=10.0)
 
-    def _do_start(self, directory: str, permission_mode: str | None, agent: str | None = None) -> str:
+    def _do_start(self, directory: str, permission_mode: str | None, agent: str | None = None, project: Project | None = None) -> str:
         adapter = self.adapter_for(agent)
         cwd = str(Path(directory).expanduser())
         if not os.path.isdir(cwd):
             raise SessionError(f"{directory} is not a directory")
-        permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
+        bypass = project is not None and project.bypass
+        if bypass:
+            permission_mode = BYPASS_MODE
+        else:
+            permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
         sid = str(uuid.uuid4())
+        scope = project is not None and project.scope_edits
         try:
-            spec = adapter.new_session(sid, cwd, permission_mode, self._hook_request(sid))
-        except NotImplementedError as e:
+            spec = adapter.new_session(sid, cwd, permission_mode, self._hook_request(sid, scope=scope), allow_bypass=bypass)
+        except (NotImplementedError, ValueError) as e:
             raise SessionError(str(e)) from e
         target = self._open_pane(cwd, sid, spec)
-        self._register(sid, cwd, target, spec, adapter, owned=True, info=None, detail="starting")
+        self._register(sid, cwd, target, spec, adapter, owned=True, info=None, detail="starting", project=project)
         log.info("started %s session %s in %s (%s)", adapter.info.key, sid[:8], cwd, target)
         return sid
 
@@ -979,11 +1015,13 @@ class SessionManager(threading.Thread):
     def resume(self, session_id: str, permission_mode: str | None = None, agent: str | None = None) -> None:
         self._call(self._do_resume, session_id, permission_mode, agent, timeout=10.0)
 
-    def _do_resume(self, session_id: str, permission_mode: str | None, agent: str | None = None) -> None:
+    def _do_resume(self, session_id: str, permission_mode: str | None, agent: str | None = None, project: Project | None = None) -> None:
         with self._lock:
             existing = self.sessions.get(session_id)
             if existing is not None and existing.attached and existing.state is not SessionState.DETACHED:
-                self._focused = session_id
+                self._set_focus(session_id)
+                if project is not None:
+                    existing.project_id = project.id
                 return
         adapter = existing.adapter if existing is not None and agent is None else self.adapter_for(agent)
         info = adapter.find_session(session_id)
@@ -1008,6 +1046,7 @@ class SessionManager(threading.Thread):
                     owned=False,
                     info=info,
                     detail="attached to a running pane",
+                    project=project,
                 )
                 log.info("attached to running session %s at %s", session_id[:8], target)
                 return
@@ -1020,7 +1059,12 @@ class SessionManager(threading.Thread):
         cwd = (info.cwd if info and info.cwd else None) or (existing.cwd if existing else None)
         if not cwd or not os.path.isdir(cwd):
             raise UnknownSession("I can't find that session's project directory.")
-        permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
+        bypass = project is not None and project.bypass
+        if bypass:
+            permission_mode = BYPASS_MODE
+        else:
+            permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
+        scope = project is not None and project.scope_edits
         if existing is not None and existing.owned and existing.target:
             try:
                 if self.tmux.pane_exists(existing.target):
@@ -1028,13 +1072,15 @@ class SessionManager(threading.Thread):
             except TmuxError as e:
                 log.debug("old pane for %s not killed: %s", session_id[:8], e)
         try:
-            spec = adapter.resume_session(session_id, cwd, permission_mode, self._hook_request(session_id))
-        except NotImplementedError as e:
+            spec = adapter.resume_session(
+                session_id, cwd, permission_mode, self._hook_request(session_id, scope=scope), allow_bypass=bypass
+            )
+        except (NotImplementedError, ValueError) as e:
             raise SessionError(str(e)) from e
         if info is None:
             info = AgentSessionInfo(agent=adapter.info.key, session_id=session_id, cwd=cwd)
         target = self._open_pane(cwd, session_id, spec)
-        self._register(session_id, cwd, target, spec, adapter, owned=True, info=info, detail="resuming")
+        self._register(session_id, cwd, target, spec, adapter, owned=True, info=info, detail="resuming", project=project)
         log.info("resumed %s session %s in %s (%s)", adapter.info.key, session_id[:8], cwd, target)
 
     def attach(self, target: str, agent: str = "generic", cwd: str | None = None) -> str:
@@ -1080,7 +1126,7 @@ class SessionManager(threading.Thread):
             pass
         return None
 
-    def _hook_request(self, sid: str) -> HookRequest | None:
+    def _hook_request(self, sid: str, *, scope: bool = False) -> HookRequest | None:
         """What an adapter with out-of-band prompt signals needs; None when hooks are off."""
         if not self.hook_port or not self.hook_secret:
             return None
@@ -1090,6 +1136,7 @@ class SessionManager(threading.Thread):
             host=self.config.server.bind,
             zordon_home=self.zordon_home,
             session_id=sid,
+            scope=scope,
         )
 
     def _open_pane(self, cwd: str, sid: str, spec: LaunchSpec) -> str:
@@ -1114,9 +1161,12 @@ class SessionManager(threading.Thread):
         owned: bool,
         info: AgentSessionInfo | None,
         detail: str,
+        project: Project | None = None,
     ) -> None:
         now = self.clock()
         settings_paths = list(spec.settings_paths) if spec is not None else []
+        if project is None:
+            project = self.projects.by_session(sid) or (self.projects.by_directory(cwd) if cwd else None)
         with self._lock:
             s = self.sessions.get(sid)
             if s is None:
@@ -1151,10 +1201,20 @@ class SessionManager(threading.Thread):
             s.last_active = time.time()
             s.last_output_ts = now
             s.title = os.path.basename(cwd.rstrip("/")) if cwd else sid[:8]
+            if project is not None:
+                s.project_id = project.id
+                s.bypass_allowed = project.bypass
+                s.scope_dir = project.directory if project.scope_edits else None
+                s.title = project.name or s.title
             if self._focused is None or self._focused not in self.sessions:
                 self._set_focus(sid)
             else:
                 s.focused = sid == self._focused
+        if project is not None:
+            try:
+                self.projects.update(project, session_id=sid, tmux_target=target, last_used_at=time.time())
+            except OSError as e:
+                log.warning("could not save projects: %s", e)
         self.bus.publish(StateChanged(sid, SessionState.WORKING, detail))
 
     def _remove_settings(self, s: Session) -> None:
@@ -1448,6 +1508,22 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.TRUST)
         if m is None:
             return False
+        if m.extra.get("dialog") == "bypass" and not s.bypass_allowed:
+            # The warning appeared in a session that was not launched for a bypass project
+            # (someone started claude that way in an attached pane). Zordon never accepts
+            # it on the user's behalf there; the Escape path below leaves the dialog alone.
+            self.bus.publish(
+                Notice(
+                    text=(
+                        f"{s.display_name} is asking to run without permission checks, but this project was not set up "
+                        "for that. Say no to exit, or create the project in bypass mode."
+                    ),
+                    level="warning",
+                    session_id=session_id,
+                    speak=True,
+                )
+            )
+            return False
         yes = s.adapter.trust_accept_option(m)
         if yes is None:
             return False
@@ -1511,6 +1587,199 @@ class SessionManager(threading.Thread):
         self.tmux.send_literal(s.target, answer)
         self.tmux.send_enter(s.target)
         log.info("%s: answered inline prompt with %r", s.session_id[:8], answer)
+
+    # ---- projects (decision 0018) ------------------------------------------------------------------
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        """Every project with its live state, most recently used first."""
+        return self._call(self._do_list_projects, timeout=5.0)
+
+    def _do_list_projects(self) -> list[dict[str, Any]]:
+        out = []
+        with self._lock:
+            live = {s.project_id: s for s in self.sessions.values() if s.project_id and s.attached}
+        for p in self.projects.list():
+            s = live.get(p.id)
+            running = s is not None and s.state is not SessionState.DETACHED
+            if not running and p.tmux_target:
+                try:
+                    running = self.tmux.pane_exists(p.tmux_target)
+                except TmuxError:
+                    running = False
+            out.append(self._project_row(p, s, running))
+        return out
+
+    def _project_row(self, p: Project, s: Session | None, running: bool) -> dict[str, Any]:
+        return {
+            "id": p.id,
+            "name": p.name,
+            "directory": p.directory,
+            "agent": p.agent,
+            "permission_mode": p.permission_mode,
+            "scope_edits": p.scope_edits,
+            "running": running,
+            "session_id": s.session_id if s is not None else None,
+            "focused": s is not None and s.focused,
+            "state": s.state.value if s is not None else None,
+            "last_used": p.last_used_at,
+            "exists": os.path.isdir(p.directory),
+        }
+
+    def create_project(
+        self,
+        parent: str,
+        name: str,
+        *,
+        agent: str | None = None,
+        permission_mode: str = "default",
+        scope_edits: bool = True,
+        existing: bool = False,
+    ) -> dict[str, Any]:
+        """Make the folder (or take an existing one), record the project, open it, focus it."""
+        return self._call(self._do_create_project, parent, name, agent, permission_mode, scope_edits, existing, timeout=15.0)
+
+    def _do_create_project(
+        self, parent: str, name: str, agent: str | None, permission_mode: str, scope_edits: bool, existing: bool
+    ) -> dict[str, Any]:
+        agent_key = (agent or self.default_agent).strip().lower()
+        if agent_key not in self.adapters:
+            raise SessionError(f"unknown agent {agent!r}")
+        if existing:
+            directory = str(Path(parent).expanduser().resolve())
+            if not inside_home(directory):
+                raise SessionError("Projects live inside your home directory.")
+            if not os.path.isdir(directory):
+                raise SessionError(f"{directory} is not a folder.")
+            if self.projects.by_directory(directory) is not None:
+                raise SessionError("That folder is already a project; continue it instead.")
+            display = (name or "").strip() or os.path.basename(directory.rstrip("/"))
+        else:
+            try:
+                directory = create_directory(parent, name)
+            except ProjectError as e:
+                raise SessionError(str(e)) from e
+            display = name.strip()
+        if permission_mode == BYPASS_MODE and agent_key != "claude-code":
+            raise SessionError(f"{self.adapters[agent_key].info.display_name} projects cannot run without approvals yet.")
+        try:
+            project = new_project(directory, name=display, agent=agent_key, permission_mode=permission_mode, scope_edits=scope_edits)
+        except ProjectError as e:
+            raise SessionError(str(e)) from e
+        self.projects.add(project)
+        log.info("project %s created at %s (%s, %s)", project.name, directory, agent_key, permission_mode)
+        try:
+            self._do_open_project(project.id)
+        except SessionError:
+            self.projects.remove(project.id)
+            raise
+        s = self.sessions.get(project.session_id or "")
+        return self._project_row(project, s, s is not None)
+
+    def open_project(self, project_id: str) -> dict[str, Any]:
+        """Continue a project: reconnect to its pane when it still runs, else resume its last
+        session, else start a fresh one in its folder. Focuses it."""
+        return self._call(self._do_open_project, project_id, timeout=15.0)
+
+    def _do_open_project(self, project_id: str) -> dict[str, Any]:
+        project = self.projects.get(project_id)
+        if project is None:
+            raise UnknownSession("I don't know that project.")
+        if not os.path.isdir(project.directory):
+            raise SessionError(f"The folder {project.directory} is gone. Forget the project or restore the folder.")
+        adapter = self.adapters.get(project.agent) or self.adapter_for(None)
+        # 1. a session of ours that is still attached
+        with self._lock:
+            for s in self.sessions.values():
+                if s.project_id == project.id and s.attached and s.state is not SessionState.DETACHED:
+                    self._set_focus(s.session_id)
+                    self.projects.touch(project)
+                    return self._project_row(project, s, True)
+        # 2. the pane it last ran in, still alive
+        if project.tmux_target:
+            alive = False
+            try:
+                alive = self.tmux.pane_exists(project.tmux_target)
+            except TmuxError:
+                alive = False
+            if alive:
+                sid = project.session_id or str(uuid.uuid4())
+                info = AgentSessionInfo(agent=adapter.info.key, session_id=sid, cwd=project.directory, tmux_target=project.tmux_target)
+                self._register(sid, project.directory, project.tmux_target, None, adapter, owned=False, info=info, detail="reconnected", project=project)
+                log.info("project %s: reconnected to %s", project.name, project.tmux_target)
+                return self._project_row(project, self.sessions[sid], True)
+        # 3. resume the last conversation, if the agent still has it
+        if project.session_id and adapter.supports_resume() and adapter.find_session(project.session_id) is not None:
+            try:
+                self._do_resume(project.session_id, project.permission_mode, project.agent, project=project)
+                s = self.sessions.get(project.session_id)
+                return self._project_row(project, s, s is not None)
+            except (SessionBusy, UnknownSession, SessionError) as e:
+                log.info("project %s: resume failed (%s); starting fresh", project.name, e)
+        # 4. a new conversation in the folder
+        sid = self._do_start(project.directory, project.permission_mode, project.agent, project=project)
+        return self._project_row(project, self.sessions.get(sid), True)
+
+    def admin(self) -> None:
+        """Leave work mode: nothing focused, every pane keeps running (decision 0018)."""
+        self._call(self._do_admin, timeout=5.0)
+
+    def _do_admin(self) -> None:
+        with self._lock:
+            self._set_focus(None, auto=True)
+        self._flush_refocus()
+
+    def forget_project(self, project_id: str) -> bool:
+        """Drop the project record. Files and any running pane are left alone."""
+        return self._call(self._do_forget_project, project_id, timeout=5.0)
+
+    def _do_forget_project(self, project_id: str) -> bool:
+        with self._lock:
+            for s in self.sessions.values():
+                if s.project_id == project_id:
+                    s.project_id = None
+        return self.projects.remove(project_id)
+
+    def project_for_session(self, session_id: str) -> Project | None:
+        with self._lock:
+            s = self.sessions.get(session_id)
+        if s is None or not s.project_id:
+            return None
+        return self.projects.get(s.project_id)
+
+    def scope_decision(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Answer a PreToolUse scope hook: deny a file edit outside the project directory.
+
+        The payload is Claude Code's hook input (``session_id``, ``tool_name``,
+        ``tool_input``). Allowed: anything under the project directory, and the
+        agent's own home (``~/.claude``, where its scratchpad lives). Everything
+        else, including a path the hook cannot interpret, is denied: this hook only
+        ever narrows. An empty answer means "no opinion" (Claude Code decides as usual).
+        """
+        sid = str(payload.get("session_id") or "")
+        with self._lock:
+            s = self.sessions.get(sid)
+            scope = s.scope_dir if s is not None else None
+        if s is None:
+            # Unknown session: find the project by the pane's cwd if Claude Code sent it.
+            cwd = str(payload.get("cwd") or "")
+            p = self.projects.by_directory(cwd) if cwd else None
+            scope = p.directory if p is not None and p.scope_edits else None
+        if not scope:
+            return {}
+        tool_input = payload.get("tool_input") or {}
+        path = ""
+        if isinstance(tool_input, dict):
+            path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path") or "")
+        reason = scope_reason(path, scope, self.claude_home)
+        if reason is None:
+            return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
 
     # ---- SessionControl: permission mode --------------------------------------------------------
 

@@ -320,7 +320,7 @@ def test_no_focused_session_speaks_an_error(agent: A.Agent):
     ev = Events(agent.bus)
     agent.submit_text("hello", "c")
     row = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken")
-    assert "No session is focused" in row.text
+    assert row.text.startswith("No project is open.")
 
 
 # ---- prompts are spoken ------------------------------------------------------------------------

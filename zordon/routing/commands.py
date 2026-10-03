@@ -78,6 +78,28 @@ SHIM_COMMANDS: tuple[ShimCommand, ...] = (
         "stop following the focused session but leave it running",
         ("detach", "leave this session running"),
     ),
+    # projects (decision 0018)
+    ShimCommand(
+        "open_project",
+        "continue a saved project by name: reconnects to it or starts it again",
+        ("open the <name> project", "continue <name>", "work on <name>"),
+        takes_argument="project",
+    ),
+    ShimCommand(
+        "list_projects",
+        "read out the saved projects",
+        ("what projects do I have", "list projects"),
+    ),
+    ShimCommand(
+        "new_project",
+        "start a new project (the app walks through folder and settings)",
+        ("start a new project", "new project"),
+    ),
+    ShimCommand(
+        "admin",
+        "pause work: leave the current project focused on nothing, every pane keeps running",
+        ("pause", "admin mode", "back to projects", "leave the project"),
+    ),
 )
 
 BY_NAME = {c.name: c for c in SHIM_COMMANDS}

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import Any
 
-from zordon.bus import Bus, LineKind, PromptKind, SessionState, Utterance
+from zordon.bus import Bus, LineKind, Notice, PromptKind, SessionState, Utterance
 from zordon.config import VERBOSITY_LEVELS, Config
 from zordon.routing import commands
 from zordon.routing.base import (
@@ -258,6 +258,7 @@ class DispatcherThread(threading.Thread):
             focused_session=sid,
             session_names=self._session_names(),
             commands=list(commands.COMMAND_NAMES),
+            project_names=self._project_names(),
         )
         if state == SessionState.AWAITING_PERMISSION.value:
             if not self._prompt_safe_shim(text, sid, ctx):
@@ -411,12 +412,17 @@ class DispatcherThread(threading.Thread):
     # ---- shim commands -----------------------------------------------------------------
 
     def _no_session(self, text: str) -> None:
-        kw = self._keyword.route(text, RouteContext(session_state="none", session_names=self._session_names()))
+        kw = self._keyword.route(
+            text, RouteContext(session_state="none", session_names=self._session_names(), project_names=self._project_names())
+        )
         if kw.destination == "shim_command" and kw.command:
             # Commands that need a session are refused inside _execute.
             self._execute(kw.command, kw.argument, text, None, None)
             return
-        self._speak("No session is focused. Say list sessions, or pick one in the app.", None, "error")
+        if self._project_names():
+            self._speak("No project is open. Say open project and its name, or list projects.", None, "error")
+            return
+        self._speak("No project is open. Tap Start a new project in the app.", None, "error")
 
     def _execute(
         self, command: str | None, argument: str | None, text: str, sid: str | None, ctx: RouteContext | None
@@ -508,6 +514,75 @@ class DispatcherThread(threading.Thread):
         self._speak(
             f"I don't see a session called {argument}. {self._names_sentence(summaries)}", sid, "error"
         )
+
+    # ---- projects (decision 0018) ------------------------------------------------------
+
+    def _projects_list(self) -> list[dict[str, Any]]:
+        lister = getattr(self.sessions, "list_projects", None)
+        if not callable(lister):
+            return []
+        try:
+            return [dict(p) for p in lister() or []]
+        except Exception:  # noqa: BLE001
+            log.exception("sessions.list_projects failed")
+            return []
+
+    def _project_names(self) -> list[str]:
+        return [str(p.get("name") or "") for p in self._projects_list() if p.get("name")]
+
+    def _cmd_open_project(self, argument: str | None, text: str, sid: str | None) -> None:
+        projects = self._projects_list()
+        if not projects:
+            self._speak("There are no saved projects yet. Tap Start a new project in the app.", sid, "error")
+            return
+        names = [str(p["name"]) for p in projects]
+        if not argument:
+            self._speak(f"Which project? {_names_sentence_from(names)}", sid, "question")
+            return
+        hits = fuzzy_match_sessions(argument, names)
+        if len(hits) != 1:
+            if len(hits) > 1:
+                self._speak(f"Which one: {' or '.join(hits)}?", sid, "question")
+            else:
+                self._speak(f"I don't have a project called {argument}. {_names_sentence_from(names)}", sid, "error")
+            return
+        project = next(p for p in projects if p["name"] == hits[0])
+        try:
+            row = self.sessions.open_project(str(project["id"]))
+        except Exception as e:  # noqa: BLE001
+            self._speak(f"I couldn't open {hits[0]}: {e}", sid, "error")
+            return
+        new_sid = row.get("session_id") if isinstance(row, dict) else None
+        self._speak(f"Opened {hits[0]}.", new_sid, "ack")
+
+    def _cmd_list_projects(self, argument: str | None, text: str, sid: str | None) -> None:
+        projects = self._projects_list()
+        if not projects:
+            self._speak("There are no saved projects. Tap Start a new project in the app.", sid, "answer")
+            return
+        parts = [f"{p['name']}, running" if p.get("running") else str(p["name"]) for p in projects]
+        count = len(projects)
+        noun = "project" if count == 1 else "projects"
+        self._speak(f"There {'is' if count == 1 else 'are'} {count} {noun}: " + "; ".join(parts) + ".", sid, "answer")
+
+    def _cmd_new_project(self, argument: str | None, text: str, sid: str | None) -> None:
+        # The walkthrough (folder, agent, how much to ask) is visual; voice only points at it.
+        self._speak("Tap Start a new project in the app and I'll walk you through it.", sid, "ack")
+        try:
+            self.bus.publish(Notice(text="Start a new project: tap the button in Projects.", level="info", session_id=sid or ""))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _cmd_admin(self, argument: str | None, text: str, sid: str | None) -> None:
+        admin = getattr(self.sessions, "admin", None)
+        if not callable(admin):
+            self._speak("I can't pause here.", sid, "error")
+            return
+        admin()
+        if sid is None:
+            self._speak("Nothing is open.", None, "ack")
+        else:
+            self._speak("Paused. The project keeps running; say open project and its name to come back.", None, "ack")
 
     def _cmd_list_sessions(self, argument: str | None, text: str, sid: str | None) -> None:
         summaries = self._sessions_list()
@@ -679,6 +754,14 @@ def _option_label(option: Any) -> str:
 def _prompt_kind(prompt: Any) -> str:
     k = _get(prompt, "kind")
     return str(getattr(k, "value", k) or "")
+
+
+def _names_sentence_from(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"The only project is {names[0]}."
+    return "Projects: " + ", ".join(names[:-1]) + f", and {names[-1]}."
 
 
 def _resolve_sessions(query: str, summaries: Sequence[Any], focused: str | None) -> list[Any]:

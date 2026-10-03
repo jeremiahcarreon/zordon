@@ -238,6 +238,36 @@ def create_app(
             log.exception("hook_event failed")
         return {}
 
+    @app.post("/hooks/scope")
+    async def hooks_scope(request: Request) -> Any:
+        """PreToolUse scope hook for projects with ``scope_edits`` (decision 0018).
+
+        Same caller and secret as ``/hooks/claude``. The body is Claude Code's hook
+        input; the answer is either ``{}`` (no opinion) or a deny decision, which
+        the pane's curl prints for Claude Code to read. This endpoint can only
+        narrow what Claude Code does; it never approves anything.
+        """
+        if not is_direct_loopback(request):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
+        presented = request.headers.get(HOOK_SECRET_HEADER, "")
+        expected = str(getattr(agent, "hook_secret", "") or "")
+        if not expected or not hmac.compare_digest(presented.encode(), expected.encode()):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
+        try:
+            payload = json.loads(await _read_capped(request, HOOK_MAX_BYTES) or b"{}")
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="body must be JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="body must be a JSON object")
+        decide = getattr(agent.sessions, "scope_decision", None)
+        if not callable(decide):
+            return {}
+        try:
+            return decide(payload) or {}
+        except Exception:  # noqa: BLE001
+            log.exception("scope_decision failed")
+            return {}
+
     @app.post("/upload")
     async def upload(request: Request, _sid: str = Depends(require_cookie_http)) -> Any:
         name, data = await read_upload(request, UPLOAD_MAX_BYTES)

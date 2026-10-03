@@ -84,6 +84,9 @@ __all__ = [
     "TRUST_OPTION",
     "TRUST_DECLINE",
     "TRUST_FOOTER",
+    "BYPASS_HEADER",
+    "BYPASS_ACCEPT",
+    "BYPASS_DIALOG_TITLE",
     "DONE_LINE",
     "INTERRUPTED",
     "REJECTED_WRITE",
@@ -148,6 +151,12 @@ TRUST_OPTION = re.compile(r"^\s*(?P<ptr>❯)?\s*Yes, I trust this folder\s*$")
 TRUST_DECLINE = re.compile(r"^\s*(?P<ptr>❯)?\s*No, exit\s*$")
 TRUST_FOOTER = re.compile(r"^\s*Enter to confirm · Esc to cancel\s*$")
 TRUST_QUESTION = re.compile(r"^\s*Quick safety check: .*$")
+# The warning Claude Code shows once before running in bypass-permissions mode. Same
+# shape as the trust dialog (No, exit / Yes, I accept / Enter to confirm). Wording from
+# Claude Code 2.1.x; no fixture yet (decision 0018, Open), so the header is loose.
+BYPASS_HEADER = re.compile(r"^\s*(WARNING: )?.*Bypass Permissions mode.*$", re.IGNORECASE)
+BYPASS_ACCEPT = re.compile(r"^\s*(?P<ptr>❯)?\s*Yes, I accept\s*$")
+BYPASS_DIALOG_TITLE = "Bypass permissions warning"
 
 # tool lines
 TOOL_BULLET = re.compile(r"^●[  ](?P<text>\S.*)$")  # tool header OR first prose line
@@ -227,13 +236,48 @@ def detect_prompt(lines: Sequence[str] | Screen) -> PromptMatch | None:
     if scr.input_box is not None:
         return None
     block = scr.prompt_block if scr.prompt_block else scr.lines
-    return _detect_trust(block) or _detect_plan(block) or _detect_ask(block) or _detect_permission(block)
+    return (
+        _detect_trust(block)
+        or _detect_bypass_warning(block)
+        or _detect_plan(block)
+        or _detect_ask(block)
+        or _detect_permission(block)
+    )
 
 
 def _as_screen(lines: Sequence[str] | Screen) -> Screen:
     if isinstance(lines, Screen):
         return lines
     return parse_screen(list(lines))
+
+
+def _detect_bypass_warning(block: list[str]) -> PromptMatch | None:
+    """Claude Code's one-time bypass-permissions warning, reported as a TRUST-kind prompt
+    with ``extra["dialog"] == "bypass"``. The manager only lets it be accepted for a
+    session whose project was created in bypass mode; everything else declines."""
+    accept_i = _find(block, BYPASS_ACCEPT)
+    footer_i = _find(block, TRUST_FOOTER)
+    if accept_i is None or footer_i is None or not _at_bottom(block, footer_i):
+        return None
+    decline_i = _find(block, TRUST_DECLINE)
+    header_i = _find(block, BYPASS_HEADER, end=accept_i)
+    options: list[PromptOption] = []
+    if decline_i is not None:
+        m = TRUST_DECLINE.match(block[decline_i])
+        options.append(PromptOption(1, "No, exit", selected=bool(m and m.group("ptr"))))
+    m = BYPASS_ACCEPT.match(block[accept_i])
+    options.append(PromptOption(len(options) + 1, "Yes, I accept", selected=bool(m and m.group("ptr"))))
+    start = _block_start(block, header_i if header_i is not None else (decline_i if decline_i is not None else accept_i))
+    return PromptMatch(
+        kind=PromptKind.TRUST,
+        title=BYPASS_DIALOG_TITLE,
+        question="Claude Code will not ask before running commands in this mode.",
+        options=options,
+        raw_lines=block[start : footer_i + 1],
+        confidence=1.0 if (header_i is not None and decline_i is not None) else 0.7,
+        header="Bypass Permissions mode",
+        extra={"dialog": "bypass"},
+    )
 
 
 def _detect_trust(block: list[str]) -> PromptMatch | None:

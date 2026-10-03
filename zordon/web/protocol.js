@@ -48,11 +48,19 @@
     'repeat',
     'status',
     'upload',
+    'list_projects',
+    'browse',
+    'create_project',
+    'open_project',
+    'admin',
+    'forget_project',
   ];
 
   var OUTBOUND_TYPES = [
     'hello',
     'sessions',
+    'projects',
+    'browse',
     'speech',
     'flush',
     'transcript',
@@ -171,8 +179,41 @@
         isInt(m.tts_sample_rate) &&
         optional(m.tunnel_url, isStr) &&
         optional(m.agents, isBoolDict) &&
-        optional(m.default_agent, isStr)
+        optional(m.default_agent, isStr) &&
+        optional(m.home, isStr)
       );
+    },
+    projects: function (m) {
+      if (!Array.isArray(m.projects) || !optional(m.focused_project, isStr)) return false;
+      for (var i = 0; i < m.projects.length; i++) {
+        var p = m.projects[i];
+        if (
+          !isObj(p) ||
+          !isStr(p.id) ||
+          !isStr(p.name) ||
+          !isStr(p.directory) ||
+          !optional(p.agent, isStr) ||
+          !optional(p.permission_mode, isStr) ||
+          !optional(p.scope_edits, isBool) ||
+          !optional(p.running, isBool) ||
+          !optional(p.session_id, isStr) ||
+          !optional(p.focused, isBool) ||
+          !optional(p.state, isStr) ||
+          !optional(p.last_used, isNum) ||
+          !optional(p.exists, isBool)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    },
+    browse: function (m) {
+      if (!isStr(m.path) || !optional(m.parent, isStr) || !isStr(m.home) || !isBool(m.can_create) || !Array.isArray(m.entries)) return false;
+      for (var i = 0; i < m.entries.length; i++) {
+        var e = m.entries[i];
+        if (!isObj(e) || !isStr(e.name) || !isStr(e.path) || !optional(e.has_git, isBool) || !optional(e.project_id, isStr)) return false;
+      }
+      return true;
     },
     sessions: function (m) {
       if (!Array.isArray(m.sessions)) return false;

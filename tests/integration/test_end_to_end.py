@@ -94,7 +94,7 @@ def stack(private_tmux: Tmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
     monkeypatch.setenv("ZORDON_HOME", str(zordon_home))
 
-    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None) -> list[str]:
+    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None, **_kw: object) -> list[str]:
         jsonl = discovery.jsonl_path_for(str(project), session_id, claude_home)
         return [PYTHON, str(FAKE), str(jsonl)]
 

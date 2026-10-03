@@ -469,9 +469,19 @@ def running_sessions(claude_home: Path) -> dict[str, dict[str, Any]]:
 # ---- command builders -------------------------------------------------------------------------
 
 
-def normalize_mode(mode: str) -> str:
-    """Map a user-facing or status-row mode name onto ``ALLOWED_MODES``; refuse the rest."""
+BYPASS_MODE = "bypassPermissions"
+
+
+def normalize_mode(mode: str, *, allow_bypass: bool = False) -> str:
+    """Map a user-facing or status-row mode name onto ``ALLOWED_MODES``; refuse the rest.
+
+    ``allow_bypass`` admits ``bypassPermissions`` as well. Only the project launcher
+    passes it, for a project whose owner chose that mode when creating it (decision
+    0018); voice, the mode switcher and the config default never do.
+    """
     m = MODE_ALIASES.get(mode, mode)
+    if m == BYPASS_MODE and allow_bypass:
+        return m
     if m not in ALLOWED_MODES:
         raise ValueError(f"permission mode {mode!r} is not allowed; choose one of {ALLOWED_MODES}")
     return m
@@ -509,11 +519,13 @@ def strip_env_prefix(argv: Sequence[str]) -> list[str]:
     return rest
 
 
-def validate_command(argv: Sequence[str]) -> None:
+def validate_command(argv: Sequence[str], *, allow_bypass: bool = False) -> None:
     """Raise ValueError if ``argv`` would widen permissions or disable hooks.
 
     A leading ``env -u NAME ...`` prefix (``env_scrub_prefix``) is allowed; the
-    rest must start with ``claude``.
+    rest must start with ``claude``. The skip-permissions flags in ``REFUSED_FLAGS``
+    are refused always; the bypass *mode* only with ``allow_bypass`` (a project the
+    user configured that way), and never through a settings file.
     """
     argv = strip_env_prefix(argv)
     if not argv or argv[0] != "claude":
@@ -522,12 +534,14 @@ def validate_command(argv: Sequence[str]) -> None:
         base = arg.split("=", 1)[0]
         if base in REFUSED_FLAGS:
             raise ValueError(f"refused flag {base!r}")
-        if "bypassPermissions" in arg:
-            raise ValueError("bypassPermissions is never passed")
         if base == "--permission-mode":
             value = arg.split("=", 1)[1] if "=" in arg else (argv[i + 1] if i + 1 < len(argv) else "")
+            if value == BYPASS_MODE and allow_bypass:
+                continue
             if value not in ALLOWED_MODES:
                 raise ValueError(f"permission mode {value!r} is not allowed")
+        elif BYPASS_MODE in arg and not (allow_bypass and i > 0 and argv[i - 1] == "--permission-mode"):
+            raise ValueError("bypassPermissions is never passed")
         if base == "--settings" and i + 1 < len(argv) and argv[i + 1].lstrip().startswith("{"):
             _check_inline_settings(argv[i + 1])
 
@@ -545,7 +559,7 @@ def _check_inline_settings(text: str) -> None:
         raise ValueError(f"refused permissions.defaultMode {mode!r}")
 
 
-def _base_command(settings_path: Path | None, permission_mode: str | None) -> list[str]:
+def _base_command(settings_path: Path | None, permission_mode: str | None, *, allow_bypass: bool = False) -> list[str]:
     argv: list[str] = []
     if settings_path is not None:
         if not isinstance(settings_path, Path):
@@ -554,7 +568,7 @@ def _base_command(settings_path: Path | None, permission_mode: str | None) -> li
             raise TypeError("settings_path must be a pathlib.Path (or None)")
         argv += ["--settings", str(settings_path)]
     if permission_mode:
-        argv += ["--permission-mode", normalize_mode(permission_mode)]
+        argv += ["--permission-mode", normalize_mode(permission_mode, allow_bypass=allow_bypass)]
     return argv
 
 
@@ -564,19 +578,21 @@ def resume_command(
     permission_mode: str | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    allow_bypass: bool = False,
 ) -> list[str]:
     """``env -u ... claude --resume <id> [--settings <file>] [--permission-mode <mode>]``.
 
-    Never contains a bypass flag or mode. Without ``permission_mode`` Claude Code
-    restores the session's stored mode (or its own built-in default, which is
-    ``auto`` in 2.1.x), so the manager always passes one. The ``env -u`` prefix
-    comes from ``env_scrub_prefix``.
+    Never contains a bypass flag; the bypass *mode* only with ``allow_bypass`` (a
+    project configured for it). Without ``permission_mode`` Claude Code restores
+    the session's stored mode (or its own built-in default, which is ``auto`` in
+    2.1.x), so the manager always passes one. The ``env -u`` prefix comes from
+    ``env_scrub_prefix``.
     """
     if not UUID_RE.match(session_id):
         raise ValueError(f"not a session id: {session_id!r}")
-    argv = ["claude", "--resume", session_id] + _base_command(settings_path, permission_mode)
+    argv = ["claude", "--resume", session_id] + _base_command(settings_path, permission_mode, allow_bypass=allow_bypass)
     argv = env_scrub_prefix(environ) + argv
-    validate_command(argv)
+    validate_command(argv, allow_bypass=allow_bypass)
     return argv
 
 
@@ -586,13 +602,14 @@ def new_session_command(
     permission_mode: str | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    allow_bypass: bool = False,
 ) -> list[str]:
     """``env -u ... claude --session-id <uuid> [...]`` so the id is known before the first record."""
     if not UUID_RE.match(session_id):
         raise ValueError(f"not a session id: {session_id!r}")
-    argv = ["claude", "--session-id", session_id] + _base_command(settings_path, permission_mode)
+    argv = ["claude", "--session-id", session_id] + _base_command(settings_path, permission_mode, allow_bypass=allow_bypass)
     argv = env_scrub_prefix(environ) + argv
-    validate_command(argv)
+    validate_command(argv, allow_bypass=allow_bypass)
     return argv
 
 
@@ -647,17 +664,55 @@ def hook_command(port: int, curl_config: Path | str, host: str = HOOK_DEFAULT_HO
     )
 
 
+SCOPE_MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
+SCOPE_DENY_UNREACHABLE = json.dumps(
+    {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Zordon could not be reached to check this file is inside the project; edit refused",
+        }
+    }
+)
+
+
+def scope_hook_command(port: int, curl_config: Path | str, host: str = HOOK_DEFAULT_HOST) -> str:
+    """The PreToolUse handler for scoped projects: synchronous, prints Zordon's decision.
+
+    Unlike the signal hooks it must be heard: its stdout is the allow/deny answer.
+    When Zordon cannot be reached it prints a deny (fail closed): a scoped project,
+    above all one in bypass mode, must not edit outside its folder because the
+    guard is down. The settings file only exists for sessions Zordon launched.
+    """
+    if not (1 <= int(port) <= 65535):
+        raise ValueError("port out of range")
+    host = hook_host(host)
+    path = str(curl_config)
+    if not path or "\n" in path:
+        raise ValueError("curl config path must be a single non-empty line")
+    return (
+        "curl -s -f -m 3 -X POST -H 'Content-Type: application/json' "
+        f"-K {shlex.quote(path)} --data-binary @- "
+        f"http://{host}:{int(port)}/hooks/scope 2>/dev/null || printf '%s' {shlex.quote(SCOPE_DENY_UNREACHABLE)}"
+    )
+
+
 def hook_settings_json(
     port: int,
     curl_config: Path | str,
     events: Sequence[str] = HOOK_EVENTS,
     host: str = HOOK_DEFAULT_HOST,
+    *,
+    scope: bool = False,
 ) -> dict[str, Any]:
     """Settings for ``--settings``: command hooks that POST each event to Zordon.
 
     ``Notification`` is filtered to the prompt-related matchers; the other events
     have no matcher. No ``PermissionRequest`` hook is ever registered (it could
-    answer a prompt). The JSON contains no secret.
+    answer a prompt). With ``scope`` a synchronous ``PreToolUse`` hook on the file
+    editing tools asks Zordon whether the file is inside the project (decision
+    0018); it can only deny, never approve something Claude Code would have asked
+    about. The JSON contains no secret.
     """
     command = hook_command(port, curl_config, host)
     handler = {"type": "command", "command": command, "timeout": 5, "async": True}
@@ -669,6 +724,13 @@ def hook_settings_json(
         if event == "Notification":
             entry = {"matcher": HOOK_MATCHER, "hooks": [dict(handler)]}
         hooks[event] = [entry]
+    if scope:
+        hooks["PreToolUse"] = [
+            {
+                "matcher": SCOPE_MATCHER,
+                "hooks": [{"type": "command", "command": scope_hook_command(port, curl_config, host), "timeout": 10}],
+            }
+        ]
     return {"hooks": hooks}
 
 
@@ -687,6 +749,8 @@ def write_hook_settings(
     secret: str,
     events: Sequence[str] = HOOK_EVENTS,
     host: str = HOOK_DEFAULT_HOST,
+    *,
+    scope: bool = False,
 ) -> Path:
     """Write the hooks JSON and its curl config, both mode 0600; returns the JSON path.
 
@@ -701,7 +765,7 @@ def write_hook_settings(
     except OSError:
         pass
     _write_private(curl_config, hook_curl_config_text(secret))
-    data = json.dumps(hook_settings_json(port, curl_config, events, host), indent=2) + "\n"
+    data = json.dumps(hook_settings_json(port, curl_config, events, host, scope=scope), indent=2) + "\n"
     _write_private(path, data)
     return path
 

@@ -143,7 +143,7 @@ def manager(private_tmux: Tmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     project = tmp_path / "proj"
     project.mkdir()
 
-    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None) -> list[str]:
+    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None, **_kw: object) -> list[str]:
         jsonl = discovery.jsonl_path_for(str(project), session_id, claude_home)
         return [PYTHON, str(FAKE), str(jsonl)]
 
@@ -386,7 +386,7 @@ def test_pane_environment_has_no_claude_markers_or_api_keys(
     env_file = tmp_path / "pane-env.txt"
     env_file2 = tmp_path / "pane-env-2.txt"
 
-    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None) -> list[str]:
+    def fake_command(session_id: str, settings_path: Path | None = None, permission_mode: str | None = None, **_kw: object) -> list[str]:
         jsonl = discovery.jsonl_path_for(str(project), session_id, claude_home)
         # The real builders' scrub prefix in front of the fake TUI, which dumps its environment first.
         return discovery.env_scrub_prefix() + [

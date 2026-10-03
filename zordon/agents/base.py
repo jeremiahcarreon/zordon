@@ -88,8 +88,8 @@ class AgentAdapter(Protocol):
     def version(self) -> str | None: ...
 
     # ---- launching ----------------------------------------------------------------
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec: ...
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec: ...
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec: ...
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec: ...
     def supports_resume(self) -> bool: ...
     def allowed_modes(self) -> tuple[str, ...]: ...
     def voice_switchable_modes(self) -> tuple[str, ...]: ...
@@ -144,6 +144,7 @@ class HookRequest:
     host: str
     zordon_home: Path
     session_id: str
+    scope: bool = False  # also install the PreToolUse edit-scope hook (projects with scope_edits)
 
 
 # ---- the generic adapter ----------------------------------------------------------------
@@ -201,10 +202,10 @@ class BaseAdapter:
         return None
 
     # ---- launching ----------------------------------------------------------------
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec:
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
         raise NotImplementedError(f"{self.info.display_name}: attach to a running pane instead of starting one")
 
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec:
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
         raise NotImplementedError(f"{self.info.display_name}: resume is not supported")
 
     def supports_resume(self) -> bool:

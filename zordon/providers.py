@@ -83,6 +83,7 @@ class RouteContext:
     focused_session: str = ""
     session_names: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)  # closed set of shim command names
+    project_names: list[str] = field(default_factory=list)  # saved projects (decision 0018)
 
 
 @dataclass(slots=True)

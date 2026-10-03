@@ -235,6 +235,11 @@ def config_path(home: Path) -> Path:
     return home / "config.toml"
 
 
+def _refuse_bypass_for_codex(mode: str | None) -> None:
+    if mode and "bypass" in mode.lower():
+        raise ValueError("Codex projects cannot run without approvals yet; choose another mode for this project")
+
+
 def normalize_mode(mode: str) -> str:
     """Map a user-facing name onto ``ALLOWED_MODES``; refuse every bypass spelling."""
     raw = (mode or "").strip()
@@ -838,18 +843,20 @@ class CodexAdapter(BaseAdapter):
 
     # ---- launching ----------------------------------------------------------------
 
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec:
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
         """``codex [approval args]``. Codex picks its own thread id (UUIDv7), so
         ``session_id`` is only Zordon's handle; ``transcript_source`` finds the
         rollout file by cwd and launch time. Hooks: Codex has lifecycle hooks in
         ``config.toml`` but no per-launch settings file; none are installed."""
+        _refuse_bypass_for_codex(permission_mode)
         argv = ["codex", *approval_args(permission_mode or DEFAULT_MODE)]
         validate_command(argv)
         self._launched[session_id] = (time.time(), cwd)
         return LaunchSpec(command=argv, cwd=cwd)
 
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec:
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
         """``codex resume <thread id> [approval args]`` (live: `codex resume --help`)."""
+        _refuse_bypass_for_codex(permission_mode)
         if not UUID_RE.match(session_id or ""):
             raise ValueError(f"Codex thread ids are UUIDs; got {session_id!r}")
         argv = ["codex", "resume", session_id, *approval_args(permission_mode or DEFAULT_MODE)]

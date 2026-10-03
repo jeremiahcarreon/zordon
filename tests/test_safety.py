@@ -38,11 +38,17 @@ def test_no_bypass_flag_is_ever_constructed():
 
 
 def test_bypass_permissions_never_written():
-    """'bypassPermissions' may be read (to report it) but never assigned or written."""
+    """'bypassPermissions' may be read (to report it) but never assigned or written,
+    except for the one named constant the project launcher uses (``discovery.BYPASS_MODE``,
+    decision 0018). Every other place must go through that name, so this test keeps
+    the spelling from spreading."""
     pat = re.compile(r"""(?:["']bypassPermissions["']\s*[:=](?!=))|(?:=\s*["']bypassPermissions["'])""")
+    allowed = re.compile(r"^BYPASS_MODE = \"bypassPermissions\"$")
     for path in _py_files():
         for i, line in enumerate(path.read_text().splitlines(), 1):
             if pat.search(line) and not line.lstrip().startswith("#"):
+                if path.name in ("discovery.py", "projects.py") and allowed.match(line.strip().split("  #")[0]):
+                    continue
                 raise AssertionError(f"{path}:{i} assigns bypassPermissions: {line.strip()}")
 
 

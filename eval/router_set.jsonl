@@ -84,3 +84,12 @@
 {"utterance": "always allow", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "forbidden by voice"}
 {"utterance": "yes and don't ask again", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "forbidden by voice"}
 {"utterance": "run the tests first", "expected": "yes_no", "state": "awaiting_permission", "yes_no": "unclear", "notes": "not an answer"}
+{"utterance": "open the website project", "expected": "shim_command", "command": "open_project", "argument": "website", "state": "idle", "notes": "project name resolved against ctx.project_names"}
+{"utterance": "continue invoices", "expected": "shim_command", "command": "open_project", "argument": "invoices", "state": "idle", "notes": ""}
+{"utterance": "work on the api project", "expected": "shim_command", "command": "open_project", "argument": "api", "state": "idle", "notes": "api is both a session and a project; the project pattern wins"}
+{"utterance": "what projects do i have", "expected": "shim_command", "command": "list_projects", "state": "idle", "notes": ""}
+{"utterance": "list projects", "expected": "shim_command", "command": "list_projects", "state": "idle", "notes": ""}
+{"utterance": "start a new project", "expected": "shim_command", "command": "new_project", "state": "idle", "notes": "the walkthrough is visual; voice points at it"}
+{"utterance": "new project", "expected": "shim_command", "command": "new_project", "state": "idle", "notes": ""}
+{"utterance": "pause", "expected": "shim_command", "command": "admin", "state": "idle", "notes": "admin mode: focus nothing, panes keep running"}
+{"utterance": "back to projects", "expected": "shim_command", "command": "admin", "state": "working", "notes": ""}

@@ -44,6 +44,13 @@ COMMANDS = (
     "repeat",
     "status",
     "upload",
+    # projects, decision 0018
+    "list_projects",
+    "browse",
+    "create_project",
+    "open_project",
+    "admin",
+    "forget_project",
 )
 
 
@@ -162,6 +169,7 @@ class Hello(_Strict):
     muted: bool = False  # the agent's mute state, so a fresh client renders the toggle right
     agents: dict[str, bool] = Field(default_factory=dict)  # adapter key -> installed
     default_agent: str = "claude-code"
+    home: str | None = None  # the user's home directory: where projects live
 
 
 class SessionSummary(_Strict):
@@ -180,6 +188,48 @@ class SessionSummary(_Strict):
 class Sessions(_Strict):
     type: Literal["sessions"] = "sessions"
     sessions: list[SessionSummary]
+
+
+class ProjectSummary(_Strict):
+    id: str
+    name: str
+    directory: str
+    agent: str = "claude-code"
+    permission_mode: str = "default"
+    scope_edits: bool = True
+    running: bool = False
+    session_id: str | None = None
+    focused: bool = False
+    state: str | None = None
+    last_used: float | None = None
+    exists: bool = True
+
+
+class Projects(_Strict):
+    """Every project, most recently used first. Sent after each project command and on
+    connect; the client's "Continue a previous project" list."""
+
+    type: Literal["projects"] = "projects"
+    projects: list[ProjectSummary]
+    focused_project: str | None = None
+
+
+class BrowseEntry(_Strict):
+    name: str
+    path: str
+    has_git: bool = False
+    project_id: str | None = None
+
+
+class BrowseOut(_Strict):
+    """One level of the folder picker, never outside the user's home directory."""
+
+    type: Literal["browse"] = "browse"
+    path: str
+    parent: str | None
+    home: str
+    entries: list[BrowseEntry]
+    can_create: bool
 
 
 class SpeechOut(_Strict):
@@ -287,6 +337,8 @@ class TunnelOut(_Strict):
 OUTBOUND_TYPES = (
     "hello",
     "sessions",
+    "projects",
+    "browse",
     "speech",
     "flush",
     "transcript",

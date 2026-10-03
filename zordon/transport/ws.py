@@ -66,6 +66,9 @@ UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 
 # Modes a tap may select. Voice is narrower (dispatcher); nothing selects the bypass mode.
 ALLOWED_PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk")
+# A *project* may be created in bypass mode (decision 0018); the mode switcher and
+# the plain `start` command still refuse it.
+LAUNCH_MODES_WITH_BYPASS = ALLOWED_PERMISSION_MODES + ("bypassPermissions",)
 FORBIDDEN_PERMISSION_MODES = ("bypassPermissions",)
 PROVIDER_KINDS = ("stt", "tts", "normalizer", "router")
 # ``voice`` is not a provider but the TTS voice; it rides on the same command.
@@ -399,6 +402,9 @@ class ClientConnection:
             self._cmd_lock = asyncio.Lock()
             await self._send_model(await self._off_loop(self._hello))
             await self._send_model(await self._off_loop(self._sessions))
+            projects = await self._off_loop(self._projects)
+            if projects is not None:
+                await self._send_model(projects)
             health = await self._off_loop(self._health)
             if health is not None:
                 await self._send_model(health)
@@ -632,7 +638,98 @@ class ClientConnection:
             "repeat": self._cmd_repeat,
             "status": self._cmd_status,
             "upload": self._cmd_upload,
+            "list_projects": lambda a: self._projects() or P.ErrorOut(message="projects are not supported here", code="unsupported"),
+            "browse": self._cmd_browse,
+            "create_project": self._cmd_create_project,
+            "open_project": self._cmd_open_project,
+            "admin": self._cmd_admin,
+            "forget_project": self._cmd_forget_project,
         }
+
+    # ---- projects (decision 0018) -------------------------------------------------------
+
+    def _projects(self) -> P.Projects | None:
+        lister = getattr(self.agent.sessions, "list_projects", None)
+        if not callable(lister):
+            return None
+        rows = [P.ProjectSummary(**row) for row in lister()]
+        focused = next((r.id for r in rows if r.focused), None)
+        return P.Projects(projects=rows, focused_project=focused)
+
+    def _after_project_change(self) -> list[BaseModel]:
+        out: list[BaseModel] = [self._sessions()]
+        projects = self._projects()
+        if projects is not None:
+            out.append(projects)
+        return out
+
+    def _cmd_browse(self, args: dict[str, Any]) -> BaseModel:
+        from zordon import projects as prj  # noqa: PLC0415
+
+        path = _str_arg(args, "path")
+        store = getattr(self.agent.sessions, "projects", None)
+        try:
+            listing = prj.browse(path, store=store, show_hidden=bool(args.get("hidden")))
+        except prj.ProjectError as e:
+            return P.ErrorOut(message=str(e), code="browse")
+        return P.BrowseOut(
+            path=listing.path,
+            parent=listing.parent,
+            home=listing.home,
+            entries=[P.BrowseEntry(name=e.name, path=e.path, has_git=e.has_git, project_id=e.project_id) for e in listing.entries],
+            can_create=listing.can_create,
+        )
+
+    def _cmd_create_project(self, args: dict[str, Any]) -> BaseModel | list[BaseModel]:
+        """``parent`` + ``name`` make a new folder; ``existing=true`` takes ``parent`` as the folder."""
+        parent = _str_arg(args, "parent")
+        if parent is None:
+            return _bad_argument("parent")
+        existing = args.get("existing") is True
+        name = _str_arg(args, "name") or ""
+        if not existing and not name:
+            return _bad_argument("name")
+        mode = _str_arg(args, "permission_mode") or "default"
+        if mode not in LAUNCH_MODES_WITH_BYPASS:
+            return P.ErrorOut(message=f"permission_mode must be one of {', '.join(LAUNCH_MODES_WITH_BYPASS)}", code="bad_argument")
+        scope = args.get("scope_edits", True) is not False
+        creator = getattr(self.agent.sessions, "create_project", None)
+        if not callable(creator):
+            return P.ErrorOut(message="projects are not supported here", code="unsupported")
+        creator(parent, name, agent=_str_arg(args, "agent"), permission_mode=mode, scope_edits=scope, existing=existing)
+        self._after_focus_change()
+        return self._after_project_change()
+
+    def _cmd_open_project(self, args: dict[str, Any]) -> BaseModel | list[BaseModel]:
+        pid = _str_arg(args, "project_id")
+        if pid is None:
+            return _bad_argument("project_id")
+        self.agent.sessions.open_project(pid)
+        self._after_focus_change()
+        return self._after_project_change()
+
+    def _cmd_admin(self, args: dict[str, Any]) -> BaseModel | list[BaseModel]:
+        self.agent.sessions.admin()
+        return self._after_project_change()
+
+    def _cmd_forget_project(self, args: dict[str, Any]) -> BaseModel | list[BaseModel]:
+        pid = _str_arg(args, "project_id")
+        if pid is None:
+            return _bad_argument("project_id")
+        if args.get("confirm") is not True:
+            return P.ErrorOut(message="forget_project needs confirm=true", code="confirm_required")
+        self.agent.sessions.forget_project(pid)
+        return self._after_project_change()
+
+    def _after_focus_change(self) -> None:
+        """A project open focuses a session; tell the agent (permission summary on first focus)."""
+        sid = self.agent.sessions.focused()
+        hook = getattr(self.agent.sessions, "_on_focus", None)
+        if sid and callable(hook):
+            try:
+                hook(sid)
+            except Exception:  # noqa: BLE001
+                log.debug("focus hook failed", exc_info=True)
 
     def _focused_or_arg(self, args: dict[str, Any]) -> str | None:
         sid = args.get("session_id")
@@ -883,6 +980,7 @@ class ClientConnection:
             muted=bool(settings.get("muted", False)),
             agents=self._agents_installed(),
             default_agent=self._default_agent(),
+            home=_home_dir(),
         )
 
     def _agents_installed(self) -> dict[str, bool]:
@@ -970,6 +1068,15 @@ def _text_arg(args: dict[str, Any], key: str) -> str | None:
 
 def _bad_argument(name: str) -> P.ErrorOut:
     return P.ErrorOut(message=f"missing or invalid argument: {name}", code="bad_argument")
+
+
+def _home_dir() -> str | None:
+    try:
+        from zordon.projects import home_dir  # noqa: PLC0415
+
+        return home_dir()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _check_mode(mode: str) -> P.ErrorOut | None:

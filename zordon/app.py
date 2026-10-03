@@ -69,6 +69,7 @@ from zordon.providers import (
 from zordon.routing.dispatcher import DispatcherThread
 from zordon.routing.select import make_router
 from zordon.session.manager import SessionManager
+from zordon.session.prompts import BYPASS_DIALOG_TITLE
 from zordon.session.tmux import Tmux
 from zordon.speech.audio_thread import AudioThread
 from zordon.speech.stt import make_stt
@@ -285,6 +286,11 @@ def prompt_speech(
     who = (agent_name or DEFAULT_AGENT_NAME).strip()
     who = who[0].upper() + who[1:] if who else DEFAULT_AGENT_NAME
     if k == PromptKind.TRUST.value:
+        if title == BYPASS_DIALOG_TITLE:
+            return (
+                f"{who} warns that this project runs without permission checks, as you chose when creating it. "
+                "Say yes to accept and continue, or no to exit."
+            )
         return "This folder is not trusted yet. Say yes to trust it, or no."
     if k == PromptKind.PLAN.value:
         summary = _strip_prefix(title, "Plan ready:").strip() or "a plan"
@@ -371,6 +377,20 @@ class _Sessions:
     def focus(self, session_id: str) -> None:
         self._manager.focus(session_id)
         self._on_focus(session_id)
+
+    def open_project(self, project_id: str) -> dict[str, Any]:
+        row = self._manager.open_project(project_id)
+        sid = row.get("session_id") if isinstance(row, dict) else None
+        if sid:
+            self._on_focus(sid)
+        return row
+
+    def create_project(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        row = self._manager.create_project(*args, **kwargs)
+        sid = row.get("session_id") if isinstance(row, dict) else None
+        if sid:
+            self._on_focus(sid)
+        return row
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._manager, name)

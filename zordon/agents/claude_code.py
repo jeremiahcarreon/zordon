@@ -132,14 +132,18 @@ class ClaudeCodeAdapter(BaseAdapter):
 
     # ---- launching ----------------------------------------------------------------
 
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec:
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
         settings, paths_ = self._hook_files(hooks)
-        command = discovery.new_session_command(session_id, settings, permission_mode or self.default_launch_mode())
+        command = discovery.new_session_command(
+            session_id, settings, permission_mode or self.default_launch_mode(), allow_bypass=allow_bypass
+        )
         return LaunchSpec(command=command, cwd=cwd, settings_paths=paths_, env_scrub_names=tmux.scrub_names())
 
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None) -> LaunchSpec:
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
         settings, paths_ = self._hook_files(hooks)
-        command = discovery.resume_command(session_id, settings, permission_mode or self.default_launch_mode())
+        command = discovery.resume_command(
+            session_id, settings, permission_mode or self.default_launch_mode(), allow_bypass=allow_bypass
+        )
         return LaunchSpec(command=command, cwd=cwd, settings_paths=paths_, env_scrub_names=tmux.scrub_names())
 
     def _hook_files(self, req: HookRequest | None) -> tuple[Path | None, list[Path]]:
@@ -149,7 +153,7 @@ class ClaudeCodeAdapter(BaseAdapter):
         path = discovery.hook_settings_path(req.zordon_home, req.session_id)
         try:
             host = discovery.hook_host(req.host)
-            written = discovery.write_hook_settings(path, req.port, req.secret, host=host)
+            written = discovery.write_hook_settings(path, req.port, req.secret, host=host, scope=bool(getattr(req, "scope", False)))
         except (OSError, ValueError) as e:
             log.warning("hook settings not written (%s); launching without hooks", e)
             return None, []
@@ -244,7 +248,9 @@ class ClaudeCodeAdapter(BaseAdapter):
         return prompts.question_option(m, choice)
 
     def trust_accept_option(self, m: PromptMatch) -> int | None:
-        return next((o.index for o in m.options if o.label == "Yes, I trust this folder"), None)
+        # The trust dialog and the bypass-permissions warning share this shape; the
+        # manager decides whether accepting the latter is allowed for the session.
+        return next((o.index for o in m.options if o.label in ("Yes, I trust this folder", "Yes, I accept")), None)
 
     def trust_decline_option(self, m: PromptMatch) -> int | None:
         return next((o.index for o in m.options if o.label == "No, exit"), None)

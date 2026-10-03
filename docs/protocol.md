@@ -33,18 +33,30 @@ the raw send button), `approve`, `deny`, `plan_approve`, `plan_revise {text}`,
 (`kind` is `stt`, `tts`, `normalizer`, `router`, or `voice` for the TTS voice),
 `repeat`, `status`, `upload {name, size}` (the bytes go to `POST /upload`).
 
+Projects (decision 0018), the non-technical surface over sessions: `list_projects`;
+`browse {path?, hidden?}` (one level of folders, never outside the user's home);
+`create_project {parent, name, agent?, permission_mode?, scope_edits?, existing?}`
+(makes `parent/name`, or with `existing: true` takes `parent` itself as the folder;
+`permission_mode` may be `bypassPermissions` here and only here; `scope_edits`
+defaults to true); `open_project {project_id}` (reconnect to its pane, else resume its
+last conversation, else start fresh in its folder; focuses it); `admin` (focus nothing,
+every pane keeps running); `forget_project {project_id, confirm}` (drops the record,
+touches no files). Each answers with `sessions` then `projects`.
+
 ## Agent to client
 
 | type | fields | meaning |
 | --- | --- | --- |
-| `hello` | `protocol`, `version`, `focused_session`, `verbosity`, `tool_chatter`, `muted`, `providers`, `tts_sample_rate`, `tunnel_url`, `agents`, `default_agent` | First message after connect. `muted` is the agent's current mute state (voice `mute` or another client may have set it), so a fresh client renders its toggle right before any `settings` arrives. `agents` maps each adapter key (`claude-code`, `codex`, `generic`) to whether it is installed; `default_agent` is `providers.agent` from config. |
+| `hello` | `protocol`, `version`, `focused_session`, `verbosity`, `tool_chatter`, `muted`, `providers`, `tts_sample_rate`, `tunnel_url`, `agents`, `default_agent`, `home` | First message after connect. `muted` is the agent's current mute state (voice `mute` or another client may have set it), so a fresh client renders its toggle right before any `settings` arrives. `agents` maps each adapter key (`claude-code`, `codex`, `generic`) to whether it is installed; `default_agent` is `providers.agent` from config. |
 | `sessions` | `sessions[]` of `{session_id, directory, title, last_active, attached, running, state, permission_mode, focused, agent}` | Session picker contents. `agent` is the adapter key the session runs under. |
+| `projects` | `projects[]` of `{id, name, directory, agent, permission_mode, scope_edits, running, session_id, focused, state, last_used, exists}`, `focused_project` | Saved projects, most recently used first; sent on connect and after every project command. `running` is true when a session of the project is attached or its last pane is still alive; `exists` false when its folder is gone. |
+| `browse` | `path`, `parent` (null at home), `home`, `entries[]` of `{name, path, has_git, project_id}`, `can_create` | One level of the folder picker. |
 | `speech` | `sentence_id`, `seq`, `generation`, `sample_rate`, `pcm` (base64 int16 LE mono), `final` | Audio to play. Discard if `generation` is older than the last `flush`. |
 | `flush` | `generation`, `sentence_id` (optional) | Barge-in: stop playback now, drop queued audio with an older generation. `sentence_id` is the sentence that was playing, when known; the client marks it and every later unfinished sentence as cut off. The `stop` command also produces one. |
 | `transcript` | `row_id`, `session_id`, `kind` (`spoken`/`user`/`notice`/`raw`), `text`, `raw_lines[]`, `ts`, `sentence_id`, `spoken` | One transcript row; tapping shows `raw_lines`. |
 | `state` | `session_id`, `state`, `detail`, `ts` | Session state change (`idle`, `working`, `awaiting_permission`, `awaiting_plan_approval`, `awaiting_question`, `stalled`, `detached`). |
 | `prompt` | `prompt_id`, `session_id`, `kind` (`permission`/`plan`/`question`/`trust`), `title`, `options[]`, `raw_lines[]`, `cleared` | Render as a card with buttons. `cleared: true` removes it. |
-| `settings` | `verbosity`, `tool_chatter`, `muted`, `providers`, `permission_mode` | Current settings after any change. |
+| `settings` | `verbosity`, `tool_chatter`, `muted`, `providers`, `permission_mode`, `launch_mode` | Current settings after any change. `launch_mode` is the configured default for new sessions. |
 | `tunnel` | `url`, `qr_svg` | Public URL when `--tunnel` is active. |
 | `update` | `current`, `latest`, `command`, `auto`, `notes_url` | A newer Zordon exists; `auto: true` means it was installed and a restart picks it up. |
 | `health` | `status` (`ok`/`warn`/`fail`), `items[]` of `{key, label, status, detail, fix}`, `ts` | Runtime health of every component; sent on connect, on change, and at least every 60 s. Also at `GET /health`. |

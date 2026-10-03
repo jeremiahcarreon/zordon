@@ -57,6 +57,7 @@ SAMPLE_TAIL = [
     "I committed with the message: add retry logic to the upload handler.",
 ]
 SAMPLE_SESSIONS = ["zordon", "api", "frontend"]
+SAMPLE_PROJECTS = ["website", "api", "invoices"]
 STATES = ("idle", "working", "awaiting_permission")
 
 
@@ -191,6 +192,7 @@ def run_eval(
                     focused_session="focused",
                     session_names=list(names),
                     commands=list(commands.COMMAND_NAMES),
+                    project_names=list(SAMPLE_PROJECTS),
                 )
                 _judge_route(router, case, ctx, report, threshold)
         except ProviderError as e:

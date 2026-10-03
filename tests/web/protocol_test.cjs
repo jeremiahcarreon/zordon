@@ -94,6 +94,34 @@ const SAMPLES = {
       },
     ],
   },
+  projects: {
+    type: 'projects',
+    projects: [
+      {
+        id: 'p1',
+        name: 'website',
+        directory: '/home/u/website',
+        agent: 'claude-code',
+        permission_mode: 'auto',
+        scope_edits: true,
+        running: true,
+        session_id: 'abc',
+        focused: true,
+        state: 'idle',
+        last_used: 1.0,
+        exists: true,
+      },
+    ],
+    focused_project: 'p1',
+  },
+  browse: {
+    type: 'browse',
+    path: '/home/u',
+    parent: null,
+    home: '/home/u',
+    entries: [{ name: 'website', path: '/home/u/website', has_git: true, project_id: 'p1' }],
+    can_create: true,
+  },
   speech: { type: 'speech', sentence_id: 1, seq: 2, generation: 3, sample_rate: 24000, pcm: 'AAAA', final: true },
   flush: { type: 'flush', generation: 4 },
   transcript: {
@@ -176,6 +204,8 @@ const BAD = [
   { type: 'prompt', prompt_id: 1, session_id: 'a', kind: 'plan', title: '', options: 'x', raw_lines: [] },
   { type: 'state', session_id: 'a', state: 'idle' }, // ts missing
   { type: 'sessions', sessions: [{ session_id: 'x' }] },
+  { type: 'projects', projects: [{ id: 'p' }] },
+  { type: 'browse', path: '/home/u', home: '/home/u', entries: 'nope', can_create: true },
   { type: 'sessions', sessions: 'none' },
   { type: 'hello', protocol: 1 },
   { type: 'settings', verbosity: 'minimal', tool_chatter: 'yes', muted: false, providers: {} },
