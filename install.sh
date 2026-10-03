@@ -46,6 +46,8 @@ step() { printf '  %s◆%s %s\n' "$C2" "$R" "$*"; }
 done_() { printf '  %s✓%s %s\n' "$OK" "$R" "$*"; }
 die() { printf '  %s✗ %s%s\n' "$BAD" "$*" "$R" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# A usable terminal: the device node exists even in a tty-less container, so try to open it.
+have_tty() { [ -r /dev/tty ] && ( : </dev/tty ) 2>/dev/null; }
 
 banner() {
   say ""
@@ -125,7 +127,7 @@ if [ "$(id -u)" = 0 ]; then
     say "  power of its account, and Claude Code refuses to skip permissions as root."
     say ""
     ZUSER=""
-    if [ -r /dev/tty ]; then
+    if have_tty; then
       printf '  Name for the new user [%szordon%s]: ' "$B" "$R"
       read -r ZUSER </dev/tty || ZUSER=""
     else
@@ -174,7 +176,7 @@ if [ "$(id -u)" = 0 ]; then
       fi
       done_ "$ZUSER can use sudo (group $ADMIN_GROUP)"
     fi
-    if [ -r /dev/tty ]; then
+    if have_tty; then
       say "  Choose a password for $ZUSER; the wizard asks for it when it installs prerequisites."
       passwd "$ZUSER" </dev/tty || say "  ${BAD}!${R} No password set; set one later with: passwd $ZUSER (needed for installing prerequisites)."
     elif [ "${ZORDON_SUDO_NOPASSWD:-}" = 1 ]; then
@@ -200,7 +202,7 @@ if [ "$(id -u)" = 0 ]; then
     say ""
     say "  ${D}Continuing as ${R}${B}$ZUSER${R}${D}...${R}"
     say ""
-    if [ -r /dev/tty ]; then
+    if have_tty; then
       exec su - "$ZUSER" -c "$PASS sh $SELF" </dev/tty
     else
       exec su - "$ZUSER" -c "$PASS sh $SELF"
@@ -270,7 +272,7 @@ fi
 
 # When this script arrives through a pipe, stdin is the pipe. The wizard needs the
 # terminal, so reattach it; without a terminal, take the detected defaults.
-if [ -t 1 ] && [ -r /dev/tty ]; then
+if [ -t 1 ] && have_tty; then
   say ""
   say "  ${D}Opening the guided setup...${R}"
   exec zordon setup </dev/tty
