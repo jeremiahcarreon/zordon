@@ -192,7 +192,7 @@ See `docs/providers.md` for every slot, model, and cost note.
 zordon start            # detached; log in ~/.zordon/serve.log
 zordon status           # pid, URL, health, service state
 zordon logs -f
-zordon restart          # also picks up an installed update
+zordon restart          # picks up an installed update; reuses the flags it was started with
 zordon stop
 zordon start --tunnel   # detached with the public tunnel; `zordon status --qr` shows the URL and code
 ```

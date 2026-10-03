@@ -9,6 +9,7 @@ starting at login and restarting on failure, see ``zordon/service.py``.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -27,6 +28,20 @@ def pid_path() -> Path:
 
 def log_path() -> Path:
     return paths.zordon_home() / "serve.log"
+
+
+def args_path() -> Path:
+    """The serve flags the detached process was started with (JSON list), so
+    ``zordon restart`` brings it back the same way: with its tunnel, bind and port."""
+    return paths.zordon_home() / "serve.args"
+
+
+def last_args() -> list[str]:
+    try:
+        data = json.loads(args_path().read_text())
+    except (OSError, ValueError):
+        return []
+    return [str(a) for a in data] if isinstance(data, list) else []
 
 
 @dataclass(slots=True)
@@ -90,6 +105,8 @@ def start(extra_args: Sequence[str] = (), *, wait_s: float = 8.0, popen=None) ->
     log.close()  # the child holds its own descriptor
     pid_path().write_text(f"{proc.pid}\n")
     os.chmod(pid_path(), 0o600)
+    args_path().write_text(json.dumps(list(extra_args)))
+    os.chmod(args_path(), 0o600)
     # Give it a moment: a config error exits immediately and should be reported here.
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:

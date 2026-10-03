@@ -97,8 +97,14 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_start)
     sp = sub.add_parser("stop", help="stop the detached zordon")
     sp.set_defaults(func=cmd_stop)
-    rs = sub.add_parser("restart", help="stop and start the detached zordon (picks up an installed update)")
+    rs = sub.add_parser(
+        "restart",
+        help="stop and start the detached zordon (picks up an installed update); without flags it reuses the ones it was started with",
+    )
+    rs.add_argument("--bind", default=None)
+    rs.add_argument("--port", type=int, default=None)
     rs.add_argument("--tunnel", nargs="?", const="config", default=None, metavar="PROVIDER")
+    rs.add_argument("--config", type=Path, default=None)
     rs.set_defaults(func=cmd_restart)
     stt = sub.add_parser("status", help="is zordon running, where, and is it healthy")
     stt.add_argument("--qr", action="store_true", help="also print the tunnel URL as a QR code")
@@ -357,10 +363,36 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
+    """Stop and start again. Without flags of its own, the restart reuses the flags
+    the running instance was started with (``--tunnel``, ``--bind``, ``--port``), so
+    a restart after an update does not silently drop the tunnel."""
     from zordon import daemon  # noqa: PLC0415
 
+    previous = daemon.last_args()
     daemon.stop()
+    if not _serve_extra(args) and previous:
+        print(f"  reusing: zordon start {' '.join(previous)}")
+        return cmd_start_with(args, previous)
     return cmd_start(args)
+
+
+def cmd_start_with(args: argparse.Namespace, extra: list[str]) -> int:
+    """``cmd_start`` with an explicit serve flag list (restart's replay)."""
+    ns = argparse.Namespace(**vars(args))
+    it = iter(range(len(extra)))
+    for i in it:
+        flag = extra[i]
+        nxt = extra[i + 1] if i + 1 < len(extra) else None
+        if flag == "--tunnel":
+            if nxt is not None and not nxt.startswith("--"):
+                ns.tunnel = nxt
+                next(it, None)
+            else:
+                ns.tunnel = "config"
+        elif flag in ("--bind", "--port", "--config") and nxt is not None:
+            setattr(ns, flag[2:], nxt)
+            next(it, None)
+    return cmd_start(ns)
 
 
 def cmd_status(args: argparse.Namespace) -> int:

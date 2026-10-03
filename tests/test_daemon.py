@@ -165,3 +165,45 @@ def test_start_with_tunnel_prints_the_url_once_serve_writes_it(monkeypatch, caps
     out = capsys.readouterr().out
     assert "tunnel: https://brisk-fox-99.trycloudflare.com" in out and "zordon token show" in out
     cli._write_tunnel_url(None)
+
+
+def test_restart_reuses_the_flags_of_the_running_instance(monkeypatch, capsys):
+    """`zordon start --tunnel --port 9000` then `zordon restart`: the restart replays
+    both flags, and an explicit flag on the restart replaces the remembered set."""
+    from zordon import cli, daemon
+
+    launched: list[list[str]] = []
+    alive = {"pid": None}
+
+    class Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kw):
+        kw["stdout"].write(b"Zordon listening on http://127.0.0.1:8765\n")
+        kw["stdout"].flush()
+        launched.append(argv)
+        if "--tunnel" in argv:
+            cli._write_tunnel_url("https://brisk-fox-99.trycloudflare.com")
+        alive["pid"] = 5000 + len(launched)
+        return Proc(alive["pid"])
+
+    monkeypatch.setattr(daemon, "_alive", lambda pid: pid == alive["pid"])
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(daemon.os, "killpg", lambda *a: alive.update(pid=None))
+    monkeypatch.setattr(daemon.os, "getpgid", lambda pid: pid)
+    assert main(["start", "--tunnel", "--port", "9000"]) == 0
+    assert daemon.last_args() == ["--port", "9000", "--tunnel"]
+    assert main(["restart"]) == 0
+    out = capsys.readouterr().out
+    assert "reusing: zordon start --port 9000 --tunnel" in out
+    assert launched[1][-5:] == ["serve", "--no-setup", "--port", "9000", "--tunnel"]
+    assert "tunnel: https://brisk-fox-99.trycloudflare.com" in out
+    # Flags given to restart win over the remembered ones.
+    assert main(["restart", "--port", "9100"]) == 0
+    assert launched[2][-4:] == ["serve", "--no-setup", "--port", "9100"]
+    assert daemon.last_args() == ["--port", "9100"]
+    cli._write_tunnel_url(None)
