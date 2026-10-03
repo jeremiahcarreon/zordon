@@ -25,13 +25,19 @@ settings. Zordon reports that last case and does not change it.
 
 ## What Zordon never does
 
-* **Never bypasses permissions.** No code path builds a `claude` command line
-  containing `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`
-  or `--permission-mode bypassPermissions`. `discovery.resume_command` is the only
-  constructor of that command line and `tests/test_safety.py` greps the whole
+* **Never bypasses permissions on its own.** No code path builds a `claude`
+  command line containing `--dangerously-skip-permissions` or
+  `--allow-dangerously-skip-permissions`; `tests/test_safety.py` greps the whole
   package for the flag names. `bypassPermissions` is not a config value and is
-  never written to any settings file. If your own Claude Code settings already use
-  it, Zordon tells you on session start.
+  never written to any settings file. The one way Claude Code runs without
+  permission checks under Zordon is a *project* the user created with "Never ask"
+  (decision 0018): that project launches with `--permission-mode bypassPermissions`,
+  spelled in exactly one constant (`discovery.BYPASS_MODE`) behind an explicit
+  `allow_bypass` flag that only the project launcher passes. Claude Code's own
+  one-time warning for that mode is read aloud and confirmed by the user; Zordon
+  accepts it only in a session launched for such a project. Such projects keep file
+  edits inside their folder through a PreToolUse hook that can only deny. If your
+  own Claude Code settings already use bypass, Zordon tells you on session start.
 * **Never approves a prompt for you.** Permission prompts are spoken at every
   verbosity level, and while one is showing, voice input is narrowed to a strict
   yes or no: the router must return `yes` or `no` at 0.95 probability or higher,
@@ -44,7 +50,12 @@ settings. Zordon reports that last case and does not change it.
   answer a permission request is ever registered (decision 0009).
 * **Never widens the permission mode by voice.** Voice can switch between
   `default`, `acceptEdits` and `plan`. `auto` and `dontAsk` need a tap on the
-  client. `bypassPermissions` is refused everywhere.
+  client. `bypassPermissions` is refused by the switcher; it exists only as the
+  launch mode of a project created that way.
+* **Never runs as root.** `serve`, `start`, `setup` and `service install` refuse
+  under uid 0; the installer creates a normal user when it is started as root.
+  Claude Code itself refuses bypass mode as root. Projects live inside the user's
+  home directory and the folder picker cannot leave it.
 * **Never edits allow or deny rules.** `settings.json` and
   `.claude/settings.local.json` are Claude Code's. Zordon reads them to speak a
   summary and points you at the file.

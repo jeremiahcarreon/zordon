@@ -357,6 +357,129 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     ok(starts[starts.length - 1] - starts[0] > 38, 'the last chunk starts ~39 s after the first (no re-anchor to now)');
   }
 
+  // ---- WEB-15: projects view (admin mode) and work view ----
+  {
+    const findText = (node, re) => node.textContent && re.test(node.textContent);
+    const buttons = (node) => node.querySelectorAll('button');
+    // Nothing focused: the projects view is shown, the feed hidden.
+    recv(hello({ focused_session: null, agents: { 'claude-code': true, codex: true, generic: true }, default_agent: 'claude-code', home: '/home/u' }));
+    recv({ type: 'sessions', sessions: [] });
+    ok(!$('projects-view').hasAttribute('hidden') && $('feed').hasAttribute('hidden') && $('work-head').hasAttribute('hidden'), 'no focus: projects view shown, feed and work header hidden');
+    ok($('focus-title').textContent === 'Projects', 'header chip says Projects in admin mode');
+    ok(!$('projects-empty').hasAttribute('hidden'), 'no projects yet: the empty hint shows');
+    // A projects message renders one card per project with folder, badges and a Forget.
+    const projectsMsg = {
+      type: 'projects',
+      focused_project: null,
+      projects: [
+        { id: 'p1', name: 'Website', directory: '/home/u/Code/site', agent: 'claude-code', permission_mode: 'auto', scope_edits: true, running: true, session_id: 's1', focused: false, state: 'idle', last_used: now(), exists: true },
+        { id: 'p2', name: 'Yolo', directory: '/home/u/yolo', agent: 'claude-code', permission_mode: 'bypassPermissions', scope_edits: true, running: false, session_id: null, focused: false, state: null, last_used: now() - 3600, exists: true },
+        { id: 'p3', name: 'Gone', directory: '/home/u/gone', agent: 'codex', permission_mode: 'default', scope_edits: true, running: false, session_id: null, focused: false, state: null, last_used: 1, exists: false },
+      ],
+    };
+    recv(projectsMsg);
+    const cards = $('project-list').children;
+    ok(cards.length === 3 && $('projects-empty').hasAttribute('hidden'), 'one card per project');
+    ok(findText(cards[0], /Website/) && findText(cards[0], /~\/Code\/site/) && findText(cards[0], /Running/) && findText(cards[0], /auto mode/), 'card shows name, home-relative folder, Running and the mode in words');
+    ok(findText(cards[1], /Paused/) && findText(cards[1], /no permission checks/), 'a bypass project is labelled plainly');
+    ok(findText(cards[2], /Folder missing/) && (buttons(cards[2])[0].disabled || buttons(cards[2])[0].hasAttribute('disabled')), 'a project whose folder is gone cannot be opened');
+    buttons(cards[0])[0].click();
+    const openCmd = cmds('open_project')[cmds('open_project').length - 1];
+    ok(openCmd && openCmd.args.project_id === 'p1', 'tapping a card sends open_project');
+    buttons(cards[1])[1].click(); // Forget -> confirm dialog
+    ok($('confirm-dialog').open && /Files stay where they are/.test($('confirm-text').textContent), 'Forget asks first and says files stay');
+    $('confirm-dialog').returnValue = 'ok';
+    $('confirm-dialog').close();
+    const forgetCmd = cmds('forget_project')[cmds('forget_project').length - 1];
+    ok(forgetCmd && forgetCmd.args.project_id === 'p2' && forgetCmd.args.confirm === true, 'confirming sends forget_project with confirm');
+
+    // Focus arrives: the work view takes over with the project name and mode.
+    recv(Object.assign({}, projectsMsg, { focused_project: 'p1', projects: projectsMsg.projects.map((p) => Object.assign({}, p, { focused: p.id === 'p1' })) }));
+    recv(sessions('s1'));
+    ok($('projects-view').hasAttribute('hidden') && !$('feed').hasAttribute('hidden') && !$('work-head').hasAttribute('hidden'), 'focus: work view shown');
+    ok($('work-title').textContent === 'Website' && $('work-mode').textContent === 'auto mode', 'work header names the project and its mode');
+    ok($('focus-title').textContent === 'Website', 'header chip names the project too');
+    $('btn-pause').click();
+    ok(cmds('admin').length === 1, 'Pause sends admin (the agent keeps running)');
+    recv({ type: 'sessions', sessions: sessions('s1').sessions.map((x) => Object.assign({}, x, { focused: false })) });
+    recv(Object.assign({}, projectsMsg, { focused_project: null }));
+    ok(!$('projects-view').hasAttribute('hidden'), 'after admin the projects view is back');
+    const sessionsHidden = $('sessions').hasAttribute('hidden');
+    ok(sessionsHidden, 'the raw session picker no longer pops up on its own');
+  }
+
+  // ---- WEB-16: the new-project walkthrough ----
+  {
+    const nBrowse = cmds('browse').length;
+    $('btn-new-project').click();
+    ok(!$('new-project').hasAttribute('hidden') && !$('np-step-where').hasAttribute('hidden'), 'Start a new project opens the walkthrough on the folder step');
+    ok(cmds('browse').length === nBrowse + 1 && cmds('browse')[nBrowse].args.path === undefined, 'it asks for the home folder listing first (no path)');
+    recv({ type: 'browse', path: '/home/u', parent: null, home: '/home/u', can_create: true, entries: [
+      { name: 'Code', path: '/home/u/Code', has_git: false, project_id: null },
+      { name: 'yolo', path: '/home/u/yolo', has_git: true, project_id: 'p2' },
+    ] });
+    ok($('np-up').hasAttribute('hidden') && $('np-crumb').textContent === '~', 'at home there is no Up and the crumb is ~');
+    const folderBtns = $('np-folders').querySelectorAll('button');
+    ok(folderBtns.length === 2 && /Code/.test(folderBtns[0].textContent) && /already a project/.test(folderBtns[1].textContent), 'folders listed; an existing project is marked');
+    ok($('np-use-folder').disabled, 'the whole home folder cannot be a project');
+    folderBtns[0].click();
+    const b2 = cmds('browse')[cmds('browse').length - 1];
+    ok(b2.args.path === '/home/u/Code', 'tapping a folder browses into it');
+    recv({ type: 'browse', path: '/home/u/Code', parent: '/home/u', home: '/home/u', can_create: true, entries: [{ name: 'site', path: '/home/u/Code/site', has_git: true, project_id: 'p1' }] });
+    ok(!$('np-up').hasAttribute('hidden') && $('np-crumb').textContent === '~/Code', 'inside a folder Up appears and the crumb is relative to home');
+    // Create a new folder: a taken name is refused client-side, a fresh one moves on.
+    $('np-folder-name').value = 'site';
+    $('np-create-form').dispatch('submit');
+    ok(!$('np-error').hasAttribute('hidden') && /already a folder called site/.test($('np-error').textContent), 'a name that exists here is refused inline');
+    $('np-folder-name').value = 'My App';
+    $('np-create-form').dispatch('submit');
+    // claude-code and codex installed -> agent step shows; the generic (attach-only) adapter is never offered.
+    ok(!$('np-step-agent').hasAttribute('hidden'), 'with more than one installed assistant the assistant step is shown');
+    const agentBtns = $('np-agents').querySelectorAll('button');
+    ok(agentBtns.length === 2 && agentBtns[0].getAttribute('aria-checked') === 'true', 'installed assistants listed, default preselected');
+    ok(Array.from(agentBtns).every(function (b) { return !/Generic/.test(b.textContent); }), 'the generic pane adapter is not a project assistant');
+    $('np-next').click();
+    ok(!$('np-step-ask').hasAttribute('hidden'), 'then the permissions step');
+    const modeBtns = $('np-modes').querySelectorAll('button');
+    ok(modeBtns.length === 3 && modeBtns[0].dataset.value === 'default' && modeBtns[1].dataset.value === 'auto' && modeBtns[2].dataset.value === 'bypassPermissions', 'three choices: ask, auto, never ask');
+    ok($('np-bypass-warn').hasAttribute('hidden'), 'no bypass warning while a safe mode is chosen');
+    modeBtns[2].click();
+    ok(!$('np-bypass-warn').hasAttribute('hidden'), 'choosing Never ask shows the warning');
+    $('np-next').click();
+    ok(!$('np-step-ready').hasAttribute('hidden') && /My App/.test($('np-summary').textContent) && /Never ask/.test($('np-summary').textContent), 'summary names folder and mode');
+    $('np-start').click();
+    const create = cmds('create_project')[cmds('create_project').length - 1];
+    ok(create && create.args.parent === '/home/u/Code' && create.args.name === 'My App' && create.args.permission_mode === 'bypassPermissions' && create.args.scope_edits === true && create.args.existing === undefined && create.args.agent === undefined, 'Start sends create_project with the chosen folder, bypass mode and scope');
+    // A server error lands inline, not as a toast.
+    recv({ type: 'error', message: 'My App already exists.', code: 'command' });
+    ok(!$('np-error').hasAttribute('hidden') && /already exists/.test($('np-error').textContent), 'a create error is shown inside the walkthrough');
+    $('np-start').click();
+    recv({ type: 'sessions', sessions: [{ session_id: 's9', directory: '/home/u/Code/My App', title: 'My App', last_active: now(), attached: true, running: true, state: 'working', permission_mode: 'bypassPermissions', focused: true }] });
+    recv({ type: 'projects', focused_project: 'p9', projects: [{ id: 'p9', name: 'My App', directory: '/home/u/Code/My App', permission_mode: 'bypassPermissions', running: true, session_id: 's9', focused: true, exists: true }] });
+    ok($('new-project').hasAttribute('hidden') && !$('work-head').hasAttribute('hidden') && $('work-title').textContent === 'My App', 'on success the walkthrough closes and the work view shows the new project');
+
+    // With a single installed assistant the assistant step is skipped.
+    recv(hello({ focused_session: null, agents: { 'claude-code': true, codex: false, generic: true }, default_agent: 'claude-code', home: '/home/u' }));
+    recv({ type: 'sessions', sessions: [] });
+    $('btn-new-project').click();
+    recv({ type: 'browse', path: '/home/u', parent: null, home: '/home/u', can_create: true, entries: [{ name: 'Code', path: '/home/u/Code', has_git: false, project_id: null }] });
+    $('np-folders').querySelectorAll('button')[0].click();
+    recv({ type: 'browse', path: '/home/u/Code', parent: '/home/u', home: '/home/u', can_create: true, entries: [] });
+    $('np-use-folder').click();
+    ok(!$('np-step-ask').hasAttribute('hidden') && $('np-step-agent').hasAttribute('hidden'), 'one installed assistant: straight from folder to permissions');
+    ok(/Step 2 of 3/.test($('np-step-label').textContent), 'the step counter skips it too');
+    $('np-next').click();
+    $('np-start').click();
+    const create2 = cmds('create_project')[cmds('create_project').length - 1];
+    ok(create2.args.existing === true && create2.args.parent === '/home/u/Code' && create2.args.permission_mode === 'default', 'Use this folder sends existing=true with the safe default mode');
+    $('np-close').click();
+    ok($('new-project').hasAttribute('hidden'), 'close hides the walkthrough');
+    // The voice shim's notice opens it.
+    recv({ type: 'transcript', row_id: -77, session_id: '', kind: 'notice', text: 'Start a new project: tap the button in Projects.', raw_lines: [], ts: now() });
+    ok(!$('new-project').hasAttribute('hidden'), 'the "new project" voice notice opens the walkthrough');
+    $('np-close').click();
+  }
+
   console.log(`app_test: all passed (${passed} checks)`);
   process.exit(0);
 })().catch((e) => { console.error('app_test failed:', e); process.exit(1); });

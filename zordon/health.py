@@ -34,6 +34,7 @@ PROBE_TIMEOUT_S = 1.0
 OPTIONAL_KEYS = frozenset({"hooks", "update", "tunnel"})
 
 LABELS = {
+    "account": "account",
     "tmux": "tmux",
     "agent": "agent",
     "sessions": "session",
@@ -50,6 +51,7 @@ LABELS = {
 
 # Fix wording shared with ``zordon doctor`` so the strip and the CLI agree.
 FIX_DOWNLOAD = "zordon doctor --download"
+FIX_ROOT = "create a normal user and run Zordon there: sudo useradd -m -s /bin/bash <name>; sudo usermod -aG sudo <name>; sudo passwd <name>; su - <name>"
 FIX_TMUX = "install tmux 3.2 or newer (or run `zordon setup`)"
 FIX_CLAUDE = "install Claude Code and log in (or run `zordon setup`)"
 FIX_CURL = "install curl (or run `zordon setup`)"
@@ -144,6 +146,7 @@ def collect(agent: Any, *, which: Which = shutil.which, timeout: float = PROBE_T
         tmux_future = pool.submit(_tmux_alive, agent)
         ollama_future = pool.submit(_ollama_probe, agent)
         items = [
+            _guard("account", check_account),
             _guard("tmux", lambda: check_tmux(agent, tmux_future, which, timeout)),
             _guard("agent", lambda: check_agent(agent)),
             _guard("sessions", lambda: check_sessions(agent)),
@@ -425,6 +428,32 @@ def check_threads(agent: Any) -> Item:
     if dead:
         return Item("threads", FAIL, f"{', '.join(dead)} thread{'s' if len(dead) > 1 else ''} not running", FIX_RESTART)
     return Item("threads", OK, f"{seen} worker threads running")
+
+
+def check_account() -> Item:
+    """Zordon should run as a normal user: every project acts with this account's power,
+    and Claude Code refuses bypass-permissions mode under root (decision 0018)."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
+        return Item(
+            "account",
+            WARN,
+            "running as root; Claude Code refuses bypass mode and every project runs with root's power",
+            FIX_ROOT,
+        )
+    return Item("account", OK, f"running as {_username()}")
+
+
+def _username() -> str:
+    for key in ("USER", "LOGNAME"):
+        if os.environ.get(key):
+            return os.environ[key]
+    try:
+        import pwd  # noqa: PLC0415
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError, AttributeError):
+        return "an unprivileged user"
 
 
 def check_hooks(which: Which) -> Item:

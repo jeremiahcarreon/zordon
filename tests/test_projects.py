@@ -209,8 +209,14 @@ def test_open_reconnects_to_a_live_pane_or_starts_fresh(env, tmp_path: Path, mon
     again = mgr.open_project(pid)
     assert again["session_id"] == sid and mgr.sessions[sid].target == target and not mgr.sessions[sid].owned
     assert mgr.sessions[sid].detail == "reconnected"
-    # Pane gone and the conversation unknown to the agent store: start a new one in the folder.
+    # The pane is alive but only a shell is left in it (the agent exited): it is closed and
+    # the project starts fresh rather than "reconnecting" to a shell.
     mgr.sessions.clear()
+    tmux.set_screen(target, ["user@host:~/Api$ ", ""], alt=False)
+    restarted = mgr.open_project(pid)
+    assert restarted["session_id"] != sid and ("kill_window", target) in tmux.calls
+    mgr.sessions.clear()
+    target = mgr.projects.get(pid).tmux_target
     tmux.alive[target] = False
     fresh = mgr.open_project(pid)
     assert fresh["session_id"] != sid and fresh["running"]

@@ -122,8 +122,9 @@ def test_everything_ok(agent: FakeAgent):
     r = H.collect(agent, which=which_all)
     assert r.status == "ok", [(i.key, i.status, i.detail) for i in r.degraded()]
     assert [i.key for i in r.items] == [
-        "tmux", "agent", "sessions", "normalizer", "tts", "stt", "vad", "router", "threads", "hooks", "update",
+        "account", "tmux", "agent", "sessions", "normalizer", "tts", "stt", "vad", "router", "threads", "hooks", "update",
     ]
+    assert item(r, "account").detail.startswith("running as ")
     assert r.summary_sentence() == ""
     assert item(r, "sessions").detail.endswith("focused")
     assert item(r, "router").detail == "keyword -> jev"
@@ -293,6 +294,18 @@ def test_router_rejected_key_is_explained(agent: FakeAgent):
     assert r.status == "warn" and r.detail.startswith("jev failed on the last request") and r.fix == H.FIX_ROUTER
     fb.last_errors.clear()
     assert item(H.collect(agent, which=which_all), "router").status == "ok"
+
+
+def test_root_account_warns(agent: FakeAgent, monkeypatch):
+    """Root is amber: every project would act with root's power and Claude Code refuses
+    bypass mode there (decision 0018). A normal user is green."""
+    monkeypatch.setattr(H.os, "geteuid", lambda: 0)
+    a = item(H.collect(agent, which=which_all), "account")
+    assert a.status == "warn" and a.detail.startswith("running as root") and "useradd" in a.fix
+    monkeypatch.setattr(H.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("USER", "jane")
+    a = item(H.collect(agent, which=which_all), "account")
+    assert a.status == "ok" and a.detail == "running as jane"
 
 
 def test_dead_thread_fails(agent: FakeAgent):

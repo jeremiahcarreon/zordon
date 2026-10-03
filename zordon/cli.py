@@ -52,6 +52,37 @@ class CliError(Exception):
         self.code = code
 
 
+ROOT_REFUSAL = """zordon {command}: not as root.
+
+Zordon drives a coding agent with the permissions of the account it runs under,
+so as root every project could change anything on this machine. Claude Code
+itself refuses to run in bypass-permissions mode as root. Create a normal user
+and continue there:
+
+  sudo useradd -m -s /bin/bash <name>   # or: adduser <name>
+  sudo usermod -aG sudo <name>          # wheel on Fedora/Arch
+  sudo passwd <name>
+  su - <name>
+  curl -fsSL https://raw.githubusercontent.com/jeremiahcarreon/zordon/main/install.sh | sh
+
+(Set ZORDON_ALLOW_ROOT=1 to override; not recommended.)"""
+
+
+def running_as_root() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    return bool(geteuid is not None and geteuid() == 0)
+
+
+def refuse_root(command: str) -> None:
+    """Raise CliError for the commands that start or configure Zordon when run as root.
+
+    Everything that only inspects or stops (status, stop, logs, doctor, update,
+    uninstall, token) keeps working as root; a container's operator needs those.
+    """
+    if running_as_root() and os.environ.get("ZORDON_ALLOW_ROOT") != "1":
+        raise CliError(ROOT_REFUSAL.format(command=command), EXIT_ERROR)
+
+
 # ---- parser --------------------------------------------------------------------------------
 
 
@@ -267,6 +298,7 @@ def run_setup_tui_or_none(config_path: Path | None, *, do_actions: bool, serve: 
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    refuse_root("setup")
     from zordon import setup as wizard  # noqa: PLC0415
 
     config_path = getattr(args, "config", None)
@@ -305,6 +337,7 @@ def _serve_extra(args: argparse.Namespace) -> list[str]:
 
 
 def cmd_start(args: argparse.Namespace) -> int:
+    refuse_root("start")
     from zordon import daemon  # noqa: PLC0415
 
     cfg, _ = load_or_create(getattr(args, "config", None))
@@ -366,6 +399,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
     """Stop and start again. Without flags of its own, the restart reuses the flags
     the running instance was started with (``--tunnel``, ``--bind``, ``--port``), so
     a restart after an update does not silently drop the tunnel."""
+    refuse_root("restart")
     from zordon import daemon  # noqa: PLC0415
 
     previous = daemon.last_args()
@@ -464,6 +498,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_service_install(args: argparse.Namespace) -> int:
+    refuse_root("service install")
     from zordon import service  # noqa: PLC0415
 
     extra = _serve_extra(args)
@@ -655,6 +690,7 @@ def first_run_needs_setup(path: Path | None, no_setup: bool) -> bool:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    refuse_root("serve")
     if first_run_needs_setup(args.config, getattr(args, "no_setup", False)):
         from zordon import setup as wizard  # noqa: PLC0415
 

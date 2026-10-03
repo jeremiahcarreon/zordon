@@ -43,9 +43,9 @@
   </section>
 
   <header id="top">
-    <button id="btn-sessions" class="icon-btn" type="button" aria-label="Sessions" title="Sessions"><svg><use href="#i-menu"/></svg></button>
-    <button id="focus-chip" class="focus-chip" type="button" title="Switch session">
-      <span id="focus-title" class="focus-title">No session</span>
+    <button id="btn-projects" class="icon-btn" type="button" aria-label="Projects" title="Projects"><svg><use href="#i-menu"/></svg></button>
+    <button id="focus-chip" class="focus-chip" type="button" title="Back to projects">
+      <span id="focus-title" class="focus-title">Projects</span>
       <span id="focus-state" class="chip state-detached">offline</span>
     </button>
     <button id="health-badge" class="health-badge health-none" type="button" aria-label="Health" title="Health" hidden>
@@ -74,10 +74,37 @@
     </div>
   </div>
 
+  <!-- (12) projects view: admin mode, shown when nothing is focused -->
+  <main id="projects-view" class="projects" hidden>
+    <div class="projects-inner">
+      <h1 class="projects-title">What do you want to work on?</h1>
+      <p class="muted projects-lead">A project is a folder in your home directory and the assistant working in it. Start one, or pick up where you left off.</p>
+      <div class="projects-actions">
+        <button type="button" id="btn-new-project" class="btn primary big">Start a new project</button>
+        <button type="button" id="btn-continue-project" class="btn big">Continue a previous project</button>
+      </div>
+      <section id="projects-section" class="projects-section">
+        <h2 class="projects-h2">Your projects</h2>
+        <ul id="project-list" class="project-list"></ul>
+        <p id="projects-empty" class="empty muted" hidden>No projects yet. Start a new one above.</p>
+      </section>
+      <p class="muted small projects-foot"><button type="button" id="btn-advanced" class="link-btn">Advanced: sessions and panes</button></p>
+    </div>
+  </main>
+
+  <!-- (13) work view header: the open project, its mode, and the way back -->
+  <div id="work-head" class="work-head" hidden>
+    <div class="work-head-main">
+      <span id="work-title" class="work-title"></span>
+      <span id="work-mode" class="badge mode" hidden></span>
+    </div>
+    <button type="button" id="btn-pause" class="btn small" title="Back to projects; the agent keeps running">Pause</button>
+  </div>
+
   <!-- (4) transcript feed -->
   <main id="feed">
     <ol id="rows" aria-live="polite" aria-relevant="additions"></ol>
-    <p id="feed-empty" class="empty muted">Nothing yet. Pick a session, then talk or type.</p>
+    <p id="feed-empty" class="empty muted">Nothing yet. Talk or type to begin.</p>
   </main>
   <button id="jump" class="jump" type="button" hidden><svg><use href="#i-down"/></svg><span id="jump-count"></span></button>
 
@@ -114,10 +141,63 @@
     </div>
   </footer>
 
-  <!-- (2) session picker -->
-  <section id="sessions" class="sheet" hidden aria-label="Sessions">
+  <!-- (14) new project walkthrough -->
+  <section id="new-project" class="sheet" hidden aria-label="Start a new project">
     <div class="sheet-head">
-      <h2>Sessions</h2>
+      <h2 id="np-title">Start a new project</h2>
+      <span id="np-step-label" class="muted small"></span>
+      <button type="button" id="np-close" class="icon-btn" aria-label="Close"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="sheet-body np-body">
+      <div id="np-step-where" class="np-step">
+        <h3 class="np-h">Where should it live?</h3>
+        <p class="muted small">Pick a folder in your home directory, or make a new one. You never have to type a path.</p>
+        <div class="np-crumb-row">
+          <button type="button" id="np-up" class="btn small" hidden>Up</button>
+          <span id="np-crumb" class="np-crumb">~</span>
+        </div>
+        <ul id="np-folders" class="np-folders"></ul>
+        <p id="np-folders-empty" class="muted small" hidden>No folders here yet.</p>
+        <div class="np-folder-actions">
+          <form id="np-create-form" class="np-create" autocomplete="off">
+            <label class="field"><span>Create a new folder here</span>
+              <input id="np-folder-name" type="text" placeholder="my-website" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="64">
+            </label>
+            <button type="submit" id="np-create-folder" class="btn primary wide">Create folder and continue</button>
+          </form>
+          <button type="button" id="np-use-folder" class="btn wide">Use this folder</button>
+        </div>
+      </div>
+      <div id="np-step-agent" class="np-step" hidden>
+        <h3 class="np-h">Which assistant?</h3>
+        <ul id="np-agents" class="np-choices"></ul>
+      </div>
+      <div id="np-step-ask" class="np-step" hidden>
+        <h3 class="np-h">How much should it ask?</h3>
+        <ul id="np-modes" class="np-choices"></ul>
+        <div id="np-bypass-warn" class="np-warn" hidden>
+          Runs every command without asking. Only for a folder you can afford to lose, ideally in a container or VM. Claude Code will show its own warning once; Zordon will read it to you and you confirm.
+        </div>
+        <label class="opt np-scope"><input type="checkbox" id="np-scope" checked><span>Keep file edits inside this folder</span></label>
+        <p class="muted small">Zordon blocks edits outside the project folder. Shell commands are not restricted.</p>
+      </div>
+      <div id="np-step-ready" class="np-step" hidden>
+        <h3 class="np-h">Ready to start</h3>
+        <dl id="np-summary" class="kv"></dl>
+      </div>
+      <p id="np-error" class="msg np-error" role="alert" hidden></p>
+    </div>
+    <div class="np-nav">
+      <button type="button" id="np-back" class="btn">Back</button>
+      <button type="button" id="np-next" class="btn primary">Next</button>
+      <button type="button" id="np-start" class="btn primary" hidden>Start</button>
+    </div>
+  </section>
+
+  <!-- (2) advanced: raw sessions and panes -->
+  <section id="sessions" class="sheet" hidden aria-label="Advanced">
+    <div class="sheet-head">
+      <h2>Advanced</h2>
       <button type="button" id="btn-refresh" class="btn small">Refresh</button>
       <button type="button" id="btn-sessions-close" class="icon-btn" aria-label="Close"><svg><use href="#i-close"/></svg></button>
     </div>
@@ -128,6 +208,9 @@
         <div id="tunnel-qr" class="qr"></div>
         <p class="muted small">Scan on the phone, then enter the token.</p>
       </div>
+      <details id="advanced" class="advanced">
+      <summary>Sessions and tmux panes</summary>
+      <p class="muted small">Projects are the easy way in. This is the machinery underneath: every agent session Zordon knows about, raw directories and tmux panes.</p>
       <ul id="session-list" class="session-list"></ul>
       <p id="sessions-empty" class="empty muted" hidden>No sessions found.</p>
       <form id="new-session" class="card new-session" autocomplete="off">
@@ -154,6 +237,7 @@
         </label>
         <button type="submit" class="btn wide">Attach</button>
       </form>
+      </details>
     </div>
   </section>
 
@@ -200,7 +284,11 @@
         <label class="field"><span>Permission mode (focused session)</span>
           <select id="set-mode" class="mode-select"></select>
         </label>
-        <p class="muted small">Zordon never widens Claude Code's permissions. Allow and deny rules are edited in Claude Code's settings files.</p>
+        <p class="muted small">How much the agent asks is chosen per project when you start it. This switches a running session between the modes Zordon can set by voice; allow and deny rules live in Claude Code's settings files.</p>
+      </section>
+      <section class="card">
+        <h3>Advanced</h3>
+        <button type="button" id="btn-advanced-settings" class="btn wide">Sessions and tmux panes</button>
       </section>
     </div>
   </aside>

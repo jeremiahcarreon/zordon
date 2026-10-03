@@ -76,6 +76,23 @@ class FakeSessions:
         self._rec("start", directory, permission_mode)
         return "new"
 
+    # projects (decision 0018)
+    projects: list[dict[str, Any]] = []
+
+    def list_projects(self):
+        return [dict(p) for p in self.projects]
+
+    def open_project(self, project_id):
+        self._rec("open_project", project_id)
+        p = next(p for p in self.projects if p["id"] == project_id)
+        p["running"] = True
+        self._focused = p.get("session_id") or "new"
+        return dict(p, session_id=self._focused)
+
+    def admin(self):
+        self._rec("admin")
+        self._focused = None
+
     def resume(self, session_id, permission_mode=None):
         self._rec("resume", session_id, permission_mode)
 
@@ -482,6 +499,35 @@ def test_unknown_command_is_refused(h: Harness):
     h.say("x")
     assert h.said()[-1] == "I don't know that command."
     assert h.sessions.calls == []
+
+
+def test_projects_by_voice(tmp_path: Path):
+    h = Harness(tmp_path, focused=None)
+    h.say("list projects")
+    assert h.said()[-1].startswith("There are no saved projects")
+    h.sessions.projects = [
+        {"id": "p1", "name": "website", "running": False, "session_id": None},
+        {"id": "p2", "name": "invoices", "running": True, "session_id": "s2"},
+    ]
+    h.say("what projects do i have")
+    assert h.said()[-1] == "There are 2 projects: website; invoices, running."
+    h.say("run the tests")  # admin mode: nothing is typed anywhere
+    assert h.said()[-1].startswith("No project is open.") and h.sessions.called("send_text") == []
+    h.say("open project")
+    assert h.said()[-1].startswith("Which project?")
+    h.say("open the shop project")
+    assert "don't have a project called shop" in h.said()[-1]
+    h.say("open the website project")
+    assert h.sessions.called("open_project") == [("p1",)] and h.said()[-1] == "Opened website."
+    # With a project open the (scripted) router decides; script the two shims.
+    h.sessions._focused = "s1"
+    h.router.routes["pause"] = RouteResult("shim_command", 0.99, command="admin")
+    h.say("pause")
+    assert h.sessions.called("admin") == [()] and h.sessions.focused() is None
+    assert h.said()[-1].startswith("Paused.")
+    h.say("new project")
+    assert "Start a new project" in h.said()[-1]
+    h.store.close()
 
 
 def test_no_focused_session(tmp_path: Path):

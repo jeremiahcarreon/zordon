@@ -263,7 +263,13 @@ def test_permission_mode_options_are_the_safe_list():
 
 # ---- forbidden strings --------------------------------------------------------------------
 
-FORBIDDEN = ("bypassPermissions", "dangerously")
+FORBIDDEN = ("dangerously",)
+# The client names the bypass mode in exactly one place: the "Never ask" choice of the
+# new-project walkthrough, which sends it as create_project's permission_mode (decision
+# 0018). It must never appear in the mode switcher's option list or anywhere else.
+BYPASS_WORD = "bypassPermissions"
+BYPASS_ALLOWED_IN = ("app.js",)
+BYPASS_MAX_MENTIONS = 6
 
 
 @pytest.mark.parametrize("path", _web_files(), ids=lambda p: p.name)
@@ -271,6 +277,18 @@ def test_no_permission_bypass_strings(path: Path):
     text = path.read_text(encoding="utf-8", errors="replace")
     for word in FORBIDDEN:
         assert word.lower() not in text.lower(), f"{path.name} mentions {word!r}"
+    mentions = text.count(BYPASS_WORD)
+    if path.name not in BYPASS_ALLOWED_IN:
+        assert mentions == 0, f"{path.name} mentions {BYPASS_WORD!r}"
+    else:
+        assert 0 < mentions <= BYPASS_MAX_MENTIONS, f"{path.name}: {mentions} mentions of {BYPASS_WORD!r}; keep it to the walkthrough"
+        assert BYPASS_WORD not in _permission_modes_list(text), "the mode switcher must not offer bypass"
+
+
+def _permission_modes_list(text: str) -> str:
+    """The PERMISSION_MODES literal from protocol.js when present in this file, else ''."""
+    m = re.search(r"PERMISSION_MODES\s*=\s*\[([^\]]*)\]", text)
+    return m.group(1) if m else ""
 
 
 # Model marketing names are spelled in pieces so this file does not itself contain them.

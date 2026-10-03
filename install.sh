@@ -113,6 +113,101 @@ sha256_of() {
   fi
 }
 
+# ---- 1b. never as root --------------------------------------------------------------------
+# Zordon runs a coding agent with the power of the account it runs under, and Claude
+# Code refuses to skip permissions as root. As root this script creates a normal user
+# (asking for the name) and continues the install as that user. ZORDON_ALLOW_ROOT=1 skips.
+if [ "$(id -u)" = 0 ]; then
+  if [ "${ZORDON_ALLOW_ROOT:-}" = 1 ]; then
+    printf '  %s!%s Running as root because ZORDON_ALLOW_ROOT=1 is set. Claude Code will refuse bypass mode.\n' "$BAD" "$R"
+  else
+    say "  Zordon must run as a normal user, not root: it drives a coding agent with the"
+    say "  power of its account, and Claude Code refuses to skip permissions as root."
+    say ""
+    ZUSER=""
+    if [ -r /dev/tty ]; then
+      printf '  Name for the new user [%szordon%s]: ' "$B" "$R"
+      read -r ZUSER </dev/tty || ZUSER=""
+    else
+      ZUSER="${ZORDON_USER:-}"
+      say "  No terminal attached; using the user ${B}${ZUSER:-zordon}${R} (set ZORDON_USER to choose)."
+    fi
+    ZUSER="${ZUSER:-zordon}"
+    case "$ZUSER" in
+      *[!A-Za-z0-9._-]*|-*|"") die "user names use letters, digits, dots, dashes and underscores" ;;
+    esac
+
+    # sudo itself, so the setup wizard can install prerequisites later.
+    if ! have sudo; then
+      install_sudo() {
+        if have apt-get; then apt-get update -qq && apt-get install -y -qq sudo
+        elif have dnf; then dnf install -y -q sudo
+        elif have yum; then yum install -y -q sudo
+        elif have pacman; then pacman -Sy --noconfirm --needed sudo
+        elif have zypper; then zypper --non-interactive install sudo
+        elif have apk; then apk add --no-cache sudo shadow
+        else return 1
+        fi
+      }
+      spin "Installing sudo" install_sudo || say "  ${BAD}!${R} sudo could not be installed; prerequisite installs will have to be done by hand."
+    fi
+
+    if id "$ZUSER" >/dev/null 2>&1; then
+      done_ "User $ZUSER exists"
+    else
+      if have useradd; then
+        useradd -m -s /bin/bash "$ZUSER" || die "could not create user $ZUSER"
+      elif have adduser; then
+        adduser -D "$ZUSER" || die "could not create user $ZUSER"
+      else
+        die "neither useradd nor adduser is available; create a user by hand and run this again as that user"
+      fi
+      done_ "Created user $ZUSER"
+    fi
+    ADMIN_GROUP=""
+    if getent group sudo >/dev/null 2>&1; then ADMIN_GROUP=sudo
+    elif getent group wheel >/dev/null 2>&1; then ADMIN_GROUP=wheel
+    fi
+    if [ -n "$ADMIN_GROUP" ]; then
+      if have usermod; then usermod -aG "$ADMIN_GROUP" "$ZUSER" 2>/dev/null || true
+      elif have adduser; then adduser "$ZUSER" "$ADMIN_GROUP" 2>/dev/null || true
+      fi
+      done_ "$ZUSER can use sudo (group $ADMIN_GROUP)"
+    fi
+    if [ -r /dev/tty ]; then
+      say "  Choose a password for $ZUSER; the wizard asks for it when it installs prerequisites."
+      passwd "$ZUSER" </dev/tty || say "  ${BAD}!${R} No password set; set one later with: passwd $ZUSER (needed for installing prerequisites)."
+    elif [ "${ZORDON_SUDO_NOPASSWD:-}" = 1 ]; then
+      mkdir -p /etc/sudoers.d
+      printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$ZUSER" > "/etc/sudoers.d/zordon-$ZUSER"
+      chmod 0440 "/etc/sudoers.d/zordon-$ZUSER"
+      done_ "$ZUSER may install packages without a password (ZORDON_SUDO_NOPASSWD=1)"
+    else
+      say "  ${BAD}!${R} No terminal to set a password: prerequisite installs will need one later (passwd $ZUSER)."
+    fi
+
+    # Fetch this script to a file the new user can read, then continue as that user.
+    SELF="/tmp/zordon-install.sh"
+    if [ -f "$0" ] && [ "$(basename "$0")" = "install.sh" ]; then
+      cp "$0" "$SELF"  # run from a checkout: continue with this very file
+    else
+      fetch_self() { fetch "https://raw.githubusercontent.com/jeremiahcarreon/zordon/${REF}/install.sh" > "$SELF"; }
+      spin "Fetching the installer for $ZUSER" fetch_self
+    fi
+    chmod 644 "$SELF"
+    PASS="ZORDON_REF='$REF' ZORDON_SOURCE='$SOURCE' ZORDON_NO_SETUP='${ZORDON_NO_SETUP:-}' NO_COLOR='${NO_COLOR:-}'"
+    PASS="$PASS ZORDON_PYTHON='${ZORDON_PYTHON:-}' ZORDON_UV_VERSION='${ZORDON_UV_VERSION:-}' ZORDON_UV_INSTALLER_SHA256='${ZORDON_UV_INSTALLER_SHA256:-}'"
+    say ""
+    say "  ${D}Continuing as ${R}${B}$ZUSER${R}${D}...${R}"
+    say ""
+    if [ -r /dev/tty ]; then
+      exec su - "$ZUSER" -c "$PASS sh $SELF" </dev/tty
+    else
+      exec su - "$ZUSER" -c "$PASS sh $SELF"
+    fi
+  fi
+fi
+
 # ---- 2. uv ----------------------------------------------------------------------------
 INSTALLED_UV=""
 if ! have uv && [ ! -x "$BIN_DIR/uv" ]; then

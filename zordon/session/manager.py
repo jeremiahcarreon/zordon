@@ -941,6 +941,10 @@ class SessionManager(threading.Thread):
             adapter = s.adapter if s else self.adapter_for(None)
         if active is None and s is not None and s.attached:
             active = self._wait_for_mode(s)
+        if active is None and s is not None and s.bypass_allowed:
+            # Launched for a bypass project: the mode is known from the launch, whatever
+            # the status row shows (Claude Code's bypass dialog may still be up).
+            active = BYPASS_MODE
         return adapter.permission_summary(cwd, active)
 
     def _wait_for_mode(self, s: Session) -> str | None:
@@ -1694,11 +1698,17 @@ class SessionManager(threading.Thread):
                     self._set_focus(s.session_id)
                     self.projects.touch(project)
                     return self._project_row(project, s, True)
-        # 2. the pane it last ran in, still alive
+        # 2. the pane it last ran in, still alive and still running the agent
         if project.tmux_target:
             alive = False
             try:
                 alive = self.tmux.pane_exists(project.tmux_target)
+                if alive and self._pane_is_bare_shell(adapter, project.tmux_target):
+                    alive = False
+                    if project.tmux_target.startswith(f"{self.tmux_session}:"):
+                        # Our own window with nothing but a shell in it: close it rather than
+                        # leave a dead window per restart.
+                        self.tmux.kill_window(project.tmux_target)
             except TmuxError:
                 alive = False
             if alive:
@@ -1718,6 +1728,24 @@ class SessionManager(threading.Thread):
         # 4. a new conversation in the folder
         sid = self._do_start(project.directory, project.permission_mode, project.agent, project=project)
         return self._project_row(project, self.sessions.get(sid), True)
+
+    def _pane_is_bare_shell(self, adapter: AgentAdapter, target: str) -> bool:
+        """True when the pane shows a shell prompt or the agent's exit line (the agent is gone)."""
+        try:
+            lines = self.tmux.capture(target)
+        except TmuxError:
+            return True
+        screen = adapter.parse(lines)
+        if adapter.exited(screen):
+            return True
+        if adapter.uses_alternate_screen():
+            try:
+                if self.tmux.alternate_on(target):
+                    return False
+            except TmuxError:
+                return True
+            return looks_like_shell_prompt(screen.lines) or bool(getattr(screen, "shell_prompt", False))
+        return False
 
     def admin(self) -> None:
         """Leave work mode: nothing focused, every pane keeps running (decision 0018)."""

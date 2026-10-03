@@ -430,3 +430,42 @@ def test_setup_summary_is_printed_after_the_tui_closes(monkeypatch, capsys):
     assert cli.main(["setup"]) == 0
     out = capsys.readouterr().out
     assert cfg.server.token in out and "Start with:  zordon serve" in out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["serve", "--no-setup"], ["start"], ["restart"], ["setup", "--yes", "--no-download"], ["service", "install"]],
+)
+def test_root_is_refused_for_commands_that_start_zordon(argv, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    """Zordon runs with its account's power and Claude Code refuses bypass mode as root
+    (decision 0018): the commands that start or configure it stop with the useradd steps."""
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("ZORDON_ALLOW_ROOT", raising=False)
+
+    def never(*a: Any, **k: Any) -> Any:
+        raise AssertionError("must not get past the root check")
+
+    monkeypatch.setattr(cli, "serve", never)
+    monkeypatch.setattr(cli, "first_run_needs_setup", never)
+    import zordon.daemon as daemon
+
+    monkeypatch.setattr(daemon, "start", never)
+    assert cli.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "not as root" in err and "useradd" in err and "su - <name>" in err and "ZORDON_ALLOW_ROOT" in err
+
+
+def test_root_check_is_skipped_for_inspection_commands_and_with_the_override(monkeypatch: pytest.MonkeyPatch, capsys):
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("ZORDON_ALLOW_ROOT", raising=False)
+    assert cli.main(["token", "show"]) == 0  # inspection keeps working as root
+    assert cli.main(["status"]) in (0, 1)  # reports, does not refuse
+    assert "not as root" not in capsys.readouterr().err
+    monkeypatch.setenv("ZORDON_ALLOW_ROOT", "1")
+    cli.refuse_root("serve")  # no raise
+    monkeypatch.setenv("ZORDON_ALLOW_ROOT", "0")
+    with pytest.raises(cli.CliError):
+        cli.refuse_root("serve")
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.delenv("ZORDON_ALLOW_ROOT", raising=False)
+    cli.refuse_root("serve")

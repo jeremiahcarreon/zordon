@@ -94,7 +94,26 @@
     gateOpen: false,
     uploading: 0,
     pickerAutoOpened: false,
+    home: null, // the user's home directory (hello.home); projects live under it
+    projects: [], // last `projects` message, most recently used first
+    focusedProject: null,
+    // The new-project walkthrough (decision 0018). `step` is where|agent|ask|ready.
+    np: { open: false, step: 'where', path: null, listing: null, folder: null, existing: false, name: '', agent: null, mode: 'default', scope: true, pending: null },
   };
+
+  var MODE_WORDS = {
+    default: 'asks before acting',
+    acceptEdits: 'accepts edits',
+    plan: 'plan mode',
+    auto: 'auto mode',
+    dontAsk: "doesn't ask",
+    bypassPermissions: 'no permission checks',
+  };
+  var NP_MODES = [
+    { value: 'default', label: 'Ask me before acting', help: 'Safest. You confirm each command and file change by voice.' },
+    { value: 'auto', label: 'Handle routine things itself', help: 'Claude Code approves routine commands on its own and asks for the rest. Recommended for voice.' },
+    { value: 'bypassPermissions', label: 'Never ask', help: 'Runs everything without asking. Read the warning below.' },
+  ];
 
   // ---- DOM helpers -----------------------------------------------------------------------
 
@@ -397,7 +416,7 @@
       case 'settings':
         return onSettings(msg);
       case 'error':
-        return toast(msg.message, 'error');
+        return onError(msg);
       case 'pong':
         return onPong(msg);
       case 'tunnel':
@@ -406,6 +425,10 @@
         return onUpdate(msg);
       case 'health':
         return onHealth(msg);
+      case 'projects':
+        return onProjects(msg);
+      case 'browse':
+        return onBrowse(msg);
       default:
         return undefined;
     }
@@ -446,6 +469,7 @@
     S.settings.providers = msg.providers || {};
     S.agents = msg.agents || {};
     S.defaultAgent = msg.default_agent || 'claude-code';
+    if (typeof msg.home === 'string' && msg.home) S.home = msg.home;
     renderAgentSelects();
     $('st-version').textContent = 'zordon ' + msg.version + ' (protocol ' + msg.protocol + ')';
     if (msg.tunnel_url && !S.tunnel) onTunnel({ type: 'tunnel', url: msg.tunnel_url, qr_svg: null });
@@ -465,18 +489,14 @@
       }
     });
     var before = S.focused;
-    if (focused !== null) S.focused = focused;
-    else if (S.focused && !S.sessionsById[S.focused]) S.focused = null;
+    // The snapshot is authoritative: no focused flag means admin mode (nothing focused).
+    S.focused = focused;
     // The last `settings` message described the session focused at that time.
     if (S.focused !== before) S.settings.permission_mode = null;
     renderSessions();
+    renderProjects();
     renderFocus();
     renderSettings();
-    // Nothing focused yet: open the picker once so the user can choose.
-    if (!S.focused && !S.pickerAutoOpened && $('sessions').hasAttribute('hidden')) {
-      S.pickerAutoOpened = true;
-      openSheet('sessions');
-    }
   }
 
   function onSpeech(msg) {
@@ -705,7 +725,7 @@
 
   function renderJump() {
     var j = $('jump');
-    show(j, !S.atBottom && S.unseen > 0);
+    show(j, !!S.focused && !S.atBottom && S.unseen > 0);
     $('jump-count').textContent = S.unseen > 0 ? String(S.unseen) : '';
   }
 
@@ -760,6 +780,7 @@
       return;
     }
     if (msg.kind === 'user') reconcileLocalEcho(msg);
+    if (msg.kind === 'notice' && /^Start a new project:/.test(msg.text || '')) openNewProject();
     var li = buildRow(msg);
     $('rows').appendChild(li);
     S.rows[msg.row_id] = { el: li, msg: msg };
@@ -1139,14 +1160,17 @@
 
   function renderFocus() {
     var s = S.focused ? S.sessionsById[S.focused] : null;
-    var title = s ? s.title || basename(s.directory) : S.focused ? S.focused.slice(0, 8) : 'No session';
+    var proj = focusedProject();
+    var title = proj ? proj.name : s ? s.title || basename(s.directory) : S.focused ? S.focused.slice(0, 8) : 'Projects';
     $('focus-title').textContent = title;
     var chip = $('focus-state');
     var st = S.focused ? (S.states[S.focused] || {}).state || (s && s.state) : null;
     chip.className = 'chip ' + (S.connected ? stateClass(st) : 'state-detached');
-    chip.textContent = S.connected ? (st ? stateLabel(st) : 'none') : 'offline';
+    // In admin mode (nothing focused) there is no state to show; "NONE" reads like a fault.
+    chip.textContent = S.connected ? (st ? stateLabel(st) : '') : 'offline';
+    chip.hidden = S.connected && !st;
     var stLine = $('st-state');
-    if (!S.focused) stLine.textContent = 'no session focused';
+    if (!S.focused) stLine.textContent = 'no project open';
     else {
       var info = S.states[S.focused];
       stLine.textContent = info
@@ -1156,6 +1180,7 @@
           : 'unknown';
     }
     document.body.dataset.state = st || 'none';
+    renderView();
     // Rows from the focused session are no longer "other"; cheap to recompute.
     Object.keys(S.rows).forEach(function (id) {
       var r = S.rows[id];
@@ -1290,7 +1315,428 @@
   function closeSheets() {
     show($('sessions'), false);
     show($('settings'), false);
+    show($('new-project'), false);
+    S.np.open = false;
     document.body.classList.remove('sheet-open');
+  }
+
+  // ---- projects (decision 0018) -----------------------------------------------------------------
+
+  function onError(msg) {
+    // A walkthrough error belongs inline, next to what the user just did.
+    if (S.np.open && S.np.pending) {
+      S.np.pending = null;
+      npError(msg.message);
+      return;
+    }
+    toast(msg.message, 'error');
+  }
+
+  function onProjects(msg) {
+    S.projects = msg.projects.slice();
+    S.focusedProject = msg.focused_project || null;
+    if (S.np.open && S.np.pending === 'create_project') {
+      // The server answered with sessions + projects: the project exists and is focused.
+      S.np.pending = null;
+      closeSheets();
+    }
+    renderProjects();
+    renderFocus();
+  }
+
+  function focusedProject() {
+    if (!S.focused) return null;
+    for (var i = 0; i < S.projects.length; i++) {
+      var p = S.projects[i];
+      if (p.focused || p.session_id === S.focused) return p;
+    }
+    return null;
+  }
+
+  function shortPath(path) {
+    var p = String(path || '');
+    var home = S.home || '';
+    if (home && (p === home || p.indexOf(home.replace(/\/+$/, '') + '/') === 0)) return '~' + p.slice(home.replace(/\/+$/, '').length);
+    return p;
+  }
+
+  function modeWord(mode) {
+    return MODE_WORDS[mode] || mode || '';
+  }
+
+  // Which main view: the projects view whenever nothing is focused, else the work view.
+  function renderView() {
+    var work = !!S.focused;
+    show($('projects-view'), !work);
+    show($('feed'), work);
+    show($('work-head'), work);
+    show($('composer'), work);
+    show($('jump'), work && !S.atBottom && S.unseen > 0);
+    document.body.classList.toggle('view-projects', !work);
+    document.body.classList.toggle('view-work', work);
+    if (work) {
+      var proj = focusedProject();
+      var s = S.sessionsById[S.focused];
+      $('work-title').textContent = proj ? proj.name : s ? s.title || basename(s.directory) : S.focused.slice(0, 8);
+      var mode = (proj && proj.permission_mode) || (s && s.permission_mode) || '';
+      $('work-mode').textContent = modeWord(mode);
+      show($('work-mode'), !!mode);
+    }
+  }
+
+  function renderProjects() {
+    var list = $('project-list');
+    clear(list);
+    var items = S.projects.slice();
+    show($('projects-empty'), items.length === 0);
+    show($('projects-section'), true);
+    items.forEach(function (p) {
+      var li = el('li', { class: 'project' + (p.focused ? ' focused' : '') + (p.exists === false ? ' missing' : ''), dataset: { id: p.id } });
+      var badges = [];
+      if (p.exists === false) badges.push(el('span', { class: 'badge missing', text: 'Folder missing' }));
+      else if (p.running) badges.push(el('span', { class: 'badge running', text: p.focused ? 'Open' : 'Running' }));
+      else badges.push(el('span', { class: 'badge', text: 'Paused' }));
+      if (p.permission_mode) badges.push(el('span', { class: 'badge mode' + (p.permission_mode === 'bypassPermissions' ? ' danger' : ''), text: modeWord(p.permission_mode) }));
+      if (p.agent && p.agent !== S.defaultAgent) badges.push(el('span', { class: 'badge agent', text: agentLabel(p.agent) }));
+      var open = el(
+        'button',
+        {
+          type: 'button',
+          class: 'project-open',
+          disabled: p.exists === false,
+          'aria-label': 'Open ' + p.name,
+          onclick: function () {
+            openProject(p);
+          },
+        },
+        [
+          el('span', { class: 'project-name', text: p.name }),
+          el('span', { class: 'project-dir', text: shortPath(p.directory) }),
+          el('span', { class: 'project-meta' }, badges.concat([el('span', { class: 'muted small', text: relTime(p.last_used) })])),
+        ],
+      );
+      li.appendChild(open);
+      li.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'link-btn project-forget',
+          text: 'Forget',
+          onclick: function () {
+            confirmDialog('Forget this project?', 'Files stay where they are. Zordon just stops listing "' + p.name + '".', 'Forget', function () {
+              cmd('forget_project', { project_id: p.id, confirm: true });
+            });
+          },
+        }),
+      );
+      list.appendChild(li);
+    });
+  }
+
+  function openProject(p) {
+    if (cmd('open_project', { project_id: p.id })) toast('Opening ' + p.name, 'info', 2000);
+  }
+
+  function goToProjects() {
+    // Pause: focus nothing on the server; every pane keeps running.
+    closeSheets();
+    if (S.focused) cmd('admin');
+    else renderView();
+  }
+
+  // ---- the new-project walkthrough ----------------------------------------------------------
+
+  var NP_STEPS = ['where', 'agent', 'ask', 'ready'];
+
+  function installedAgents() {
+    // Assistants a project can be *started* with. The generic adapter only attaches to a
+    // pane somebody else started, so it is not a choice here (it stays under Advanced).
+    return agentKeys().filter(function (k) {
+      return k !== 'generic' && S.agents[k] !== false;
+    });
+  }
+
+  function npNeedsAgentStep() {
+    return installedAgents().length > 1;
+  }
+
+  function openNewProject() {
+    var np = S.np;
+    np.open = true;
+    np.step = 'where';
+    np.folder = null;
+    np.existing = false;
+    np.name = '';
+    np.agent = S.defaultAgent;
+    np.mode = 'default';
+    np.scope = true;
+    np.pending = null;
+    np.listing = null;
+    $('np-folder-name').value = '';
+    $('np-scope').checked = true;
+    npError('');
+    closeSheets();
+    show($('new-project'), true);
+    np.open = true;
+    document.body.classList.add('sheet-open');
+    renderNp();
+    npBrowse(null);
+  }
+
+  function npBrowse(path) {
+    S.np.path = path;
+    S.np.pending = 'browse';
+    var args = path ? { path: path } : {};
+    if (!cmd('browse', args)) S.np.pending = null;
+  }
+
+  function onBrowse(msg) {
+    if (!S.np.open) return;
+    if (S.np.pending === 'browse') S.np.pending = null;
+    S.np.listing = msg;
+    S.np.path = msg.path;
+    if (!S.home) S.home = msg.home;
+    renderNp();
+  }
+
+  function npError(text) {
+    var box = $('np-error');
+    box.textContent = text || '';
+    show(box, !!text);
+  }
+
+  function npSetStep(step) {
+    S.np.step = step;
+    npError('');
+    renderNp();
+  }
+
+  function npNext() {
+    var np = S.np;
+    if (np.step === 'where') {
+      if (!np.folder) {
+        npError('Pick a folder first: create a new one or use the one you are in.');
+        return;
+      }
+      npSetStep(npNeedsAgentStep() ? 'agent' : 'ask');
+    } else if (np.step === 'agent') {
+      npSetStep('ask');
+    } else if (np.step === 'ask') {
+      npSetStep('ready');
+    }
+  }
+
+  function npBack() {
+    var np = S.np;
+    if (np.step === 'ready') npSetStep('ask');
+    else if (np.step === 'ask') npSetStep(npNeedsAgentStep() ? 'agent' : 'where');
+    else if (np.step === 'agent') npSetStep('where');
+    else closeSheets();
+  }
+
+  // "Create a new folder here": the server makes it (inside home only) when the project starts;
+  // the walkthrough just remembers the choice and moves on.
+  function npCreateFolder() {
+    var name = $('np-folder-name').value.trim();
+    var listing = S.np.listing;
+    if (!listing) return;
+    if (!name) {
+      npError('Give the new folder a name.');
+      return;
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$/.test(name)) {
+      npError('Use letters, numbers, spaces, dots, dashes or underscores, starting with a letter or number.');
+      return;
+    }
+    var taken = (listing.entries || []).some(function (e) {
+      return e.name.toLowerCase() === name.toLowerCase();
+    });
+    if (taken) {
+      npError('There is already a folder called ' + name + ' here. Open it and tap "Use this folder", or pick another name.');
+      return;
+    }
+    S.np.folder = { parent: listing.path, name: name, existing: false, display: shortPath(listing.path.replace(/\/+$/, '') + '/' + name) };
+    S.np.name = name;
+    npNext();
+  }
+
+  function npUseFolder() {
+    var listing = S.np.listing;
+    if (!listing) return;
+    var here = listing.path;
+    if (S.home && here.replace(/\/+$/, '') === S.home.replace(/\/+$/, '')) {
+      npError('Your whole home directory is too big for one project. Open or create a folder inside it.');
+      return;
+    }
+    var proj = projectAtPath(here);
+    if (proj) {
+      npError('This folder is already the project "' + proj.name + '". Continue it from the projects list instead.');
+      return;
+    }
+    S.np.folder = { parent: here, name: '', existing: true, display: shortPath(here) };
+    S.np.name = basename(here);
+    npNext();
+  }
+
+  function projectAtPath(path) {
+    var want = String(path || '').replace(/\/+$/, '');
+    for (var i = 0; i < S.projects.length; i++) {
+      if (String(S.projects[i].directory).replace(/\/+$/, '') === want) return S.projects[i];
+    }
+    return null;
+  }
+
+  function npStart() {
+    var np = S.np;
+    if (!np.folder) {
+      npSetStep('where');
+      return;
+    }
+    var args = { parent: np.folder.parent, name: np.folder.name || np.name, permission_mode: np.mode, scope_edits: !!np.scope };
+    if (np.folder.existing) args.existing = true;
+    if (np.agent && np.agent !== S.defaultAgent) args.agent = np.agent;
+    np.pending = 'create_project';
+    npError('');
+    $('np-start').disabled = true;
+    if (!cmd('create_project', args)) {
+      np.pending = null;
+      $('np-start').disabled = false;
+      return;
+    }
+    toast('Starting ' + (np.folder.name || np.name) + '...', 'info', 2500);
+    setTimeout(function () {
+      $('np-start').disabled = false;
+    }, 4000);
+  }
+
+  function renderNp() {
+    var np = S.np;
+    if (!np.open) return;
+    var steps = NP_STEPS.filter(function (s) {
+      return s !== 'agent' || npNeedsAgentStep();
+    });
+    var idx = steps.indexOf(np.step);
+    $('np-step-label').textContent = 'Step ' + (idx + 1) + ' of ' + steps.length;
+    NP_STEPS.forEach(function (s) {
+      show($('np-step-' + s), s === np.step);
+    });
+    show($('np-next'), np.step !== 'ready' && np.step !== 'where');
+    show($('np-start'), np.step === 'ready');
+    $('np-back').textContent = np.step === 'where' ? 'Cancel' : 'Back';
+
+    if (np.step === 'where') renderNpWhere();
+    if (np.step === 'agent') renderNpAgents();
+    if (np.step === 'ask') renderNpModes();
+    if (np.step === 'ready') renderNpSummary();
+  }
+
+  function renderNpWhere() {
+    var listing = S.np.listing;
+    var folders = $('np-folders');
+    clear(folders);
+    if (!listing) {
+      $('np-crumb').textContent = 'Loading folders...';
+      show($('np-up'), false);
+      show($('np-folders-empty'), false);
+      return;
+    }
+    $('np-crumb').textContent = shortPath(listing.path) || '~';
+    show($('np-up'), !!listing.parent);
+    show($('np-folders-empty'), listing.entries.length === 0);
+    listing.entries.forEach(function (e) {
+      var proj = e.project_id ? projectById(e.project_id) : null;
+      var btn = el(
+        'button',
+        {
+          type: 'button',
+          class: 'np-folder' + (proj ? ' is-project' : ''),
+          onclick: function () {
+            npBrowse(e.path);
+          },
+        },
+        [
+          el('span', { class: 'np-folder-name', text: e.name }),
+          proj ? el('span', { class: 'badge', text: 'already a project' }) : e.has_git ? el('span', { class: 'badge', text: 'git' }) : null,
+        ],
+      );
+      folders.appendChild(el('li', null, btn));
+    });
+    var canCreate = listing.can_create !== false;
+    $('np-create-folder').disabled = !canCreate;
+    $('np-folder-name').disabled = !canCreate;
+    var atHome = !listing.parent;
+    $('np-use-folder').disabled = atHome || !!projectAtPath(listing.path);
+    $('np-use-folder').textContent = atHome ? 'Use this folder (open a folder first)' : 'Use this folder: ' + (basename(listing.path) || '~');
+  }
+
+  function projectById(id) {
+    for (var i = 0; i < S.projects.length; i++) if (S.projects[i].id === id) return S.projects[i];
+    return null;
+  }
+
+  function choiceList(ul, items, current, onPick) {
+    clear(ul);
+    items.forEach(function (it) {
+      var on = it.value === current;
+      ul.appendChild(
+        el(
+          'li',
+          null,
+          el(
+            'button',
+            {
+              type: 'button',
+              class: 'np-choice' + (on ? ' on' : '') + (it.danger ? ' danger' : ''),
+              role: 'radio',
+              'aria-checked': on ? 'true' : 'false',
+              dataset: { value: it.value },
+              onclick: function () {
+                onPick(it.value);
+              },
+            },
+            [el('span', { class: 'np-choice-label', text: it.label }), it.help ? el('span', { class: 'np-choice-help muted small', text: it.help }) : null],
+          ),
+        ),
+      );
+    });
+  }
+
+  function renderNpAgents() {
+    var items = installedAgents().map(function (k) {
+      return { value: k, label: agentLabel(k), help: k === S.defaultAgent ? 'Your default' : '' };
+    });
+    if (items.every(function (i) { return i.value !== S.np.agent; })) S.np.agent = S.defaultAgent;
+    choiceList($('np-agents'), items, S.np.agent, function (v) {
+      S.np.agent = v;
+      renderNp();
+    });
+  }
+
+  function renderNpModes() {
+    var items = NP_MODES.map(function (m) {
+      return { value: m.value, label: m.label, help: m.help, danger: m.value === 'bypassPermissions' };
+    });
+    choiceList($('np-modes'), items, S.np.mode, function (v) {
+      S.np.mode = v;
+      renderNp();
+    });
+    show($('np-bypass-warn'), S.np.mode === 'bypassPermissions');
+    $('np-scope').checked = !!S.np.scope;
+  }
+
+  function renderNpSummary() {
+    var np = S.np;
+    var dl = $('np-summary');
+    clear(dl);
+    function row(k, v) {
+      dl.appendChild(el('dt', { text: k }));
+      dl.appendChild(el('dd', { text: v }));
+    }
+    row('Folder', np.folder ? np.folder.display : '-');
+    row('Assistant', agentLabel(np.agent || S.defaultAgent));
+    var m = null;
+    NP_MODES.forEach(function (x) { if (x.value === np.mode) m = x; });
+    row('Permissions', m ? m.label : modeWord(np.mode));
+    row('File edits', np.scope ? 'kept inside the folder' : 'anywhere the agent is allowed');
   }
 
   // ---- composer, uploads --------------------------------------------------------------------------
@@ -1478,11 +1924,40 @@
       if (token) authenticate(token);
     });
 
-    $('btn-sessions').addEventListener('click', function () {
+    $('btn-projects').addEventListener('click', goToProjects);
+    $('focus-chip').addEventListener('click', goToProjects);
+    $('btn-pause').addEventListener('click', goToProjects);
+    $('btn-new-project').addEventListener('click', openNewProject);
+    $('btn-continue-project').addEventListener('click', function () {
+      var sec = $('projects-section');
+      if (sec.scrollIntoView) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      sec.classList.add('highlight');
+      setTimeout(function () {
+        sec.classList.remove('highlight');
+      }, 1200);
+      if (S.connected) cmd('list_projects');
+    });
+    $('btn-advanced').addEventListener('click', function () {
       openSheet('sessions');
     });
-    $('focus-chip').addEventListener('click', function () {
+    $('btn-advanced-settings').addEventListener('click', function () {
       openSheet('sessions');
+    });
+    // Walkthrough.
+    $('np-close').addEventListener('click', closeSheets);
+    $('np-back').addEventListener('click', npBack);
+    $('np-next').addEventListener('click', npNext);
+    $('np-start').addEventListener('click', npStart);
+    $('np-up').addEventListener('click', function () {
+      if (S.np.listing && S.np.listing.parent) npBrowse(S.np.listing.parent);
+    });
+    $('np-create-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      npCreateFolder();
+    });
+    $('np-use-folder').addEventListener('click', npUseFolder);
+    $('np-scope').addEventListener('change', function (e) {
+      S.np.scope = !!e.target.checked;
     });
     $('btn-settings').addEventListener('click', function () {
       openSheet('settings');
@@ -1496,6 +1971,7 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && document.body.classList.contains('sheet-open')) closeSheets();
     });
+    if ($('advanced')) $('advanced').open = false;
 
     fillSelect($('new-mode'), P.PERMISSION_MODES, 'default');
     $('new-session').addEventListener('submit', function (e) {
@@ -1681,6 +2157,7 @@
     S.tickTimer = setInterval(function () {
       if (document.visibilityState === 'hidden') return;
       if (!$('sessions').hasAttribute('hidden')) renderSessions();
+      if (!S.focused) renderProjects();
       renderFocus();
       if (!$('settings').hasAttribute('hidden')) renderAudioStatus();
     }, 15000);

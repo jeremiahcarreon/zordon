@@ -557,7 +557,7 @@ def test_health_report_and_cache(agent: A.Agent, tmp_path: Path):
     first = agent.health()
     assert isinstance(first, HealthReport)
     keys = [i.key for i in first.items]
-    assert keys[:3] == ["tmux", "agent", "sessions"] and "threads" in keys and "update" in keys
+    assert keys[:4] == ["account", "tmux", "agent", "sessions"] and "threads" in keys and "update" in keys
     assert first.status == "fail"  # the test FakeVAD stands in for a missing Silero model
     vad = next(i for i in first.items if i.key == "vad")
     assert vad.status == "fail" and vad.detail.startswith("voice input is off") and vad.fix == "zordon doctor --download"

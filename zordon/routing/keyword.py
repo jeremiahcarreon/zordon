@@ -132,6 +132,17 @@ _EXTRA_PHRASES: dict[str, tuple[str, ...]] = {
     ),
     "delete": ("delete this session", "kill the session", "delete session", "kill session", "kill it", "delete it"),
     "detach": ("detach from this session", "stop following", "unfollow", "stop following this session", "detach from the session"),
+    "open_project": (
+        "open project",
+        "open a project",
+        "continue a project",
+        "continue a previous project",
+        "continue the previous project",
+        "switch project",
+        "switch projects",
+        "change project",
+        "change projects",
+    ),
     "list_projects": (
         "list projects",
         "list the projects",

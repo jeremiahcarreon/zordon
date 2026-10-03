@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -23,9 +24,14 @@ def test_script_does_only_the_documented_steps():
     assert "uv python install" in text  # managed Python
     assert "uv tool install" in text  # isolated zordon
     assert "zordon setup" in text  # hands over to the wizard
-    # system packages are the wizard's business, one yes at a time: the script never elevates
+    # system packages are the wizard's business, one yes at a time: the script never elevates.
+    # (As root it installs the sudo *package* and talks about sudo in messages; it never runs it.)
     code_lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
-    assert not any("sudo " in ln and "no sudo" not in ln for ln in code_lines)
+    runs_sudo = re.compile(r"(^|[;&|(`]\s*|spin\s+\"[^\"]*\"\s+)sudo\s")
+    assert not any(runs_sudo.search(ln.strip()) for ln in code_lines), [ln for ln in code_lines if runs_sudo.search(ln.strip())]
+    # Root never installs Zordon for itself: it makes a user and hands over (decision 0018).
+    assert '[ "$(id -u)" = 0 ]' in text and "useradd -m" in text and 'exec su - "$ZUSER"' in text
+    assert "ZORDON_ALLOW_ROOT" in text
     assert "pip install" not in text
     assert "/dev/tty" in text  # the wizard gets the terminal back after `curl | sh`
     assert "MINGW" in text and "WSL" in text  # Windows: WSL2 yes, native no

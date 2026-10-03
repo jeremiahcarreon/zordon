@@ -11,8 +11,12 @@ always spoken, answered only with a clear yes or no, and never widened.
 
 ## What it does
 
-- **Hands-free operation from a browser.** Resume any Claude Code session, give it a task by voice,
-  type when speech is the wrong tool, drop a file or a photo in.
+- **Projects, not panes.** Two buttons: *Start a new project* walks you through picking or
+  creating a folder in your home directory and how much the agent should ask; *Continue a
+  previous project* picks up where you left off, reconnecting to a running agent or resuming the
+  conversation. Nothing about tmux unless you open *Advanced*.
+- **Hands-free operation from a browser.** Give a project a task by voice, type when speech is
+  the wrong tool, drop a file or a photo in. Say "pause" to step back to the project list.
 - **Barge-in.** Start talking and playback stops within ~150 ms on a LAN or Tailscale (no
   cloud call is involved); over a public tunnel the two network legs can add 60-160 ms.
   The interrupted sentence is marked as unspoken in the transcript.
@@ -90,6 +94,12 @@ curl -fsSL https://raw.githubusercontent.com/jeremiahcarreon/zordon/main/install
 The script is short and worth reading first. It installs [uv](https://docs.astral.sh/uv/) into
 `~/.local/bin` (no sudo; a pinned uv release whose installer is checksum-verified before it runs), lets uv fetch a managed Python 3.12 if the system has none, installs
 zordon as an isolated tool, and starts the guided setup. Nothing else happens without a yes.
+
+Run it as a normal user. If you run it as root (a fresh container, say), it stops, creates a
+user for you (it asks for the name, default `zordon`), gives that user `sudo`, asks for a
+password, and continues the install as them. Zordon refuses to serve as root: it drives a
+coding agent with the power of the account it runs under, and Claude Code itself will not skip
+permission checks for root.
 Already have Python 3.12+ and pipx? This works too:
 
 ```bash
@@ -135,11 +145,13 @@ installed outside its environment is a checkbox each.
 
 ### After setup
 
-1. Open `http://127.0.0.1:8765`, paste the token. Nothing is spoken until a session is focused:
-   the picker opens by itself; **Resume** a session or **Start** one in a directory.
-2. A brand-new directory shows Claude Code's trust dialog. Its highlighted default is
-   "No, exit", which ends the session; answer the card (or say "yes") to trust the folder.
-3. Tap **Talk** and speak. Permission prompts are read aloud and shown as a card.
+1. Open `http://127.0.0.1:8765`, paste the token. You land on **Projects**. Tap **Start a new
+   project**: pick a folder inside your home directory (or make one), choose how much the
+   agent should ask, tap Start. Next time, **Continue a previous project** brings it back.
+2. A brand-new folder shows Claude Code's trust dialog. Its highlighted default is "No, exit",
+   which ends the session; answer the card (or say "yes") to trust the folder.
+3. Tap **Talk** and speak. Permission prompts are read aloud and shown as a card. Say "pause"
+   (or tap it) to go back to the project list; the agent keeps running.
 
 Serving works with pieces missing, but degraded: without the VAD model voice input is off,
 without a TTS provider nothing is spoken; the startup warnings and `zordon doctor` say what to
@@ -255,28 +267,40 @@ When Claude Code is waiting on a permission, routing is replaced by a strict yes
 else is read back to you. "Stop" sends Escape to the pane and interrupts Claude Code itself;
 simply starting to talk only interrupts playback.
 
-### Permission modes
+### Projects and how much the agent asks
 
-Every permission prompt interrupts the voice loop: Zordon reads the agent's one-line description
-of the command ("Claude Code wants to run a command: Install the GitHub CLI. Yes or no?") and
-waits. If that is too often, let Claude Code's **auto mode** handle the routine ones: it approves
-commands its own classifier considers safe and still asks for the rest.
+A project is a folder in your home directory plus how its agent runs there. Zordon remembers
+each one in `~/.zordon/projects.json`: the folder, the assistant, the permission mode, the
+agent's last conversation and the pane it ran in. *Continue* reconnects to the pane when it is
+still alive, else resumes the conversation, else starts fresh in the folder. *Forget* drops the
+record and touches no files.
 
-- Per session: pick the mode in the **New session** form, or change a running session from
-  **Settings > Switch mode** (also by voice for default, accept edits and plan).
-- As the default for every new session, in `~/.zordon/config.toml`:
+When you start a project you choose how much it should ask:
+
+| Choice | Claude Code mode | What happens |
+| --- | --- | --- |
+| Ask me before acting | `default` | Every command and file change is read to you; you say yes or no. |
+| Handle routine things itself | `auto` | Claude Code approves routine commands on its own and asks for the rest. Recommended for voice. |
+| Never ask | `bypassPermissions` | Nothing is asked. Only for a folder you can afford to lose, ideally in a container or VM. |
+
+*Never ask* is a per-project choice made when the project is created, and that is the only place
+Zordon will ever set it: not by voice, not from the mode switcher, not as a config default, and
+never with `--dangerously-skip-permissions`. Claude Code shows its own warning once before
+running that way; Zordon reads it to you and you confirm. Every project also keeps **file edits
+inside its folder** by default: a hook denies edits outside the project directory (the agent's
+own `~/.claude` is allowed), with the reason, and fails closed if Zordon is unreachable. Shell
+commands are not sandboxed by this; a *Never ask* project can still run `rm -rf ..`.
+
+Running sessions can switch between default, accept edits and plan by voice ("switch to plan
+mode"), and to auto from **Advanced**. The default for sessions started from *Advanced*:
 
 ```toml
 [sessions]
 permission_mode = "auto"    # default | acceptEdits | plan | auto | dontAsk
 ```
 
-Zordon will not launch an agent with permissions switched off (`bypassPermissions`,
-`--dangerously-skip-permissions`) and never selects an "always allow" or "switch to auto mode"
-option on your behalf; those decisions stay in Claude Code. If you want a fully unattended
-session anyway, start it yourself in tmux with the flag you choose and attach Zordon to that
-pane (**Attach a pane** in the web client). Zordon then only reads and
-types; it never saw the flag.
+With nothing open Zordon is in *admin mode*: speech goes to Zordon only ("open the api
+project", "list projects", "new project", "status"), never to an agent.
 
 ## Safety
 
@@ -285,8 +309,11 @@ transcript as untrusted input and keeps Claude Code's own guardrails fully intac
 
 - Claude Code's `settings.json` files are the only source of truth for permissions. Zordon reads
   the active mode and allow/deny lists and speaks a summary; it never writes them.
-- It never passes a permission-bypass flag, never writes `bypassPermissions` anywhere, and refuses
-  to start a pane in that mode. Permission prompts cannot be approved on your behalf.
+- It never passes a permission-bypass flag and never writes `bypassPermissions` to any settings
+  file. The one exception is a project you created with *Never ask*, which launches with
+  `--permission-mode bypassPermissions`; voice cannot switch into that mode and "always allow"
+  options are never selected on your behalf.
+- Zordon refuses to run as root, and projects live inside your home directory.
 - Keystrokes are sent literally (`tmux send-keys -l`) with control characters stripped; Enter is
   a separate call.
 - Shim commands are a closed set. The router can select one; it cannot construct one.
