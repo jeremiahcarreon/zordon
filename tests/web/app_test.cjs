@@ -344,6 +344,19 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
   ok(!$('update-banner').hasAttribute('hidden') && /installed\. Restart zordon serve/.test($('update-banner-text').textContent), 'auto=true says the update is installed and asks for a restart');
   ok($('update-banner-link').hasAttribute('hidden') && !$('update-banner-link').hasAttribute('href'), 'a non-https notes URL is never linked');
 
+  // ---- long responses stay sequential: no re-anchoring over a full queue (overlap bug) ----
+  {
+    const before = audioLog.started.length;
+    // 1 s of 24 kHz silence per chunk; 40 chunks = 40 s queued while the clock stands still.
+    const big = Buffer.alloc(24000 * 2).toString('base64');
+    for (let i = 0; i < 40; i++) recv({ type: 'speech', sentence_id: 900 + i, seq: i, generation: 2, sample_rate: 24000, pcm: big, final: true });
+    const starts = audioLog.started.slice(before).map((s) => s.at);
+    let monotone = true;
+    for (let i = 1; i < starts.length; i++) if (starts[i] < starts[i - 1] + 0.999) monotone = false;
+    ok(starts.length === 40 && monotone, 'forty seconds of speech are scheduled back to back, never on top of each other');
+    ok(starts[starts.length - 1] - starts[0] > 38, 'the last chunk starts ~39 s after the first (no re-anchor to now)');
+  }
+
   console.log(`app_test: all passed (${passed} checks)`);
   process.exit(0);
 })().catch((e) => { console.error('app_test failed:', e); process.exit(1); });

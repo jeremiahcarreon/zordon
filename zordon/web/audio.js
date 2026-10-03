@@ -33,7 +33,11 @@
   var FRAME_SAMPLES = 320;
   var SCHEDULE_LEAD_S = 0.03; // re-anchor 30 ms ahead of "now" after an underrun
   var STOP_GATE_MS = 5000; // Stop button: how long to drop speech if no flush follows
-  var MAX_QUEUE_S = 20; // more than this much audio queued is a sign of a stuck cursor
+  // A stuck cursor (clock jump after sleep) shows as a far-future start time while NOTHING is
+  // scheduled. A long queue with sources still scheduled is normal: speech is synthesized
+  // faster than it plays, so a whole response can sit in the queue. Never re-anchor over it:
+  // that starts new chunks on top of the ones still playing.
+  var STALE_CURSOR_S = 5;
 
   function noop() {}
 
@@ -369,8 +373,8 @@
       if (this.scheduled.size > 0) this.stats.underruns++;
       this.nextStartTime = now + SCHEDULE_LEAD_S;
     }
-    if (this.nextStartTime - now > MAX_QUEUE_S) {
-      // Cursor ran away (clock jump after sleep); re-anchor rather than queue minutes of audio.
+    if (this.scheduled.size === 0 && this.nextStartTime - now > STALE_CURSOR_S) {
+      // Nothing is playing yet the cursor is far ahead: a clock jump. Re-anchor.
       this.nextStartTime = now + SCHEDULE_LEAD_S;
     }
     src.start(this.nextStartTime); // start() is once-only per node
