@@ -298,6 +298,52 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
   ok(attachCmd && attachCmd.args.target === 'work:@1.%3' && attachCmd.args.agent === 'generic', 'the attach form sends the attach command with target and agent');
   ok($('session-list').children.some((li) => /Claude Code/.test(li.textContent)), 'session rows carry the agent badge');
 
+  // ---- WEB-14: health strip, failure banner, update banner ----
+  ok($('health-strip').hasAttribute('hidden') && $('health-banner').hasAttribute('hidden'), 'no health UI before the first health message');
+  const healthMsg = {
+    type: 'health',
+    status: 'fail',
+    ts: now(),
+    items: [
+      { key: 'tmux', label: 'tmux', status: 'ok', detail: 'server running', fix: '' },
+      { key: 'router', label: 'router', status: 'warn', detail: 'keyword router only', fix: 'set providers.keys.anthropic' },
+      { key: 'vad', label: 'voice detection', status: 'fail', detail: 'voice input is off: Silero VAD model missing', fix: 'zordon doctor --download' },
+    ],
+  };
+  recv(healthMsg);
+  const dots = $('health-strip').children;
+  ok(!$('health-strip').hasAttribute('hidden') && dots.length === 3, 'one strip entry per health item');
+  ok(dots[0].classList.contains('health-ok') && dots[1].classList.contains('health-warn') && dots[2].classList.contains('health-fail'), 'entries carry the item status as a class (green/amber/red)');
+  ok(/voice input is off/i.test(dots[2].getAttribute('title')) && /Fix: zordon doctor --download/.test(dots[2].getAttribute('title')), 'hover text carries detail and fix');
+  ok(dots[2].textContent.indexOf('voice detection') !== -1, 'the label is shown next to the dot');
+  ok(!$('health-badge').hasAttribute('hidden') && $('health-badge').classList.contains('health-fail') && /1 problem/.test($('health-badge-text').textContent), 'overall badge shows the worst status and a count');
+  ok(!$('health-banner').hasAttribute('hidden') && /^Voice input is off: Silero VAD model missing\. Fix: zordon doctor --download$/.test($('health-banner-text').textContent), 'a failed item raises the persistent banner with its fix');
+  dots[2].click();
+  ok(!$('health-detail').hasAttribute('hidden') && /voice detection: Voice input is off/.test($('health-detail-text').textContent), 'tapping a dot shows its detail');
+  $('health-detail-close').click();
+  ok($('health-detail').hasAttribute('hidden'), 'and the detail box closes');
+  $('health-badge').click();
+  ok($('health-strip').hasAttribute('hidden'), 'the badge collapses the strip');
+  $('health-badge').click();
+  ok(!$('health-strip').hasAttribute('hidden'), 'and expands it again');
+  recv(Object.assign({}, healthMsg, { status: 'ok', items: healthMsg.items.map((i) => Object.assign({}, i, { status: 'ok', fix: '' })) }));
+  ok($('health-banner').hasAttribute('hidden') && $('health-badge').classList.contains('health-ok') && /all good/.test($('health-badge-text').textContent), 'the banner goes away once nothing fails');
+  ok(/^ok/.test($('st-health').textContent), 'the settings drawer summarises health: ' + $('st-health').textContent);
+  recv({ type: 'health', status: 'ok', ts: now(), items: [{ key: 'tmux', label: 'tmux', status: 'ok', detail: 'server running' }] });
+  ok($('health-strip').children.length === 1, 'the strip is rebuilt from each message, not appended to');
+
+  ok($('update-banner').hasAttribute('hidden'), 'no update banner before an update message');
+  recv({ type: 'update', current: '0.1.0', latest: '0.2.0', command: 'zordon update', auto: false, notes_url: 'https://example.com/commits/main' });
+  ok(!$('update-banner').hasAttribute('hidden') && /Zordon 0\.2\.0 is available/.test($('update-banner-text').textContent) && /zordon update/.test($('update-banner-text').textContent), 'update banner names the version and the command');
+  ok(!$('update-banner-link').hasAttribute('hidden') && $('update-banner-link').href === 'https://example.com/commits/main', 'the notes link is shown for an https URL');
+  $('update-banner-close').click();
+  ok($('update-banner').hasAttribute('hidden'), 'the update banner is dismissible');
+  recv({ type: 'update', current: '0.1.0', latest: '0.2.0', command: 'zordon update', auto: false });
+  ok($('update-banner').hasAttribute('hidden'), 'the same update stays dismissed');
+  recv({ type: 'update', current: '0.1.0', latest: '0.2.0', command: 'restart zordon serve', auto: true, notes_url: 'javascript:alert(1)' });
+  ok(!$('update-banner').hasAttribute('hidden') && /installed\. Restart zordon serve/.test($('update-banner-text').textContent), 'auto=true says the update is installed and asks for a restart');
+  ok($('update-banner-link').hasAttribute('hidden') && !$('update-banner-link').hasAttribute('href'), 'a non-https notes URL is never linked');
+
   console.log(`app_test: all passed (${passed} checks)`);
   process.exit(0);
 })().catch((e) => { console.error('app_test failed:', e); process.exit(1); });

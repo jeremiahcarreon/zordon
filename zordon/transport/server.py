@@ -5,7 +5,9 @@ Routes:
 * ``GET /`` and the static client from ``zordon/web`` (importlib.resources)
 * ``POST /auth`` token -> session cookie (rate limited per IP)
 * ``POST /logout``
-* ``GET /healthz`` (no auth)
+* ``GET /healthz`` (no auth) liveness ping
+* ``GET /health`` (cookie, same origin) the runtime health report (``docs/protocol.md``
+  ``health`` message); it names providers and paths, so it is not public
 * ``POST /hooks/claude`` Claude Code Notification hook: loopback peers only, guarded by
   a per-process secret, body capped at 64 KB
 * ``POST /upload`` (cookie, same origin) file for the focused session's ``.zordon/uploads``
@@ -19,6 +21,7 @@ no token is configured.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import email.parser
 import email.policy
@@ -160,6 +163,16 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {"ok": True, "version": str(agent.version)}
+
+    @app.get("/health")
+    async def health_route(_sid: str = Depends(require_cookie_http)) -> Any:
+        probe = getattr(agent, "health", None)
+        if not callable(probe):
+            return JSONResponse({"error": "health not available"}, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+        loop = asyncio.get_running_loop()
+        report = await loop.run_in_executor(None, probe)
+        out = report.to_out() if hasattr(report, "to_out") else report
+        return JSONResponse(json.loads(out.model_dump_json()), headers={"Cache-Control": "no-store"})
 
     @app.post("/auth")
     async def auth_route(body: AuthBody, request: Request) -> Any:

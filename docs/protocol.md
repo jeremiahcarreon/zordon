@@ -46,6 +46,8 @@ the raw send button), `approve`, `deny`, `plan_approve`, `plan_revise {text}`,
 | `prompt` | `prompt_id`, `session_id`, `kind` (`permission`/`plan`/`question`/`trust`), `title`, `options[]`, `raw_lines[]`, `cleared` | Render as a card with buttons. `cleared: true` removes it. |
 | `settings` | `verbosity`, `tool_chatter`, `muted`, `providers`, `permission_mode` | Current settings after any change. |
 | `tunnel` | `url`, `qr_svg` | Public URL when `--tunnel` is active. |
+| `update` | `current`, `latest`, `command`, `auto`, `notes_url` | A newer Zordon exists; `auto: true` means it was installed and a restart picks it up. |
+| `health` | `status` (`ok`/`warn`/`fail`), `items[]` of `{key, label, status, detail, fix}`, `ts` | Runtime health of every component; sent on connect, on change, and at least every 60 s. Also at `GET /health`. |
 | `error` | `message`, `code` | Something the user should see. `code` is `timeout` when a command did not finish within 12 s (it may still complete). |
 | `pong` | `ts` | Reply to `ping`. |
 

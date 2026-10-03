@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from zordon import __version__
 from zordon import app as A
 from zordon.bus import (
     Flush,
@@ -28,6 +29,7 @@ from zordon.bus import (
     TranscriptRow,
 )
 from zordon.config import Config
+from zordon.health import HealthReport
 from zordon.output.normalizer import PassthroughNormalizer
 from zordon.output.tts import SilenceTTS
 from zordon.providers import (
@@ -39,6 +41,7 @@ from zordon.providers import (
 )
 from zordon.routing.keyword import KeywordRouter
 from zordon.speech.vad import FakeVAD
+from zordon.transport.protocol import HealthOut
 
 from .conftest import read_fixture
 
@@ -242,7 +245,7 @@ def test_agent_api_surface(agent: A.Agent):
     ):
         assert hasattr(agent, name), name
     assert len(agent.hook_secret) >= 32
-    assert agent.version == "0.1.0"
+    assert agent.version == __version__
     assert agent.warnings == []
 
 
@@ -514,6 +517,77 @@ def test_only_one_client_is_in_the_call(agent: A.Agent):
     assert agent.audio.client_id == "laptop"
     with pytest.raises(ValueError):
         agent.call_state("laptop", "dance")
+
+
+# ---- health -----------------------------------------------------------------------------------------
+
+
+def test_health_report_and_cache(agent: A.Agent, tmp_path: Path):
+    assert agent.update_status is None  # the update module sets it later
+    first = agent.health()
+    assert isinstance(first, HealthReport)
+    keys = [i.key for i in first.items]
+    assert keys[:3] == ["tmux", "agent", "sessions"] and "threads" in keys and "update" in keys
+    assert first.status == "fail"  # the test FakeVAD stands in for a missing Silero model
+    vad = next(i for i in first.items if i.key == "vad")
+    assert vad.status == "fail" and vad.detail.startswith("voice input is off") and vad.fix == "zordon doctor --download"
+    assert next(i for i in first.items if i.key == "threads").status == "ok"
+    assert next(i for i in first.items if i.key == "sessions").status == "warn"
+    assert agent.health() is first  # cached for a few seconds
+    focused_session(agent, tmp_path)
+    assert agent.health() is first
+    fresh = agent.health(max_age=0.0)
+    assert fresh is not first
+    assert next(i for i in fresh.items if i.key == "sessions").status == "ok"
+    out = fresh.to_out()
+    assert out.type == "health" and out.status == "fail"
+    assert agent.stats()["health"] == "fail"
+
+
+def test_health_thread_publishes_on_change(cfg: Config, parts: dict[str, Any], tmp_path: Path):
+    """A short interval stands in for the 30 s one: the thread publishes the first report,
+    stays quiet while nothing changes, publishes again when an item changes, and at
+    least every ``health_republish`` seconds regardless."""
+    a = A.Agent(
+        cfg,
+        tmux=FakeTmux(),  # type: ignore[arg-type]
+        providers_override=parts,
+        claude_home=tmp_path / "ch",
+        zordon_home=tmp_path / "zh",
+        health_interval=0.05,
+        health_republish=1.5,
+    )
+    ev = Events(a.bus)
+    try:
+        a.start()
+        first = ev.wait(lambda e: isinstance(e, HealthOut))
+        assert first.status == "fail" and a.health_published >= 1
+        n = a.health_published
+        time.sleep(0.4)
+        assert a.health_published == n, "unchanged health was republished early"
+        a.update_status = {"current": "0.1.0", "latest": "0.2.0", "available": True}
+        msg = ev.wait(
+            lambda e: isinstance(e, HealthOut) and any(i.key == "update" and i.status == "warn" for i in e.items)
+        )
+        upd = next(i for i in msg.items if i.key == "update")
+        assert "0.2.0 is available" in upd.detail and upd.fix == "zordon update"
+        n = a.health_published
+        assert wait_until(lambda: a.health_published > n, timeout=3.0), "no periodic republish"
+    finally:
+        a.stop()
+    assert not a._health_thread.is_alive()
+
+
+def test_status_command_appends_degraded_health(agent: A.Agent, tmp_path: Path):
+    sid = focused_session(agent, tmp_path)
+    agent.dispatcher.router = KeywordRouter()
+    ev = Events(agent.bus)
+    agent.submit_text("status", "c")
+    row = ev.wait(lambda e: isinstance(e, TranscriptRow) and e.kind == "spoken" and "Needs attention" in e.text)
+    assert row.session_id == sid
+    assert row.text.index(" is ") < row.text.index("Needs attention")
+    assert "voice detection failed: voice input is off" in row.text
+    assert agent.health_summary_sentence().startswith("Needs attention: ")
 
 
 # ---- focus: only the focused session is spoken ------------------------------------------------------

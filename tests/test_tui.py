@@ -454,7 +454,7 @@ def test_cli_serve_first_run_honors_the_tunnel_choice_and_cancel(monkeypatch):
 
     served: list = []
     monkeypatch.setattr(cli, "check_dependencies", lambda **kw: None)
-    monkeypatch.setattr(cli, "serve", lambda cfg, *, tunnel_provider, warm_up=True: served.append(tunnel_provider) or 0)
+    monkeypatch.setattr(cli, "serve", lambda cfg, *, tunnel_provider, warm_up=True, **kw: served.append(tunnel_provider) or 0)
 
     def tui_serve_now(config_path, *, do_actions, serve=None):
         from zordon.config import Config

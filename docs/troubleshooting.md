@@ -7,6 +7,31 @@ cloudflared is present, and says what is missing. `zordon doctor --download` fet
 missing models; add `--tunnel` to fetch cloudflared too (`zordon serve --tunnel` also
 downloads it on first use).
 
+## Health strip
+
+While `zordon serve` runs, the web client shows one dot per part under the header
+(green ok, amber warning, red failed) and a badge with the worst status. Tap a dot
+for the detail and the fix; a red item also raises a banner at the top until it is
+fixed. The same report is at `GET /health` (with the session cookie) and is
+appended to the spoken answer of "status" when anything is degraded. It is
+re-evaluated every 30 s, never makes a paid call, and each probe is bounded to
+about a second. Items marked optional can only ever be amber.
+
+| Item | Red / amber when | Fix |
+| --- | --- | --- |
+| tmux | red: `tmux` is not on PATH; amber: no tmux server is running yet (the first session starts one) | install tmux 3.2 or newer, or run `zordon setup` |
+| agent | red: the configured coding agent's binary (`claude`, `codex`) is not on PATH | install Claude Code and log in, or run `zordon setup` |
+| session | amber: no session is focused | start or resume one from the Sessions sheet, or say "start a session in `<folder>`" |
+| normalizer | amber: passthrough (output is spoken terse); red: the Ollama server is down or the model is not pulled, Anthropic has no credentials, or `claude-cli` cannot run | set `providers.keys.anthropic`, or `ollama serve` + `ollama pull <model>`, or install Claude Code |
+| speech out | red: nothing will be spoken (silence provider, missing Kokoro files, or a cloud TTS without its key) | `zordon doctor --download`, or set the provider's key |
+| speech in | red: voice input is unavailable (provider could not start, cloud STT without its key); amber: the faster-whisper model is not downloaded yet (the first utterance fetches it) | `zordon doctor --download`, or set the provider's key |
+| voice detection | red: voice input is off because the Silero VAD model is missing | `zordon doctor --download` |
+| router | amber: only the keyword router is active (shim commands and yes/no work; everything else is typed to the agent) | set `providers.keys.typesafe` or `providers.keys.anthropic`, or `providers.router = "ollama"` |
+| threads | red: a worker thread (session manager, pipeline, audio, dispatcher) is not running | restart `zordon serve` and check the log |
+| hooks (optional) | amber: `curl` is missing, so the Claude Code hook signal is off and prompts are detected from the pane only | install curl, or run `zordon setup` |
+| update (optional) | amber: a newer Zordon is available, or was installed and this process still runs the old one | `zordon update`, or restart `zordon serve` |
+| tunnel (optional) | shown only while `--tunnel` is active | - |
+
 ## Session start
 
 ### The session opens on a trust dialog

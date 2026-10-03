@@ -48,9 +48,31 @@
       <span id="focus-title" class="focus-title">No session</span>
       <span id="focus-state" class="chip state-detached">offline</span>
     </button>
+    <button id="health-badge" class="health-badge health-none" type="button" aria-label="Health" title="Health" hidden>
+      <span id="health-badge-text">?</span>
+    </button>
     <span id="conn-dot" class="dot conn-offline" role="img" aria-label="disconnected" title="disconnected"></span>
     <button id="btn-settings" class="icon-btn" type="button" aria-label="Settings" title="Settings"><svg><use href="#i-gear"/></svg></button>
   </header>
+
+  <!-- (10) health strip: one dot per part; tap a dot for detail and fix -->
+  <div id="health-strip" class="health-strip" role="list" aria-label="Component health" hidden></div>
+  <div id="health-detail" class="health-detail" role="status" hidden>
+    <span id="health-detail-text"></span>
+    <button type="button" id="health-detail-close" class="toast-close" aria-label="Close">&times;</button>
+  </div>
+
+  <!-- (11) banners: a failed part, or an available update -->
+  <div id="banners" class="banners" aria-live="polite">
+    <div id="health-banner" class="banner banner-fail" role="alert" hidden>
+      <span id="health-banner-text" class="banner-text"></span>
+    </div>
+    <div id="update-banner" class="banner banner-update" role="status" hidden>
+      <span id="update-banner-text" class="banner-text"></span>
+      <a id="update-banner-link" class="banner-link" target="_blank" rel="noopener" hidden>What changed</a>
+      <button type="button" id="update-banner-close" class="toast-close" aria-label="Dismiss">&times;</button>
+    </div>
+  </div>
 
   <!-- (4) transcript feed -->
   <main id="feed">
@@ -151,6 +173,7 @@
           <dt>Barge-in</dt><dd id="st-bargein">-</dd>
           <dt>Audio</dt><dd id="st-audio">not started</dd>
           <dt>Agent</dt><dd id="st-version">-</dd>
+          <dt>Health</dt><dd id="st-health">-</dd>
         </dl>
       </section>
       <section class="card">

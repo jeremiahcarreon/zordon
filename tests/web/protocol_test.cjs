@@ -129,6 +129,16 @@ const SAMPLES = {
   error: { type: 'error', message: 'nope', code: 'bad_command' },
   pong: { type: 'pong', ts: 3.0 },
   tunnel: { type: 'tunnel', url: 'https://x.trycloudflare.com', qr_svg: '<svg></svg>' },
+  update: { type: 'update', current: '0.1.0', latest: '0.2.0', command: 'zordon update', auto: false, notes_url: 'https://example.com/commits/main' },
+  health: {
+    type: 'health',
+    status: 'fail',
+    ts: 5.0,
+    items: [
+      { key: 'tmux', label: 'tmux', status: 'ok', detail: 'server running', fix: '' },
+      { key: 'vad', label: 'voice detection', status: 'fail', detail: 'voice input is off: Silero VAD model missing', fix: 'zordon doctor --download' },
+    ],
+  },
 };
 for (const t of P.OUTBOUND_TYPES) {
   assert.ok(SAMPLES[t], `no sample for outbound type ${t}`);
@@ -140,6 +150,9 @@ assert.ok(P.validateInbound({ type: 'pong' }));
 assert.ok(P.validateInbound({ type: 'tunnel', url: null }));
 assert.ok(P.validateInbound({ type: 'error', message: 'x' }));
 assert.ok(P.validateInbound({ type: 'flush', generation: 0 }));
+assert.ok(P.validateInbound({ type: 'update', current: '1', latest: '2', command: 'zordon update' }));
+assert.ok(P.validateInbound({ type: 'health', status: 'ok', ts: 1, items: [] }));
+assert.ok(P.validateInbound({ type: 'health', status: 'ok', ts: 1, items: [{ key: 'tmux', label: 'tmux', status: 'ok' }] }));
 console.log('ok validateInbound accepts every outbound type');
 
 // ---- validateInbound: rejections ---------------------------------------------------
@@ -168,6 +181,13 @@ const BAD = [
   { type: 'settings', verbosity: 'minimal', tool_chatter: 'yes', muted: false, providers: {} },
   { type: 'error', message: 7 },
   { type: 'tunnel', url: 5 },
+  { type: 'update', current: '1', latest: '2' }, // command missing
+  { type: 'update', current: '1', latest: '2', command: 'x', auto: 'yes' },
+  { type: 'health', status: 'meh', ts: 1, items: [] },
+  { type: 'health', status: 'ok', items: [] }, // ts missing
+  { type: 'health', status: 'ok', ts: 1, items: [{ key: 'tmux', label: 'tmux', status: 'broken' }] },
+  { type: 'health', status: 'ok', ts: 1, items: [{ key: 'tmux', status: 'ok' }] }, // label missing
+  { type: 'health', status: 'ok', ts: 1, items: 'none' },
 ];
 for (const b of BAD) assert.strictEqual(P.validateInbound(b), null, `accepted bad message ${JSON.stringify(b)}`);
 assert.strictEqual(P.parseInbound('{not json'), null);

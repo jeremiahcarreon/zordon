@@ -82,6 +82,11 @@
     speakerMuted: false,
     settings: { verbosity: 'minimal', tool_chatter: false, muted: false, providers: {}, permission_mode: null },
     tunnel: null,
+    health: null, // last `health` message
+    healthOpen: null, // key of the item whose detail is shown, or null
+    healthStripOpen: true,
+    update: null, // last `update` message
+    updateDismissed: '', // "<latest>:<auto>" the user dismissed
     atBottom: true,
     unseen: 0,
     expandedDirs: {},
@@ -397,6 +402,10 @@
         return onPong(msg);
       case 'tunnel':
         return onTunnel(msg);
+      case 'update':
+        return onUpdate(msg);
+      case 'health':
+        return onHealth(msg);
       default:
         return undefined;
     }
@@ -559,6 +568,118 @@
       });
       qr.appendChild(img);
     }
+  }
+
+  // ---- health strip and banners -----------------------------------------------------------
+
+  var HEALTH_WORDS = { ok: 'all good', warn: 'warning', fail: 'problem' };
+
+  function sentenceCase(text) {
+    var t = String(text || '');
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+  }
+
+  function healthLine(item) {
+    var line = sentenceCase(item.detail || item.label);
+    if (item.status !== 'ok' && item.fix) line += (/[.!?]$/.test(line) ? '' : '.') + ' Fix: ' + item.fix;
+    return line;
+  }
+
+  function onHealth(msg) {
+    S.health = msg;
+    if (S.healthOpen && !msg.items.some(function (i) { return i.key === S.healthOpen; })) S.healthOpen = null;
+    renderHealth();
+  }
+
+  function renderHealth() {
+    var h = S.health;
+    var strip = $('health-strip');
+    var badge = $('health-badge');
+    var banner = $('health-banner');
+    if (!h) {
+      show(strip, false);
+      show(badge, false);
+      show(banner, false);
+      show($('health-detail'), false);
+      $('st-health').textContent = '-';
+      return;
+    }
+    var fails = h.items.filter(function (i) { return i.status === 'fail'; });
+    var warns = h.items.filter(function (i) { return i.status === 'warn'; });
+    // Overall badge.
+    show(badge, true);
+    badge.className = 'health-badge health-' + h.status;
+    var count = h.status === 'fail' ? fails.length : h.status === 'warn' ? warns.length : 0;
+    $('health-badge-text').textContent = count ? count + ' ' + HEALTH_WORDS[h.status] + (count > 1 ? 's' : '') : HEALTH_WORDS.ok;
+    badge.title = 'Health: ' + h.status + (S.healthStripOpen ? ' (tap to hide details)' : ' (tap to show details)');
+    badge.setAttribute('aria-expanded', S.healthStripOpen ? 'true' : 'false');
+    // One dot per item.
+    clear(strip);
+    h.items.forEach(function (item) {
+      var text = item.label + ': ' + healthLine(item);
+      var dot = el(
+        'button',
+        {
+          type: 'button',
+          class: 'health-item health-' + item.status + (S.healthOpen === item.key ? ' open' : ''),
+          title: text,
+          'aria-label': text,
+          dataset: { key: item.key, status: item.status },
+          onclick: function () {
+            S.healthOpen = S.healthOpen === item.key ? null : item.key;
+            renderHealth();
+          },
+        },
+        [el('span', { class: 'health-dot' }), el('span', { class: 'health-label', text: item.label })],
+      );
+      strip.appendChild(dot);
+    });
+    show(strip, S.healthStripOpen);
+    // Detail box for the tapped dot.
+    var open = null;
+    h.items.forEach(function (i) { if (i.key === S.healthOpen) open = i; });
+    show($('health-detail'), !!open && S.healthStripOpen);
+    $('health-detail-text').textContent = open ? open.label + ': ' + healthLine(open) : '';
+    // Persistent banner for anything failed.
+    clear($('health-banner-text'));
+    fails.forEach(function (item) {
+      $('health-banner-text').appendChild(el('span', { class: 'banner-line', text: healthLine(item) }));
+    });
+    show(banner, fails.length > 0);
+    // Settings drawer summary.
+    var names = (h.status === 'fail' ? fails : warns).map(function (i) { return i.label; });
+    $('st-health').textContent = h.status + (names.length ? ': ' + names.join(', ') : ' (' + h.items.length + ' parts checked)');
+  }
+
+  function onUpdate(msg) {
+    S.update = msg;
+    renderUpdate();
+  }
+
+  function updateKey(msg) {
+    return msg ? msg.latest + ':' + (msg.auto ? '1' : '0') : '';
+  }
+
+  function renderUpdate() {
+    var u = S.update;
+    var banner = $('update-banner');
+    if (!u || S.updateDismissed === updateKey(u)) {
+      show(banner, false);
+      return;
+    }
+    var text = u.auto
+      ? 'Zordon ' + u.latest + ' installed. Restart zordon serve to use it' + (u.command ? ' (' + u.command + ')' : '') + '.'
+      : 'Zordon ' + u.latest + ' is available (you have ' + u.current + ') \u2014 ' + u.command;
+    $('update-banner-text').textContent = text;
+    var link = $('update-banner-link');
+    if (u.notes_url && /^https:\/\//.test(u.notes_url)) {
+      link.href = u.notes_url;
+      show(link, true);
+    } else {
+      link.removeAttribute('href');
+      show(link, false);
+    }
+    show(banner, true);
   }
 
   // ---- transcript feed ------------------------------------------------------------------
@@ -1479,6 +1600,20 @@
       { passive: true },
     );
     $('jump').addEventListener('click', scrollFeedToBottom);
+
+    // Health strip and banners.
+    $('health-badge').addEventListener('click', function () {
+      S.healthStripOpen = !S.healthStripOpen;
+      renderHealth();
+    });
+    $('health-detail-close').addEventListener('click', function () {
+      S.healthOpen = null;
+      renderHealth();
+    });
+    $('update-banner-close').addEventListener('click', function () {
+      S.updateDismissed = updateKey(S.update);
+      renderUpdate();
+    });
 
     // Settings controls.
     $('set-verbosity').addEventListener('change', function (e) {

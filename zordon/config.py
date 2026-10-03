@@ -111,6 +111,13 @@ class TunnelConfig:
 
 
 @dataclass
+class UpdateConfig:
+    check: bool = True  # look for a newer Zordon when serve starts (cached, at most every 6 h)
+    auto: bool = True  # install it when found; a restart picks it up
+    channel: str = "main"  # git branch or tag the install tracks
+
+
+@dataclass
 class OutputConfig:
     # Where prose comes from. "auto" tails the Claude Code session jsonl when it
     # can be found and falls back to pane capture otherwise.
@@ -125,6 +132,7 @@ class Config:
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     tunnel: TunnelConfig = field(default_factory=TunnelConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # ---- construction -------------------------------------------------------
@@ -154,6 +162,7 @@ class Config:
             voice=section("voice", VoiceConfig),
             tunnel=section("tunnel", TunnelConfig),
             output=section("output", OutputConfig),
+            update=section("update", UpdateConfig),
             path=path,
         )
         cfg.validate()
@@ -186,6 +195,7 @@ class Config:
             "voice": asdict(self.voice),
             "tunnel": asdict(self.tunnel),
             "output": asdict(self.output),
+            "update": asdict(self.update),
         }
         return d
 

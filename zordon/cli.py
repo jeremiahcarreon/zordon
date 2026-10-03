@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--config", type=Path, default=None, help="config file (default: $ZORDON_HOME/config.toml)")
     serve.add_argument("--no-warm-up", action="store_true", help="do not load the TTS model before serving")
     serve.add_argument("--no-setup", action="store_true", help="on a first run, write defaults instead of asking")
+    serve.add_argument("--no-update", action="store_true", help="skip the update check for this run")
     serve.set_defaults(func=cmd_serve)
 
     setup_p = sub.add_parser("setup", help="guided setup: choose providers, download models, write the config")
@@ -86,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--no-download", action="store_true", help="only write the config; skip downloads and pulls")
     setup_p.add_argument("--plain", action="store_true", help="question-and-answer mode instead of the full-screen TUI")
     setup_p.set_defaults(func=cmd_setup)
+
+    up = sub.add_parser("update", help="check for and install a newer zordon (restart picks it up)")
+    up.add_argument("--check", action="store_true", help="only report whether an update exists")
+    up.add_argument("--channel", default=None, help="branch or tag to track (default: config [update] channel)")
+    up.set_defaults(func=cmd_update)
 
     un = sub.add_parser("uninstall", help="remove zordon, its data, and (on request) what it installed")
     un.add_argument("--yes", action="store_true", help="remove the isolated environment and data without asking; never touches outside items")
@@ -246,6 +252,73 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return EXIT_OK if not problems else EXIT_MISSING
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    from zordon import update as upd  # noqa: PLC0415
+
+    cfg, _ = load_or_create(getattr(args, "config", None))
+    channel = getattr(args, "channel", None) or cfg.update.channel
+    st = upd.check(channel, force=True)
+    if st.error and st.latest is None:
+        print(f"could not check for updates: {st.error}", file=sys.stderr)
+        return EXIT_MISSING
+    if not st.available:
+        print(f"zordon {st.current} is current on {channel}.")
+        return EXIT_OK
+    print(f"zordon {st.latest} is available (you have {st.current}).")
+    if getattr(args, "check", False):
+        return EXIT_OK
+    ok, msg = upd.apply(channel)
+    print(msg)
+    return EXIT_OK if ok else EXIT_MISSING
+
+
+def start_update_check(agent: Any, cfg: Config, *, skip: bool) -> None:
+    """Background: check the channel, apply when configured, tell terminal and clients."""
+    from zordon import update as upd  # noqa: PLC0415
+
+    if skip or upd.disabled(cfg.update.check):
+        return
+
+    def _run() -> None:
+        try:
+            st = upd.check(cfg.update.channel)
+            if not st.available:
+                agent.update_status = {"current": st.current, "latest": st.latest, "available": False}
+                return
+            if cfg.update.auto:
+                ok, msg = upd.apply(cfg.update.channel, log=lambda line: None)
+                st.installed = ok
+                if ok:
+                    print(f"\nUpdated to zordon {st.latest}. Restart zordon serve to use it.", file=sys.stderr)
+                else:
+                    print(f"\nzordon {st.latest} is available but the update failed: {msg}. Run `zordon update`.", file=sys.stderr)
+            else:
+                print(f"\nzordon {st.latest} is available (you have {st.current}). Run `zordon update`.", file=sys.stderr)
+            agent.update_status = {"current": st.current, "latest": st.latest, "available": True, "installed": st.installed}
+            try:
+                from zordon.transport.protocol import UpdateOut  # noqa: PLC0415
+
+                agent.bus.publish(UpdateOut(current=st.current, latest=st.latest or "", command=st.command, auto=st.installed, notes_url=f"{upd.REPO}/commits/{cfg.update.channel}"))
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001 - an update check must never hurt serve
+            logging.getLogger("zordon.update").debug("update check failed", exc_info=True)
+
+    threading.Thread(target=_run, name="zordon-update-check", daemon=True).start()
+
+
+def ensure_local_services(cfg: Config) -> None:
+    """Start what the configured providers need and can be started here: the Ollama server."""
+    if cfg.providers.normalizer not in ("ollama", "auto") or cfg.providers.key("anthropic"):
+        return
+    binary = shutil.which("ollama")
+    if not binary:
+        return
+    from zordon import setup as wizard  # noqa: PLC0415
+
+    wizard.ensure_ollama_server(cfg.providers.ollama_url, binary, sys.stderr, wait_s=10.0)
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     from zordon import uninstall as un  # noqa: PLC0415
 
@@ -333,7 +406,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     apply_overrides(cfg, bind=args.bind, port=args.port)
     tunnel_provider = resolve_tunnel(cfg, args.tunnel)
     check_dependencies(need_tunnel=tunnel_provider)
-    return serve(cfg, tunnel_provider=tunnel_provider, warm_up=not args.no_warm_up)
+    return serve(cfg, tunnel_provider=tunnel_provider, warm_up=not args.no_warm_up, skip_update=bool(getattr(args, "no_update", False)))
 
 
 # ---- serve pieces --------------------------------------------------------------------------
@@ -412,16 +485,18 @@ def check_dependencies(*, need_tunnel: str | None, which: Any = None) -> None:
         print(f"cloudflared installed at {found}", file=sys.stderr)
 
 
-def serve(cfg: Config, *, tunnel_provider: str | None, warm_up: bool = True) -> int:
+def serve(cfg: Config, *, tunnel_provider: str | None, warm_up: bool = True, skip_update: bool = False) -> int:
     """Run the whole thing until a signal arrives. Returns the exit code."""
     from zordon.app import Agent  # noqa: PLC0415
     from zordon.transport.server import create_app, run_server, serve_in_thread  # noqa: PLC0415
 
+    ensure_local_services(cfg)
     agent = Agent(cfg)
     for w in agent.warnings:
         print(f"warning: {w}", file=sys.stderr)
     app = create_app(agent, tunnel_mode=bool(tunnel_provider))
     agent.start(warm_up=warm_up)
+    start_update_check(agent, cfg, skip=skip_update)
     stop_server = None
     tunnel = None
     code = EXIT_OK

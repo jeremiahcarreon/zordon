@@ -251,6 +251,32 @@ class Pong(_Strict):
     ts: float | None = None
 
 
+class UpdateOut(_Strict):
+    """A newer Zordon is available (or was just installed and needs a restart)."""
+
+    type: Literal["update"] = "update"
+    current: str
+    latest: str
+    command: str  # what to run, e.g. "zordon update" or "restart zordon serve"
+    auto: bool = False  # True when the update was already installed automatically
+    notes_url: str | None = None
+
+
+class HealthItem(_Strict):
+    key: str  # tmux | agent | sessions | normalizer | tts | stt | vad | router | threads | update | hooks
+    label: str
+    status: Literal["ok", "warn", "fail"]
+    detail: str = ""
+    fix: str = ""
+
+
+class HealthOut(_Strict):
+    type: Literal["health"] = "health"
+    status: Literal["ok", "warn", "fail"]
+    items: list[HealthItem]
+    ts: float
+
+
 class TunnelOut(_Strict):
     type: Literal["tunnel"] = "tunnel"
     url: str | None
@@ -269,6 +295,8 @@ OUTBOUND_TYPES = (
     "error",
     "pong",
     "tunnel",
+    "update",
+    "health",
 )
 INBOUND_TYPES = ("audio", "command", "text", "call", "flush_ack", "ping")
 

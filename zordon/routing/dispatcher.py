@@ -461,6 +461,14 @@ class DispatcherThread(threading.Thread):
             lines = []
         if lines:
             msg += f" Last line: {lines[-1].strip()}"
+        health = getattr(self.settings, "health_summary_sentence", None)
+        if callable(health):
+            try:
+                extra = str(health() or "").strip()
+            except Exception:  # noqa: BLE001 - a health probe must not break "status"
+                extra = ""
+            if extra:
+                msg += " " + extra
         self._speak(msg, sid, "answer")
 
     def _cmd_set_verbosity(self, argument: str | None, text: str, sid: str | None) -> None:

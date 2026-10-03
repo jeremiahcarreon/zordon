@@ -83,6 +83,33 @@ def test_healthz_needs_no_auth(client: TestClient, agent: FakeAgent):
     assert r.json() == {"ok": True, "version": agent.version}
 
 
+def test_health_requires_the_cookie(agent: FakeAgent, tmp_path: Path):
+    """``/health`` names providers, paths and versions, so it is behind the cookie;
+    ``/healthz`` stays the unauthenticated liveness ping."""
+    from zordon.health import Item, make_report
+
+    agent.health = lambda: make_report([Item("vad", "fail", "voice input is off", "zordon doctor --download")], ts=1.0)  # type: ignore[attr-defined]
+    web = tmp_path / "web2"
+    web.mkdir()
+    (web / "index.html").write_text("<!doctype html>")
+    with TestClient(S.create_app(agent, static_dir=web)) as c:
+        assert c.get("/health").status_code in (401, 403)
+        assert c.get("/healthz").status_code == 200
+        assert c.post("/auth", json={"token": TOKEN}).status_code == 200
+        r = c.get("/health")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["type"] == "health" and body["status"] == "fail" and body["ts"] == 1.0
+        assert body["items"][0]["key"] == "vad" and body["items"][0]["fix"] == "zordon doctor --download"
+        assert r.headers["cache-control"] == "no-store"
+        assert c.get("/health", headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_health_without_a_probe_is_503(client: TestClient):
+    assert login(client).status_code == 200
+    assert client.get("/health").status_code == 503
+
+
 def test_security_headers_present(client: TestClient):
     r = client.get("/healthz")
     assert r.headers["x-content-type-options"] == "nosniff"

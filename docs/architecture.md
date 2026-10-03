@@ -19,6 +19,7 @@ zordon/
   bus.py                 events + queues shared between threads
   providers.py           STTProvider / TTSProvider / Normalizer / Router protocols
   doctor.py              dependency + provider checks, model/binary download
+  health.py              runtime health of the running agent -> HealthOut (the client's health strip)
 
   agents/                one adapter per coding agent (decision 0013)
     base.py              AgentAdapter protocol, AgentInfo/LaunchSpec/SessionInfo, BaseAdapter (generic pane)
@@ -294,7 +295,14 @@ class AgentAPI(Protocol):
     def call_state(self, client_id: str, action: str) -> None      # start/end/pause/resume
     def repeat_last(self) -> None
     def upload_path(self, filename: str) -> Path                   # <focused cwd>/.zordon/uploads/<safe name>
+    def health(self) -> HealthReport                               # optional; zordon.health.collect, cached 5 s; sent after hello/sessions and at GET /health
+    update_status: dict | None                                     # set by the update check: {current, latest, available, installed}
 ```
+
+The agent also runs a small health thread (``zordon-health``) that re-collects every
+30 s and publishes ``HealthOut`` when any item changed, and at least every 60 s.
+``UpdateOut`` is published by the update check; ``ws.to_outbound`` passes both through
+like ``Sessions``/``SettingsOut``.
 
 ## Permission-option safety
 

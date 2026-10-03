@@ -6,9 +6,13 @@ Two pieces:
   thread, converts each event to an outbound protocol model once, and fans the
   serialized JSON out to every connection's queue through
   ``loop.call_soon_threadsafe``. No executor thread is ever parked on a queue.
-* :class:`ClientConnection` (one per socket) sends ``hello``, ``sessions`` and
-  the recent transcript, then runs a receive task and a send task concurrently
-  until either finishes.
+* :class:`ClientConnection` (one per socket) sends ``hello``, ``sessions``, the
+  ``health`` report (when the agent has one) and the recent transcript, then runs
+  a receive task and a send task concurrently until either finishes.
+
+``health`` and ``update`` are published by the agent as ready protocol models
+(``HealthOut`` / ``UpdateOut``); :func:`to_outbound` passes them through like
+``Sessions`` and ``SettingsOut``.
 
 The transport never talks to tmux, providers or the session thread directly:
 inbound audio goes to ``bus.inbound_audio``, typed text to ``agent.submit_text``,
@@ -394,6 +398,9 @@ class ClientConnection:
             self._cmd_lock = asyncio.Lock()
             await self._send_model(await self._off_loop(self._hello))
             await self._send_model(await self._off_loop(self._sessions))
+            health = await self._off_loop(self._health)
+            if health is not None:
+                await self._send_model(health)
             for row in await self._off_loop(self._transcript_tail):
                 await self._send_model(row)
             recv = asyncio.create_task(self._receive_loop(), name=f"ws-recv-{self.client_id}")
@@ -899,6 +906,21 @@ class ClientConnection:
 
     def _settings(self) -> P.SettingsOut:
         return settings_out(self.agent.settings() or {})
+
+    def _health(self) -> P.HealthOut | None:
+        """The agent's health report as a ``health`` message; None when the agent has none."""
+        probe = getattr(self.agent, "health", None)
+        if not callable(probe):
+            return None
+        try:
+            report = probe()
+        except Exception:  # noqa: BLE001 - a broken probe must not stop the opening burst
+            log.exception("health report failed")
+            return None
+        if isinstance(report, P.HealthOut):
+            return report
+        to_out = getattr(report, "to_out", None)
+        return to_out() if callable(to_out) else None
 
     def _transcript_tail(self) -> list[P.TranscriptOut]:
         tail = getattr(self.agent, "transcript_tail", None)

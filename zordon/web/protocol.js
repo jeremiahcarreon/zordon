@@ -62,6 +62,8 @@
     'error',
     'pong',
     'tunnel',
+    'update',
+    'health',
   ];
   var INBOUND_TYPES = ['audio', 'command', 'text', 'call', 'flush_ack', 'ping'];
 
@@ -78,6 +80,7 @@
     'detached',
   ];
   var VERBOSITY_LEVELS = ['minimal', 'normal', 'technical'];
+  var HEALTH_STATUSES = ['ok', 'warn', 'fail'];
   // The only modes the client ever offers. Anything wider is set in Claude
   // Code's own settings file, never from here.
   var PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk'];
@@ -251,6 +254,32 @@
     tunnel: function (m) {
       return optional(m.url, isStr) && optional(m.qr_svg, isStr);
     },
+    update: function (m) {
+      return (
+        isStr(m.current) &&
+        isStr(m.latest) &&
+        isStr(m.command) &&
+        optional(m.auto, isBool) &&
+        optional(m.notes_url, isStr)
+      );
+    },
+    health: function (m) {
+      if (!oneOf(HEALTH_STATUSES)(m.status) || !isNum(m.ts) || !Array.isArray(m.items)) return false;
+      for (var i = 0; i < m.items.length; i++) {
+        var it = m.items[i];
+        if (
+          !isObj(it) ||
+          !isStr(it.key) ||
+          !isStr(it.label) ||
+          !oneOf(HEALTH_STATUSES)(it.status) ||
+          !optional(it.detail, isStr) ||
+          !optional(it.fix, isStr)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    },
   };
 
   // Returns the message when it is a well-formed agent -> client message,
@@ -421,6 +450,7 @@
     CALL_ACTIONS: CALL_ACTIONS,
     STATES: STATES,
     VERBOSITY_LEVELS: VERBOSITY_LEVELS,
+    HEALTH_STATUSES: HEALTH_STATUSES,
     PERMISSION_MODES: PERMISSION_MODES,
     STT_PROVIDERS: STT_PROVIDERS,
     TTS_PROVIDERS: TTS_PROVIDERS,

@@ -52,6 +52,8 @@ from zordon.bus import (
     drain,
 )
 from zordon.config import VERBOSITY_LEVELS, Config, ConfigError
+from zordon.health import HealthReport
+from zordon.health import collect as collect_health
 from zordon.output.normalizer import PassthroughNormalizer, make_normalizer
 from zordon.output.pipeline import PipelineThread
 from zordon.output.tts import SilenceTTS, make_tts
@@ -82,6 +84,9 @@ log = logging.getLogger("zordon.app")
 
 PROVIDER_KINDS = ("stt", "tts", "normalizer", "router")
 UPLOAD_DIRNAME = ".zordon/uploads"
+HEALTH_CACHE_S = 5.0  # ``Agent.health()`` re-collects at most this often
+HEALTH_INTERVAL_S = 30.0  # the health thread re-collects this often
+HEALTH_REPUBLISH_S = 60.0  # ... and publishes at least this often, changed or not
 CALL_BUSY_TEXT = "Another device is already in the call. End it there first."
 MAX_SPOKEN_OPTIONS = 6
 
@@ -354,13 +359,24 @@ class Agent:
         zordon_home: Path | None = None,
         tmux_session: str | None = None,
         hook_port: int | None = None,
+        health_interval: float = HEALTH_INTERVAL_S,
+        health_republish: float = HEALTH_REPUBLISH_S,
     ) -> None:
         self.config = config
         self.bus = AgentBus()
         self.store = store or TranscriptStore(paths.db_path())
         self.hook_secret = secrets.token_urlsafe(32)
         self.tunnel_url: str | None = None
+        # Set by the update check (zordon.cli.start_update_check): {current, latest, available, installed}.
+        self.update_status: dict[str, Any] | None = None
         self.started_at: float | None = None
+        self._health_interval = float(health_interval)
+        self._health_republish = float(health_republish)
+        self._health_lock = threading.Lock()
+        self._health_cache: HealthReport | None = None
+        self._health_wake = threading.Event()
+        self._health_thread = threading.Thread(target=self._health_loop, name="zordon-health", daemon=True)
+        self.health_published = 0
         self._muted = threading.Event()
         self._lock = threading.RLock()
         self._summarized: set[str] = set()
@@ -432,6 +448,7 @@ class Agent:
         self.audio.start()
         self.dispatcher.start()
         self._events_thread.start()
+        self._health_thread.start()
         self.started_at = time.time()
         for w in self.warnings:
             self.bus.publish(Notice(text=w, level="warning"))
@@ -459,8 +476,11 @@ class Agent:
             self.dispatcher.join(_left(deadline))
         self.manager.stop(timeout=_left(deadline))
         self._events.put(None)
+        self._health_wake.set()
         if self._events_thread.is_alive():
             self._events_thread.join(_left(deadline))
+        if self._health_thread.is_alive():
+            self._health_thread.join(_left(deadline))
         for prov in (self.providers.normalizer, self.providers.tts):
             close_prov = getattr(prov, "close", None)
             if callable(close_prov):
@@ -708,7 +728,56 @@ class Agent:
             "pipeline": self.pipeline.stats(),
             "audio": self.audio.stats(),
             "dispatched": self.dispatcher.handled,
+            "health": self._health_cache.status if self._health_cache is not None else None,
         }
+
+    # ---- health ----------------------------------------------------------------------------
+
+    def health(self, *, max_age: float = HEALTH_CACHE_S) -> HealthReport:
+        """The runtime health report (``zordon.health.collect``), re-collected when the
+        cached one is older than ``max_age`` seconds. Safe from any thread."""
+        with self._health_lock:
+            cached = self._health_cache
+            if cached is not None and time.time() - cached.ts < max_age:
+                return cached
+            report = collect_health(self)
+            self._health_cache = report
+            return report
+
+    def health_summary_sentence(self) -> str:
+        """Spoken by the ``status`` shim command after the session's state; empty when
+        every part is working so the dispatcher adds nothing."""
+        try:
+            return self.health().summary_sentence()
+        except Exception:  # noqa: BLE001
+            log.exception("health summary failed")
+            return ""
+
+    def publish_health(self, report: HealthReport | None = None) -> HealthReport:
+        """Send a ``health`` message to every client now."""
+        report = report or self.health(max_age=0.0)
+        self.bus.publish(report.to_out())
+        self.health_published += 1
+        return report
+
+    def _health_loop(self) -> None:
+        """Re-collect every ``health_interval`` seconds; publish when any item changed and
+        at least every ``health_republish`` seconds so a client's strip never goes stale."""
+        last_sig: tuple[Any, ...] | None = None
+        last_published = 0.0
+        while not self.bus.stop.is_set():
+            if self._health_wake.wait(self._health_interval):
+                return
+            try:
+                report = self.health(max_age=self._health_interval / 2)
+                sig = report.signature()
+                now = time.monotonic()
+                if sig != last_sig or now - last_published >= self._health_republish:
+                    self.publish_health(report)
+                    last_sig = sig
+                    last_published = now
+            except Exception:  # noqa: BLE001
+                log.exception("health check failed")
 
     # ---- spoken glue ---------------------------------------------------------------------
 

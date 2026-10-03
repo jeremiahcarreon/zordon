@@ -23,6 +23,7 @@ from zordon.bus import (
     StateChanged,
     TranscriptRow,
 )
+from zordon.health import HealthReport, Item, make_report
 from zordon.transport import protocol as P
 from zordon.transport import server as S
 from zordon.transport import ws as W
@@ -378,6 +379,52 @@ def test_flush_and_state_and_prompt_and_notice(client: TestClient, agent: FakeAg
         assert recv_type(ws, "sessions")["sessions"] == []
         agent.bus.publish({"type": "tunnel", "url": "https://x.trycloudflare.com", "qr_svg": None})
         assert recv_type(ws, "tunnel")["url"] == "https://x.trycloudflare.com"
+
+
+def _fake_report(status: str = "fail") -> HealthReport:
+    return make_report(
+        [
+            Item("tmux", "ok", "server running"),
+            Item("vad", status, "voice input is off: Silero VAD model missing", "zordon doctor --download"),
+            Item("hooks", "warn", "curl not found", "install curl"),
+        ],
+        ts=123.0,
+    )
+
+
+def test_health_sent_after_hello_and_sessions(client: TestClient, agent: FakeAgent):
+    """A fresh client learns the health of every part before the transcript tail."""
+    agent.health = lambda: _fake_report()  # type: ignore[attr-defined]
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "hello"
+        assert ws.receive_json()["type"] == "sessions"
+        h = ws.receive_json()
+        assert h["type"] == "health" and h["status"] == "fail" and h["ts"] == 123.0
+        assert [i["key"] for i in h["items"]] == ["tmux", "vad", "hooks"]
+        vad = h["items"][1]
+        assert vad["label"] == "voice detection" and vad["status"] == "fail"
+        assert vad["fix"] == "zordon doctor --download"
+        assert ws.receive_json()["type"] == "transcript"
+        assert P.HealthOut.model_validate(h)
+
+
+def test_no_health_message_without_a_probe(client: TestClient, agent: FakeAgent):
+    """An agent without ``health()`` (older or minimal) still gets the plain opening burst."""
+    with connected(client) as (ws, hello, sessions, tail):
+        assert tail[0]["type"] == "transcript"
+
+
+def test_health_and_update_events_pass_through(client: TestClient, agent: FakeAgent):
+    with connected(client) as (ws, *_):
+        agent.bus.publish(_fake_report("warn").to_out())
+        h = recv_type(ws, "health")
+        assert h["status"] == "warn" and h["items"][1]["status"] == "warn"
+        agent.bus.publish(P.UpdateOut(current="0.1.0", latest="0.2.0", command="zordon update", notes_url="https://example.com/x"))
+        u = recv_type(ws, "update")
+        assert u == {"type": "update", "current": "0.1.0", "latest": "0.2.0", "command": "zordon update", "auto": False, "notes_url": "https://example.com/x"}
+    assert W.to_outbound(P.UpdateOut(current="1", latest="2", command="zordon update")) == [
+        P.UpdateOut(current="1", latest="2", command="zordon update")
+    ]
 
 
 def test_two_clients_both_receive(client: TestClient, agent: FakeAgent):

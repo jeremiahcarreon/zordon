@@ -45,6 +45,12 @@ def local_cfg() -> Config:
     cfg.providers.tts = "silence"
     cfg.providers.normalizer = "passthrough"
     cfg.providers.router = "keyword"
+    # A port nothing else on the machine uses, so "port is free" does not depend on the host.
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        cfg.server.port = s.getsockname()[1]
     return cfg
 
 

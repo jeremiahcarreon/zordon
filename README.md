@@ -186,6 +186,23 @@ for per-sentence normalization as text streams.
 
 See `docs/providers.md` for every slot, model, and cost note.
 
+## Updates and health
+
+Installs track the GitHub repository until there is a PyPI release. On every `zordon serve`,
+a background check compares the running version with the one on the tracked channel (at most
+once every 6 hours, cached, 3 s timeout, never blocks startup). When a newer version exists and
+`[update] auto = true` (the default), it is installed through the same tool that installed
+Zordon (uv or pipx) and both the terminal and every connected browser get a banner: restart
+`zordon serve` to use it. Set `auto = false` to be told instead, run `zordon update` yourself,
+or `zordon serve --no-update` / `ZORDON_NO_UPDATE_CHECK=1` to skip the check entirely.
+
+The web page shows a health strip: one dot per component (tmux, the agent, the focused
+session, rewriter, voice, transcription, voice activity detection, routing, worker threads,
+hooks, updates, tunnel). Amber is degraded, red means something will not work; tap a dot for
+the detail and the exact fix. A red item also raises a banner, and saying "status" reads the
+degraded items aloud. `GET /health` returns the same report as JSON; `zordon doctor` is the
+offline equivalent before serving.
+
 ## Reaching Zordon from a phone
 
 Remote access is part of the product, because a voice interface that only works at the desk is
@@ -263,6 +280,11 @@ openai = ""
 elevenlabs = ""
 groq = ""
 typesafe = ""
+
+[update]
+check = true
+auto = true
+channel = "main"
 
 [voice]
 verbosity = "minimal"

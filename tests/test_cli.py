@@ -202,7 +202,7 @@ def test_serve_tunnel_without_binary_downloads_it_first(monkeypatch: pytest.Monk
 
     served: list[str | None] = []
     monkeypatch.setattr(doctor, "download_cloudflared", fake_download)
-    monkeypatch.setattr(cli, "serve", lambda cfg, *, tunnel_provider, warm_up: served.append(tunnel_provider) or 0)
+    monkeypatch.setattr(cli, "serve", lambda cfg, *, tunnel_provider, warm_up, **kw: served.append(tunnel_provider) or 0)
     assert cli.main(["serve", "--tunnel"]) == 0
     assert downloads == ["cloudflared"] and served == ["cloudflared"]
     assert "first use" in capsys.readouterr().err

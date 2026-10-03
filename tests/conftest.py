@@ -29,6 +29,10 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         return real_server_models(url, *a, **k)
 
     monkeypatch.setattr(_ollama, "server_models", guarded)
+    # Never start a real `ollama serve` from a test.
+    from zordon import setup as _setup
+
+    monkeypatch.setattr(_setup, "ensure_ollama_server", lambda url, binary, out, **kw: True)
     return zh
 
 
