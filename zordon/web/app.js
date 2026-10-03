@@ -80,7 +80,7 @@
     pausedByVisibility: false,
     micMuted: false,
     speakerMuted: false,
-    settings: { verbosity: 'minimal', tool_chatter: false, muted: false, providers: {}, permission_mode: null },
+    settings: { verbosity: 'minimal', tool_chatter: false, muted: false, providers: {}, permission_mode: null, launch_mode: null },
     tunnel: null,
     health: null, // last `health` message
     healthOpen: null, // key of the item whose detail is shown, or null
@@ -536,6 +536,13 @@
     S.settings.muted = msg.muted;
     S.settings.providers = msg.providers || {};
     S.settings.permission_mode = msg.permission_mode || null;
+    if (msg.launch_mode && P.PERMISSION_MODES.indexOf(msg.launch_mode) !== -1 && S.settings.launch_mode !== msg.launch_mode) {
+      // The configured default for new sessions; preselect it once per value so a
+      // choice the user made in the form is not undone by every settings refresh.
+      S.settings.launch_mode = msg.launch_mode;
+      var sel = $('new-mode');
+      if (sel) sel.value = msg.launch_mode;
+    }
     renderSettings();
   }
 

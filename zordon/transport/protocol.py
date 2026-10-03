@@ -238,6 +238,7 @@ class SettingsOut(_Strict):
     muted: bool
     providers: dict[str, str]
     permission_mode: str | None = None
+    launch_mode: str | None = None  # sessions.permission_mode: what "New session" preselects
 
 
 class ErrorOut(_Strict):

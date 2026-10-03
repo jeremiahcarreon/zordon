@@ -72,3 +72,69 @@ def test_cli_update_check_only(monkeypatch, capsys):
     monkeypatch.setattr(upd, "fetch_latest_version", lambda channel, timeout=3.0, client=None: __version__)
     assert main(["update", "--check"]) == 0
     assert "is current" in capsys.readouterr().out
+
+
+def test_serve_rechecks_while_running(monkeypatch):
+    """The check repeats on the interval for as long as serve runs, installs when
+    configured and announces each new version once (banner + one spoken notice)."""
+    import threading
+    import time
+
+    from zordon.cli import start_update_check
+    from zordon.config import Config
+
+    answers = iter([__version__, "99.0.0", "99.0.0", "99.1.0"])
+    seen: list[str] = []
+
+    def fake_check(channel):
+        latest = next(answers, "99.1.0")
+        seen.append(latest)
+        return upd.UpdateStatus(__version__, latest, upd.is_newer(latest, __version__), time.time(), channel)
+
+    applied: list[str] = []
+    monkeypatch.setattr(upd, "check", fake_check)
+    monkeypatch.setattr(upd, "apply", lambda channel, log=print: (applied.append(channel) or True, "ok"))
+
+    class Bus:
+        def __init__(self):
+            self.stop = threading.Event()
+            self.published: list = []
+
+        def publish(self, ev):
+            self.published.append(ev)
+
+    class Agent:
+        bus = Bus()
+        update_status = None
+
+    agent = Agent()
+    cfg = Config.default()
+    start_update_check(agent, cfg, skip=False, interval_s=0.02)
+    deadline = time.time() + 3
+    # Wait for the fourth check to have been *processed*, not just answered: the
+    # second announcement (banner + notice) is what the assertions below count.
+    while len(agent.bus.published) < 4 and time.time() < deadline:
+        time.sleep(0.01)
+    agent.bus.stop.set()
+    assert seen[:4] == [__version__, "99.0.0", "99.0.0", "99.1.0"]
+    assert applied == ["main", "main"]  # 99.0.0 once (not again on the repeat), then 99.1.0
+    kinds = [type(e).__name__ for e in agent.bus.published]
+    assert kinds.count("UpdateOut") == 2 and kinds.count("Notice") == 2
+    notice = next(e for e in agent.bus.published if type(e).__name__ == "Notice")
+    assert notice.speak and "99.0.0" in notice.text and "Restart" in notice.text
+    assert agent.update_status["latest"] == "99.1.0" and agent.update_status["installed"] is True
+
+
+def test_serve_check_skipped_when_disabled(monkeypatch):
+    from zordon.cli import start_update_check
+    from zordon.config import Config
+
+    called = []
+    monkeypatch.setattr(upd, "check", lambda channel: called.append(channel))
+    cfg = Config.default()
+    cfg.update.check = False
+    start_update_check(object(), cfg, skip=False, interval_s=0.01)
+    import time
+
+    time.sleep(0.05)
+    assert called == []

@@ -385,7 +385,24 @@ def check_router(agent: Any) -> Item:
         if why:
             detail += f" (configured {pref or 'router'} unavailable: {why})"
         return Item("router", WARN, detail, FIX_ROUTER)
+    errors = getattr(router, "last_errors", None) or {}
+    if isinstance(errors, dict) and errors:
+        name, err = next(iter(errors.items()))
+        low = str(err).lower()
+        if "401" in low or "authenticat" in low or "unauthorized" in low or "invalid api key" in low:
+            return Item(
+                "router",
+                WARN,
+                f"{name} rejected the API key on the last request; routing fell back to keywords. {_short(str(err))}",
+                f"check providers.keys.{'typesafe' if name == 'jev' else name} in config.toml (zordon setup re-enters it)",
+            )
+        return Item("router", WARN, f"{name} failed on the last request; routing fell back to keywords. {_short(str(err))}", FIX_ROUTER)
     return Item("router", OK, " -> ".join(names))
+
+
+def _short(text: str, n: int = 160) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
 
 
 THREAD_ATTRS = ("manager", "pipeline", "audio", "dispatcher")

@@ -51,6 +51,14 @@ class FallbackRouter:
         ) or KeywordRouter()
         self.smart: list[Router] = [r for r in self.chain if r is not self.keyword]
         self.name = "fallback(" + ",".join(r.name for r in [self.keyword, *self.smart]) + ")"
+        # Last failure per smart router, so the health strip can say *why* routing is
+        # falling through to keywords (a rejected key looks exactly like a working one
+        # until the first utterance). Cleared by the next success.
+        self.last_errors: dict[str, str] = {}
+
+    def _failed(self, router: Router, what: str, e: Exception) -> None:
+        self.last_errors[router.name] = str(e)
+        log.warning("router %s %s failed, trying next: %s", router.name, what, e)
 
     # ---- Router ------------------------------------------------------------------------
 
@@ -63,9 +71,12 @@ class FallbackRouter:
             return kw
         for router in self.smart:
             try:
-                return router.route(utterance, ctx)
+                res = router.route(utterance, ctx)
             except ProviderError as e:
-                log.warning("router %s failed, trying next: %s", router.name, e)
+                self._failed(router, "route", e)
+                continue
+            self.last_errors.pop(router.name, None)
+            return res
         return kw
 
     def yes_no(self, utterance: str) -> YesNoResult:
@@ -77,9 +88,12 @@ class FallbackRouter:
             return kw
         for router in self.smart:
             try:
-                return router.yes_no(utterance)
+                res = router.yes_no(utterance)
             except ProviderError as e:
-                log.warning("router %s yes_no failed, trying next: %s", router.name, e)
+                self._failed(router, "yes_no", e)
+                continue
+            self.last_errors.pop(router.name, None)
+            return res
         return kw
 
     def prompt_score(self, lines: list[str]) -> float:
@@ -88,9 +102,12 @@ class FallbackRouter:
             return kw
         for router in self.smart:
             try:
-                return router.prompt_score(lines)
+                res = router.prompt_score(lines)
             except ProviderError as e:
-                log.warning("router %s prompt_score failed, trying next: %s", router.name, e)
+                self._failed(router, "prompt_score", e)
+                continue
+            self.last_errors.pop(router.name, None)
+            return res
         return kw
 
 

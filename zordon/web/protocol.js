@@ -242,7 +242,8 @@
         isBool(m.tool_chatter) &&
         isBool(m.muted) &&
         isStrDict(m.providers) &&
-        optional(m.permission_mode, isStr)
+        optional(m.permission_mode, isStr) &&
+        optional(m.launch_mode, isStr)
       );
     },
     error: function (m) {

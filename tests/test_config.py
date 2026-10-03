@@ -70,6 +70,19 @@ def test_invalid_verbosity_rejected():
         Config.from_dict({"voice": {"verbosity": "loud"}})
 
 
+def test_sessions_launch_mode_roundtrip_and_limits(_isolated_home: Path):
+    cfg = Config.default()
+    assert cfg.sessions.permission_mode == "default"
+    cfg.sessions.permission_mode = "auto"
+    cfg.save()
+    assert Config.load().sessions.permission_mode == "auto"
+    with pytest.raises(ConfigError):
+        Config.from_dict({"sessions": {"permission_mode": "yolo"}})
+    with pytest.raises(ConfigError) as e:
+        Config.from_dict({"sessions": {"permission_mode": "bypassPermissions"}})
+    assert "never launches with permissions bypassed" in str(e.value)
+
+
 def test_no_bypass_option_exists():
     cfg = Config.default()
     dumped = str(cfg.to_dict()).lower()

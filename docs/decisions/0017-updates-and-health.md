@@ -41,6 +41,17 @@ the client renders a dot strip with the detail and fix on tap, a persistent
 banner for failures, and "status" by voice appends the degraded items.
 `GET /health` (cookie required) returns the same report.
 
+**Rechecking (added 0.3.5).** The first version checked once, when serve
+started. A server that was left running for days (the normal case with
+`zordon start` or the login service) therefore never saw a build pushed an
+hour after it came up, while its cache file said "latest" for six hours and
+then nobody asked again. The check now repeats on the cache interval for the
+life of the process, announces each new version once (banner, terminal line
+and one spoken notice) and installs it when `auto` is on. It still never
+restarts the running process: a restart in the middle of an answer or a
+permission prompt is worse than running yesterday's version until the user
+says `zordon restart`.
+
 ## Open
 
 - Health does not yet probe cloud providers with a real request (that costs

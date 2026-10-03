@@ -286,11 +286,13 @@ def test_voice_interface_end_to_end(stack):
         assert prompt["title"].startswith("Bash command:")
         s.wait_state(sid, "awaiting_permission", since=mark)
         spoken_prompt = s.wait(
-            lambda m: m["type"] == "transcript" and m["kind"] == "spoken" and "shell command" in m["text"],
+            lambda m: m["type"] == "transcript" and m["kind"] == "spoken" and "wants to run a command" in m["text"],
             since=mark,
             what="spoken prompt",
         )
-        assert spoken_prompt["text"].startswith("Claude Code wants to run a shell command:")
+        # The dialog's description line is spoken, never the command itself.
+        assert spoken_prompt["text"].startswith("Claude Code wants to run a command: Create probe marker file")
+        assert "touch " not in spoken_prompt["text"]
         assert spoken_prompt["text"].endswith("Yes or no?")
 
         # ---- "yes" passes the strict gate: the plain Yes is selected and the card clears

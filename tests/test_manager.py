@@ -259,6 +259,29 @@ def test_start_without_hook_config_passes_no_settings(env):
     assert command == ["claude", "--session-id", sid, "--permission-mode", "default"]
 
 
+def test_configured_launch_mode_applies_when_the_client_names_none(env):
+    """sessions.permission_mode = "auto": new and resumed sessions start in auto mode
+    unless the client picks another; an agent without that mode keeps its own default."""
+    mgr, bus, tmux, clock, proj = env
+    mgr.config.sessions.permission_mode = "auto"
+    mgr.start(str(proj))
+    command = claude_argv(tmux.windows[0][3])
+    assert command[command.index("--permission-mode") + 1] == "auto"
+    other = fs.sid(9)
+    fs.write_session(mgr.claude_home, str(proj), other, [fs.user_prompt(other, str(proj), time.time() - 60, "hello")])
+    mgr.resume(other)
+    command = claude_argv(tmux.windows[1][3])
+    assert command[command.index("--permission-mode") + 1] == "auto"
+    mgr.start(str(proj), "plan")
+    command = claude_argv(tmux.windows[2][3])
+    assert command[command.index("--permission-mode") + 1] == "plan"
+    # The config file cannot name bypass, and the manager never falls through to it.
+    mgr.config.sessions.permission_mode = "bypassPermissions"
+    mgr.start(str(proj))
+    command = claude_argv(tmux.windows[3][3])
+    assert command[command.index("--permission-mode") + 1] == "default"
+
+
 def test_start_and_resume_without_a_mode_never_inherit_auto(env):
     """RR-2: Claude Code 2.1.x starts in auto when no mode is given; Zordon always names one."""
     mgr, bus, tmux, clock, proj = env

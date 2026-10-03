@@ -434,6 +434,18 @@ def test_fallback_ordering_and_provider_error_moves_on():
     assert len(haiku.calls) == n
 
 
+def test_fallback_remembers_the_last_failure_per_router():
+    """Health reads ``last_errors`` to explain a silent fall-through (a rejected key)."""
+    jev = Scripted("jev", fail=True)
+    fb = FallbackRouter([KeywordRouter(), jev])
+    assert fb.last_errors == {}
+    fb.route("please refactor the upload handler", CTX)
+    assert fb.last_errors == {"jev": "jev down"}
+    jev.fail = False
+    fb.route("please refactor the upload handler", CTX)
+    assert fb.last_errors == {}  # cleared by the next success
+
+
 def test_fallback_last_resort_is_keyword_answer():
     jev = Scripted("jev", fail=True)
     haiku = Scripted("anthropic", fail=True)

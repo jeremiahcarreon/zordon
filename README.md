@@ -204,12 +204,14 @@ keeps it running after you log out. Containers without systemd use `zordon start
 
 ## Updates and health
 
-Installs track the GitHub repository until there is a PyPI release. On every `zordon serve`,
-a background check compares the running version with the one on the tracked channel (at most
-once every 6 hours, cached, 3 s timeout, never blocks startup). When a newer version exists and
-`[update] auto = true` (the default), it is installed through the same tool that installed
-Zordon (uv or pipx) and both the terminal and every connected browser get a banner: restart
-`zordon serve` to use it. Set `auto = false` to be told instead, run `zordon update` yourself,
+Installs track the GitHub repository until there is a PyPI release. While `zordon serve` runs,
+a background check compares the running version with the one on the tracked channel: at start
+and then every 6 hours (cached, 3 s timeout, never blocks startup). When a newer version exists
+and `[update] auto = true` (the default), it is installed through the same tool that installed
+Zordon (uv or pipx); the terminal and every connected browser get a banner and you hear it once
+("Zordon 0.4.0 is installed. Restart Zordon when convenient to use it."). The running process
+keeps the old code until you do: `zordon restart` for a detached server, or stop and start
+`zordon serve`. Set `auto = false` to be told instead, run `zordon update` yourself,
 or `zordon serve --no-update` / `ZORDON_NO_UPDATE_CHECK=1` to skip the check entirely.
 
 The web page shows a health strip: one dot per component (tmux, the agent, the focused
@@ -252,6 +254,29 @@ Everything you say goes to a router first. It decides between three destinations
 When Claude Code is waiting on a permission, routing is replaced by a strict yes/no gate. Anything
 else is read back to you. "Stop" sends Escape to the pane and interrupts Claude Code itself;
 simply starting to talk only interrupts playback.
+
+### Permission modes
+
+Every permission prompt interrupts the voice loop: Zordon reads the agent's one-line description
+of the command ("Claude Code wants to run a command: Install the GitHub CLI. Yes or no?") and
+waits. If that is too often, let Claude Code's **auto mode** handle the routine ones: it approves
+commands its own classifier considers safe and still asks for the rest.
+
+- Per session: pick the mode in the **New session** form, or change a running session from
+  **Settings > Switch mode** (also by voice for default, accept edits and plan).
+- As the default for every new session, in `~/.zordon/config.toml`:
+
+```toml
+[sessions]
+permission_mode = "auto"    # default | acceptEdits | plan | auto | dontAsk
+```
+
+Zordon will not launch an agent with permissions switched off (`bypassPermissions`,
+`--dangerously-skip-permissions`) and never selects an "always allow" or "switch to auto mode"
+option on your behalf; those decisions stay in Claude Code. If you want a fully unattended
+session anyway, start it yourself in tmux with the flag you choose and attach Zordon to that
+pane (**Attach a pane** in the web client). Zordon then only reads and
+types; it never saw the flag.
 
 ## Safety
 
@@ -298,9 +323,12 @@ groq = ""
 typesafe = ""
 
 [update]
-check = true
+check = true                # every 6 h while serve runs
 auto = true
 channel = "main"
+
+[sessions]
+permission_mode = "default" # what new sessions start in; "auto" for fewer prompts
 
 [voice]
 verbosity = "minimal"

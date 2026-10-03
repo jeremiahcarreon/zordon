@@ -39,7 +39,12 @@ log = logging.getLogger("zordon.routing.ollama")
 DEFAULT_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen2.5:3b-instruct"
 DEFAULT_TIMEOUT_S = 1.5
-KEEP_ALIVE = "30m"
+# Keep the model resident for as long as the Ollama server runs. Its default is to
+# unload after five idle minutes, and a cold load takes 10-20 s: every sentence of
+# the first answer after a pause would then miss the normalizer deadline and be
+# spoken raw. ``warm()`` loads it at start so the first answer is covered too.
+KEEP_ALIVE = -1
+WARM_TIMEOUT_S = 90.0
 
 
 def _schema_for_ollama(schema: dict[str, Any]) -> dict[str, Any]:

@@ -223,6 +223,7 @@ def settings_out(settings: dict[str, Any]) -> P.SettingsOut:
         muted=bool(settings.get("muted", False)),
         providers=clean,
         permission_mode=settings.get("permission_mode"),
+        launch_mode=settings.get("launch_mode"),
     )
 
 

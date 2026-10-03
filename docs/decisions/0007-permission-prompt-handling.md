@@ -112,6 +112,19 @@ read-only heuristic is the likely reason.
   `--permission-mode bypassPermissions`, `--bare` or `--safe-mode`
   (the last two disable the hooks of decision 0009).
 * Permission prompts bypass the verbosity filter and are always spoken.
+* What is spoken (0.3.5): the dialog's description line when Claude Code
+  prints one ("Claude Code wants to run a command: Install the GitHub CLI.
+  Yes or no?"), else a command of up to 60 characters verbatim, else the
+  programs the chain calls ("a shell command that uses git, apt-get, and gh").
+  The first version read the whole command line; a four-clause chain with
+  redirections took half a minute to say and was unintelligible, and the
+  listener could not tell when the question had been asked.
+* `sessions.permission_mode` (0.3.5) names the mode new sessions launch in
+  when the client does not pick one, limited to the launchable set
+  (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`). It exists so a user
+  who wants auto mode does not have to select it per session; it does not
+  widen anything the client could not already choose, and bypass is refused
+  by the config validator as well as the launcher.
 
 ## Open
 

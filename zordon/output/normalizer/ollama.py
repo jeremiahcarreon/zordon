@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -33,7 +34,12 @@ log = logging.getLogger("zordon.output.normalizer.ollama")
 DEFAULT_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen2.5:3b-instruct"
 DEFAULT_TIMEOUT_S = 1.5
-KEEP_ALIVE = "30m"
+# Keep the model resident for as long as the Ollama server runs. Its default is to
+# unload after five idle minutes, and a cold load takes 10-20 s: every sentence of
+# the first answer after a pause would then miss the normalizer deadline and be
+# spoken raw. ``warm()`` loads it at start so the first answer is covered too.
+KEEP_ALIVE = -1
+WARM_TIMEOUT_S = 90.0
 MAX_GROWTH = 1.6  # output words / input words above this is padding
 MIN_WORDS_FOR_GUARD = 4  # very short inputs legitimately grow ("Done." -> "I am done.")
 
@@ -130,6 +136,27 @@ class OllamaNormalizer:
                 raise ProviderNotConfigured(
                     f"ollama: model {model!r} is not pulled; run `ollama pull {model}`"
                 )
+
+    # ---- model residency -----------------------------------------------------------
+
+    def warm(self, *, background: bool = True) -> None:
+        """Load the model into memory now (``/api/generate`` with no prompt) and pin it
+        there with ``KEEP_ALIVE``. In the background by default: a cold load can take
+        10-20 s and must not hold up start-up; sentences that arrive meanwhile fall
+        back to pre-passed text as they would anyway."""
+        if background:
+            threading.Thread(target=self._warm, name="ollama-warm", daemon=True).start()
+        else:
+            self._warm()
+
+    def _warm(self) -> None:
+        body = {"model": self.model, "keep_alive": KEEP_ALIVE}
+        try:
+            resp = self.client.post(self.url + "/api/generate", json=body, timeout=WARM_TIMEOUT_S)
+            resp.raise_for_status()
+            log.info("ollama: %s loaded and pinned", self.model)
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("ollama: could not preload %s: %s", self.model, e)
 
     # ---- chat ---------------------------------------------------------------------
 

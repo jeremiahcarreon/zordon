@@ -80,6 +80,7 @@ def make_normalizer(config: Config) -> Normalizer:
                 timeout=config.providers.normalizer_timeout_seconds,
             )
             log.info("normalizer: ollama (%s at %s)", o.model, o.url)
+            o.warm()
             return o
         except ProviderError as exc:
             if name == "ollama":

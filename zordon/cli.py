@@ -503,37 +503,63 @@ def print_setup_summary(config_path: Path | None) -> None:
     print(wizard.next_steps(choices, cfg), end="")
 
 
-def start_update_check(agent: Any, cfg: Config, *, skip: bool) -> None:
-    """Background: check the channel, apply when configured, tell terminal and clients."""
+def start_update_check(agent: Any, cfg: Config, *, skip: bool, interval_s: float | None = None) -> None:
+    """Background: check the channel now and again every ``interval_s`` (the update
+    module's cache interval, six hours) for as long as serve runs. A newer version is
+    installed when configured, and the terminal, the web clients (banner) and the
+    listener (one spoken notice) are told that a restart will pick it up.
+
+    A serve that is left running for days used to check once at start, so a build
+    pushed an hour later was never seen. The loop ends with ``agent.bus.stop``.
+    """
     from zordon import update as upd  # noqa: PLC0415
 
     if skip or upd.disabled(cfg.update.check):
         return
+    interval = float(interval_s if interval_s is not None else upd.CHECK_INTERVAL_S)
+    stop = getattr(getattr(agent, "bus", None), "stop", None)
+    announced: set[str] = set()
+
+    def _once() -> None:
+        st = upd.check(cfg.update.channel)
+        if not st.available:
+            agent.update_status = {"current": st.current, "latest": st.latest, "available": False}
+            return
+        if st.latest in announced:
+            return  # already installed or reported; a restart is what is missing now
+        announced.add(str(st.latest))
+        if cfg.update.auto:
+            ok, msg = upd.apply(cfg.update.channel, log=lambda line: None)
+            st.installed = ok
+            if ok:
+                print(f"\nUpdated to zordon {st.latest}. Restart zordon serve to use it.", file=sys.stderr)
+                spoken = f"Zordon {st.latest} is installed. Restart Zordon when convenient to use it."
+            else:
+                print(f"\nzordon {st.latest} is available but the update failed: {msg}. Run `zordon update`.", file=sys.stderr)
+                spoken = f"A Zordon update to {st.latest} is available but could not be installed. Run zordon update."
+        else:
+            print(f"\nzordon {st.latest} is available (you have {st.current}). Run `zordon update`.", file=sys.stderr)
+            spoken = f"Zordon {st.latest} is available. Run zordon update to install it."
+        agent.update_status = {"current": st.current, "latest": st.latest, "available": True, "installed": st.installed}
+        try:
+            from zordon.bus import Notice  # noqa: PLC0415
+            from zordon.transport.protocol import UpdateOut  # noqa: PLC0415
+
+            agent.bus.publish(UpdateOut(current=st.current, latest=st.latest or "", command=st.command, auto=st.installed, notes_url=f"{upd.REPO}/commits/{cfg.update.channel}"))
+            agent.bus.publish(Notice(text=spoken, level="info", speak=True))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run() -> None:
-        try:
-            st = upd.check(cfg.update.channel)
-            if not st.available:
-                agent.update_status = {"current": st.current, "latest": st.latest, "available": False}
-                return
-            if cfg.update.auto:
-                ok, msg = upd.apply(cfg.update.channel, log=lambda line: None)
-                st.installed = ok
-                if ok:
-                    print(f"\nUpdated to zordon {st.latest}. Restart zordon serve to use it.", file=sys.stderr)
-                else:
-                    print(f"\nzordon {st.latest} is available but the update failed: {msg}. Run `zordon update`.", file=sys.stderr)
-            else:
-                print(f"\nzordon {st.latest} is available (you have {st.current}). Run `zordon update`.", file=sys.stderr)
-            agent.update_status = {"current": st.current, "latest": st.latest, "available": True, "installed": st.installed}
+        while True:
             try:
-                from zordon.transport.protocol import UpdateOut  # noqa: PLC0415
-
-                agent.bus.publish(UpdateOut(current=st.current, latest=st.latest or "", command=st.command, auto=st.installed, notes_url=f"{upd.REPO}/commits/{cfg.update.channel}"))
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception:  # noqa: BLE001 - an update check must never hurt serve
-            logging.getLogger("zordon.update").debug("update check failed", exc_info=True)
+                _once()
+            except Exception:  # noqa: BLE001 - an update check must never hurt serve
+                logging.getLogger("zordon.update").debug("update check failed", exc_info=True)
+            if stop is None:
+                return
+            if stop.wait(interval):
+                return
 
     threading.Thread(target=_run, name="zordon-update-check", daemon=True).start()
 

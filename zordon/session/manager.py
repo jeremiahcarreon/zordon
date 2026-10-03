@@ -957,8 +957,7 @@ class SessionManager(threading.Thread):
         cwd = str(Path(directory).expanduser())
         if not os.path.isdir(cwd):
             raise SessionError(f"{directory} is not a directory")
-        if permission_mode:
-            permission_mode = adapter.normalize_mode(permission_mode)
+        permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
         sid = str(uuid.uuid4())
         try:
             spec = adapter.new_session(sid, cwd, permission_mode, self._hook_request(sid))
@@ -968,6 +967,14 @@ class SessionManager(threading.Thread):
         self._register(sid, cwd, target, spec, adapter, owned=True, info=None, detail="starting")
         log.info("started %s session %s in %s (%s)", adapter.info.key, sid[:8], cwd, target)
         return sid
+
+    def _launch_mode(self, adapter: AgentAdapter) -> str | None:
+        """The mode for a session the client starts without naming one: the configured
+        ``sessions.permission_mode`` when this agent has it, else the adapter's own."""
+        want = str(getattr(getattr(self.config, "sessions", None), "permission_mode", "") or "")
+        if want and want in adapter.allowed_modes():
+            return want
+        return adapter.default_launch_mode()
 
     def resume(self, session_id: str, permission_mode: str | None = None, agent: str | None = None) -> None:
         self._call(self._do_resume, session_id, permission_mode, agent, timeout=10.0)
@@ -1013,8 +1020,7 @@ class SessionManager(threading.Thread):
         cwd = (info.cwd if info and info.cwd else None) or (existing.cwd if existing else None)
         if not cwd or not os.path.isdir(cwd):
             raise UnknownSession("I can't find that session's project directory.")
-        if permission_mode:
-            permission_mode = adapter.normalize_mode(permission_mode)
+        permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
         if existing is not None and existing.owned and existing.target:
             try:
                 if self.tmux.pane_exists(existing.target):

@@ -24,10 +24,15 @@ class Server:
         self.status = status
         self.slow = slow
         self.requests: list[dict] = []
+        self.loads: list[dict] = []  # /api/generate warm-up calls
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": m} for m in self.models]})
+        if request.url.path == "/api/generate":
+            body = json.loads(request.content)
+            self.loads.append(body)
+            return httpx.Response(200, json={"model": body["model"], "done": True})
         if request.url.path == "/api/chat":
             body = json.loads(request.content)
             self.requests.append(body)
@@ -65,10 +70,34 @@ def test_normalize_request_shape_and_cleanup():
     assert out == "I edited auth dot py, changing eight lines."
     body = srv.requests[0]
     assert body["model"] == "qwen2.5:3b-instruct" and body["stream"] is False
+    assert body["keep_alive"] == -1  # resident until the server stops: a cold load misses the deadline
     assert body["options"]["temperature"] == 0
     assert body["messages"][0]["role"] == "system" and "Keep every fact" in body["messages"][0]["content"]
     assert "Previous one." in body["messages"][1]["content"]
     assert body["messages"][1]["content"].endswith("Sentence: Edited `auth.py`, 8 lines changed.")
+
+
+def test_warm_loads_and_pins_the_model():
+    srv = Server()
+    n = make(srv)
+    assert srv.loads == []
+    n.warm(background=False)
+    assert srv.loads == [{"model": "qwen2.5:3b-instruct", "keep_alive": -1}]
+    assert srv.requests == []  # a load, not a chat
+
+
+def test_warm_failure_is_logged_not_raised(caplog):
+    srv = Server()
+
+    def handler(request):
+        if request.url.path == "/api/generate":
+            return httpx.Response(500, json={"error": "no room"})
+        return srv.handler(request)
+
+    n = OllamaNormalizer("http://ollama.test", client=httpx.Client(transport=httpx.MockTransport(handler), timeout=1.0))
+    with caplog.at_level("WARNING", logger="zordon.output.normalizer.ollama"):
+        n.warm(background=False)
+    assert any("could not preload" in r.message for r in caplog.records)
 
 
 def test_length_guard_retries_then_falls_back():

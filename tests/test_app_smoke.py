@@ -344,6 +344,22 @@ def test_no_focused_session_speaks_an_error(agent: A.Agent):
             "Claude Code wants to run a shell command: pytest -q. Yes or no?",
         ),
         (
+            # Claude Code's own one-line description of the command is spoken, never the command.
+            PromptKind.PERMISSION,
+            "Bash command: git init -b main -q && git config user.name x && gh --version",
+            ["Yes", "No"],
+            {"command": "git init -b main -q && git config user.name x && gh --version", "description": "Initialise the repo and check gh"},
+            "Claude Code wants to run a command: Initialise the repo and check gh. Yes or no?",
+        ),
+        (
+            # No description and a long chain: the programs it calls, not half a minute of flags.
+            PromptKind.PERMISSION,
+            "Bash command: x",
+            ["Yes", "No"],
+            {"command": 'git init -b main -q && git config user.name "J" && git status --short | head; (apt-get install -y gh >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y gh)); gh --version 2>&1 | head -1'},
+            "Claude Code wants to run a shell command that uses git, head, apt-get, and gh. Yes or no?",
+        ),
+        (
             PromptKind.PERMISSION,
             "Create file probe.txt",
             ["Yes", "Yes, and switch to accept edits", "No"],
@@ -383,6 +399,20 @@ def test_no_focused_session_speaks_an_error(agent: A.Agent):
 )
 def test_prompt_speech_wording(kind, title, options, kw, expected):
     assert A.prompt_speech(kind, title, options, **kw) == expected
+
+
+@pytest.mark.parametrize(
+    "cmd, gist",
+    [
+        ("pytest -q", ["pytest"]),
+        ("FOO=1 sudo /usr/bin/npm install && npm test", ["npm"]),
+        ("for t in git php; do printf x $t; command -v $t >/dev/null && ($t --version | head -1) || echo MISSING; done", ["printf", "head", "echo"]),
+        ("a; b; c; d; e", ["a", "b", "c", "more"]),
+        ("", ["a shell command"]),
+    ],
+)
+def test_command_gist(cmd, gist):
+    assert A.command_gist(cmd) == gist
 
 
 def test_prompt_on_focused_session_is_spoken(agent: A.Agent, parts: dict[str, Any], tmp_path: Path):

@@ -279,6 +279,22 @@ def test_router_keyword_only_warns(agent: FakeAgent):
     assert item(H.collect(agent, which=which_all), "router").status == "ok"
 
 
+def test_router_rejected_key_is_explained(agent: FakeAgent):
+    """A chain with a smart router looks healthy until the first utterance; the last
+    failure it recorded turns the dot amber with the key to check."""
+    fb = FallbackRouter([KeywordRouter(), Named("jev")])
+    agent.providers.router = fb
+    assert item(H.collect(agent, which=which_all), "router").status == "ok"
+    fb.last_errors["jev"] = "jev: TypeSafeAuthenticationError: POST https://api.example/v1: 401 Cannot authenticate with the server."
+    r = item(H.collect(agent, which=which_all), "router")
+    assert r.status == "warn" and r.detail.startswith("jev rejected the API key") and "providers.keys.typesafe" in r.fix
+    fb.last_errors["jev"] = "jev: timed out"
+    r = item(H.collect(agent, which=which_all), "router")
+    assert r.status == "warn" and r.detail.startswith("jev failed on the last request") and r.fix == H.FIX_ROUTER
+    fb.last_errors.clear()
+    assert item(H.collect(agent, which=which_all), "router").status == "ok"
+
+
 def test_dead_thread_fails(agent: FakeAgent):
     agent.pipeline = Thread(alive=False)
     t = item(H.collect(agent, which=which_all), "threads")

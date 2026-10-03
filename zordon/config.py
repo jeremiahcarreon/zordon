@@ -117,6 +117,21 @@ class UpdateConfig:
     channel: str = "main"  # git branch or tag the install tracks
 
 
+# Permission modes a new session may be launched in. Claude Code's names; the
+# adapter maps them for other agents. ``bypassPermissions`` is deliberately absent:
+# Zordon never launches an agent with permission checks switched off (decision 0007).
+LAUNCH_MODES: tuple[str, ...] = ("default", "acceptEdits", "plan", "auto", "dontAsk")
+
+
+@dataclass
+class SessionsConfig:
+    # The mode new sessions start in when the client does not pick one. "auto" lets
+    # Claude Code's auto mode handle routine permission prompts itself, so the voice
+    # loop is not interrupted for every command. Changeable per session from the
+    # web client (New session / Switch mode) or by voice ("switch to plan mode").
+    permission_mode: str = "default"
+
+
 @dataclass
 class OutputConfig:
     # Where prose comes from. "auto" tails the Claude Code session jsonl when it
@@ -133,6 +148,7 @@ class Config:
     tunnel: TunnelConfig = field(default_factory=TunnelConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     # ---- construction -------------------------------------------------------
@@ -163,6 +179,7 @@ class Config:
             tunnel=section("tunnel", TunnelConfig),
             output=section("output", OutputConfig),
             update=section("update", UpdateConfig),
+            sessions=section("sessions", SessionsConfig),
             path=path,
         )
         cfg.validate()
@@ -196,6 +213,7 @@ class Config:
             "tunnel": asdict(self.tunnel),
             "output": asdict(self.output),
             "update": asdict(self.update),
+            "sessions": asdict(self.sessions),
         }
         return d
 
@@ -232,6 +250,9 @@ class Config:
             raise ConfigError("output.source must be auto, jsonl or pane")
         if self.tunnel.provider not in ("cloudflared", "ngrok"):
             raise ConfigError("tunnel.provider must be cloudflared or ngrok")
+        if self.sessions.permission_mode not in LAUNCH_MODES:
+            hint = " (Zordon never launches with permissions bypassed)" if "bypass" in self.sessions.permission_mode.lower() else ""
+            raise ConfigError(f"sessions.permission_mode must be one of {LAUNCH_MODES}{hint}")
         from zordon.agents import ADAPTERS  # noqa: PLC0415 - avoid an import cycle at module load
 
         if self.providers.agent not in ADAPTERS:

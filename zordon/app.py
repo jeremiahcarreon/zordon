@@ -269,10 +269,16 @@ def prompt_speech(
     command: str | None = None,
     target_file: str | None = None,
     agent_name: str = DEFAULT_AGENT_NAME,
+    description: str | None = None,
 ) -> str:
     """The short sentence Zordon speaks when a prompt appears on the focused session.
 
     ``agent_name`` is the adapter's display name ("Claude Code", "Codex", "the agent").
+    ``description`` is the agent's own one-line summary of a shell command (Claude
+    Code prints it in the permission dialog). It is spoken in place of the command:
+    a raw command line is unreadable aloud and, for a long chain, takes half a
+    minute. Without one, a short command is read as is and a long one is reduced
+    to the programs it calls (``command_gist``).
     """
     k = kind.value if isinstance(kind, PromptKind) else str(kind)
     title = (title or "").strip()
@@ -291,8 +297,13 @@ def prompt_speech(
         return f"{who} is asking: {question}"
     # permission
     if command or title.startswith("Bash command:"):
+        desc = (description or "").strip()
+        if desc:
+            return f"{who} wants to run a command: {_sentence(desc)} Yes or no?"
         cmd = (command or _strip_prefix(title, "Bash command:")).strip()
-        return f"{who} wants to run a shell command: {_sentence(cmd)} Yes or no?"
+        if len(cmd) <= SHORT_COMMAND_CHARS and "\n" not in cmd:
+            return f"{who} wants to run a shell command: {_sentence(cmd)} Yes or no?"
+        return f"{who} wants to run a shell command that uses {_join(command_gist(cmd), 'and')}. Yes or no?"
     if target_file or title.startswith(("Create file", "Write file", "Write to")):
         name = (target_file or _strip_prefix(_strip_prefix(title, "Create file"), "Write file")).strip()
         return f"{who} wants to create {_sentence(name)} Yes or no?"
@@ -300,6 +311,32 @@ def prompt_speech(
         name = title.split(" ", 2)[-1].strip()
         return f"{who} wants to edit {_sentence(name)} Yes or no?"
     return f"{who} is asking for permission: {_sentence(title or 'to continue')} Yes or no?"
+
+
+SHORT_COMMAND_CHARS = 60  # a command this short is read out; longer ones are summarised
+_GIST_SKIP = frozenset({"sudo", "env", "exec", "time", "nohup", "nice", "command", "builtin", "then", "do", "else", "elif"})
+_GIST_MAX = 4
+
+
+def command_gist(cmd: str) -> list[str]:
+    """The distinct programs a shell command line calls, in order, at most ``_GIST_MAX``
+    (the last entry becomes "more" when there are others). ``git init && apt-get
+    install gh && gh --version`` -> ["git", "apt-get", "gh"]."""
+    seen: list[str] = []
+    for seg in re.split(r"\|\||&&|[;|\n]|\$\(|`", cmd):
+        toks = seg.strip().lstrip("({ ").split()
+        while toks and (toks[0] in _GIST_SKIP or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[0]) or toks[0].startswith("-")):
+            toks = toks[1:]
+        if not toks:
+            continue
+        prog = toks[0].rsplit("/", 1)[-1].strip("'\"")
+        if not prog or prog.startswith("$") or prog in ("for", "while", "if", "fi", "done", "[", "[[", "!"):
+            continue
+        if prog not in seen:
+            seen.append(prog)
+    if len(seen) > _GIST_MAX:
+        seen = seen[: _GIST_MAX - 1] + ["more"]
+    return seen or ["a shell command"]
 
 
 def _strip_prefix(text: str, prefix: str) -> str:
@@ -314,10 +351,10 @@ def _sentence(text: str) -> str:
     return t if t[-1] in ".!?" else t + "."
 
 
-def _join(items: list[str]) -> str:
+def _join(items: list[str], word: str = "or") -> str:
     if len(items) == 1:
         return items[0]
-    return ", ".join(items[:-1]) + f", or {items[-1]}"
+    return ", ".join(items[:-1]) + f", {word} {items[-1]}"
 
 
 # ---- the session surface the agent hands out -----------------------------------------
@@ -557,6 +594,7 @@ class Agent:
             "muted": self._muted.is_set(),
             "providers": self.providers.names(),
             "permission_mode": mode,
+            "launch_mode": self.config.sessions.permission_mode,
             "tts_sample_rate": self.tts_sample_rate,
         }
 
@@ -820,15 +858,22 @@ class Agent:
                 )
             )
             return
-        command = target_file = None
+        command = target_file = description = None
         current_match = getattr(self.manager, "current_match", None)
         if callable(current_match):
             m = current_match(ev.session_id)
             if m is not None and getattr(m, "kind", None) == ev.kind:
                 command = getattr(m, "command", None)
                 target_file = getattr(m, "target_file", None)
+                description = getattr(m, "description", None)
         text = prompt_speech(
-            ev.kind, ev.title, ev.options, command=command, target_file=target_file, agent_name=self._agent_name_of(ev.session_id)
+            ev.kind,
+            ev.title,
+            ev.options,
+            command=command,
+            target_file=target_file,
+            agent_name=self._agent_name_of(ev.session_id),
+            description=description,
         )
         self.pipeline.speak_now(text, ev.session_id, PROMPT_LINE_KINDS.get(ev.kind, LineKind.PERMISSION_PROMPT))
 

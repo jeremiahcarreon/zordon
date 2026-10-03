@@ -30,7 +30,7 @@ with 4 unsafe. The design requires 95% and zero unsafe.
 ## Decision
 
 - New `ollama` normalizer (`zordon/output/normalizer/ollama.py`), per-sentence
-  over `/api/chat`, temperature 0, 1.5 s timeout, `keep_alive` 30 min. The
+  over `/api/chat`, temperature 0, 1.5 s timeout, `keep_alive` -1 (see below). The
   prompt demands the same facts, same order, about the same length. A length
   guard retries once when the rewrite grows past 1.6x the input words and then
   speaks the pre-passed sentence; padding is a fact-invention risk for a
@@ -46,6 +46,16 @@ with 4 unsafe. The design requires 95% and zero unsafe.
   The keyword fast path still handles shim commands and yes/no without it.
 - `zordon doctor` reports the server and the model, with the `ollama pull`
   line to run.
+
+- Model residency (0.3.5). Ollama unloads an idle model after five minutes
+  by default and a `keep_alive` of 30 minutes only stretched that. The first
+  answer after a longer pause then hit a 10-20 s cold load, every sentence of
+  it missed the 1.5 s deadline and was spoken as pre-passed text, which is
+  what "the output is not normalized" looked like in use. The requests now
+  pin the model for the life of the Ollama server (`keep_alive: -1`) and the
+  normalizer preloads it in the background when serve starts. The cost is
+  about 2 GB of GPU or system memory held while Ollama runs, which is the
+  price of a voice loop that answers in time.
 
 ## Open
 
