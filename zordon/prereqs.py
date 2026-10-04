@@ -75,14 +75,33 @@ def is_root() -> bool:
 
 def detect_package_manager(which: Which = shutil.which, *, root: bool | None = None) -> tuple[str | None, str | None]:
     """First package manager found, with its install template. ``sudo `` is dropped when
-    running as root (containers, some servers) or when sudo itself is not installed."""
+    running as root (containers, some servers). It is kept when sudo is not installed:
+    that is what the user has to run once sudo exists, and the ``sudo`` prerequisite
+    says how to get there (dropping it made the command fail with "permission denied"
+    as the user and the wizard look like it rejected a correct password)."""
     root = is_root() if root is None else root
     for name, template in PACKAGE_MANAGERS:
         if which(name):
-            if template.startswith("sudo ") and (root or not which("sudo")):
+            if template.startswith("sudo ") and root:
                 template = template[len("sudo ") :]
             return name, template
     return None, None
+
+
+SUDO_FIX = (
+    "as root: install the sudo package (apt-get install -y sudo, dnf install sudo, ...), "
+    "then usermod -aG sudo {user}  (wheel on Fedora/Arch), log in again and rerun zordon setup"
+)
+
+
+def sudo_missing(which: Which = shutil.which, *, root: bool | None = None) -> bool:
+    """True when the wizard would need sudo and there is none: not root, no sudo binary."""
+    root = is_root() if root is None else root
+    return not root and not which("sudo")
+
+
+def current_user() -> str:
+    return os.environ.get("USER") or os.environ.get("LOGNAME") or "<name>"
 
 
 def node_major(which: Which = shutil.which, run: Runner = subprocess.run) -> int | None:
@@ -111,6 +130,20 @@ def detect(
     def pkg(pkgs: str) -> str | None:
         return template.format(pkgs=pkgs) if template else None
 
+    if sudo_missing(which, root=root):
+        # Listed first: every package-manager step below needs it, and only root can add it.
+        env.checks.append(
+            Prereq(
+                "sudo",
+                "sudo",
+                "the setup wizard installs the pieces below with sudo; this account has no sudo command",
+                "sudo",
+                True,
+                None,
+                detail=SUDO_FIX.format(user=current_user()),
+                present=None,
+            )
+        )
     env.checks.append(
         Prereq("tmux", "tmux", "Zordon drives the coding agent inside a tmux pane", "tmux", True, pkg("tmux"), present=which("tmux"), pkg="tmux")
     )

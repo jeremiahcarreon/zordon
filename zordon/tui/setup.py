@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -679,6 +680,8 @@ class SudoPassword(ModalScreen[str | None]):
 def prime_sudo(password: str, *, run: Callable[..., Any] = subprocess.run) -> bool:
     """Validate the password and start sudo's credential timestamp (default 15 minutes),
     so the streamed steps' own ``sudo`` calls succeed without a terminal."""
+    if not shutil.which("sudo"):
+        return False  # the caller checks sudo_missing() first and explains; this is the backstop
     try:
         res = run(["sudo", "-S", "-k", "-v", "-p", ""], input=password + "\n", capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
@@ -771,6 +774,14 @@ class PrereqScreen(WizardScreen):
             self._finish_batch()
             return
         needs_sudo = any(st.terminal for st in self.steps) and not prereqs.is_root() and self.wizard.runner is None
+        if needs_sudo and prereqs.sudo_missing():
+            # No sudo binary: no password can work. Say what root has to do instead of
+            # pretending the password was wrong.
+            log = self.query_one(LogPanel)
+            log.write("✗ sudo is not installed on this machine, so these steps cannot run as you.", style=RED)
+            log.write("  " + prereqs.SUDO_FIX.format(user=prereqs.current_user()), style=DIM)
+            self.notify("sudo is not installed; see the log for what to run as root.", severity="error", timeout=12)
+            return
         if needs_sudo:
             self._ask_sudo([st.command for st in self.steps if st.terminal])
         else:

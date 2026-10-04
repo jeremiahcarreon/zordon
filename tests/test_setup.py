@@ -283,8 +283,18 @@ def test_prereqs_drop_sudo_for_root_or_without_sudo():
     assert prereqs.detect_package_manager(which_apt, root=False) == ("apt-get", "sudo apt-get install -y {pkgs}")
     assert prereqs.detect_package_manager(which_apt, root=True) == ("apt-get", "apt-get install -y {pkgs}")
     no_sudo = lambda n: "/usr/bin/apt-get" if n == "apt-get" else None  # noqa: E731
-    assert prereqs.detect_package_manager(no_sudo, root=False) == ("apt-get", "apt-get install -y {pkgs}")
+    # sudo missing as a user: the command keeps its sudo (that is what will work once sudo
+    # exists) and a first "sudo" prerequisite says what root has to do.
+    assert prereqs.detect_package_manager(no_sudo, root=False) == ("apt-get", "sudo apt-get install -y {pkgs}")
+    env_user = prereqs.detect(which=no_sudo, run=lambda *a, **k: None, want_agents=(), want_ollama=True, root=False)
+    first = env_user.checks[0]
+    assert first.key == "sudo" and first.required and first.command is None and first.present is None
+    assert "usermod -aG sudo" in first.detail and "install the sudo package" in first.detail
+    assert env_user.get("tmux").command == "sudo apt-get install -y tmux"
+    assert prereqs.sudo_missing(no_sudo, root=False) and not prereqs.sudo_missing(no_sudo, root=True)
+    assert not prereqs.sudo_missing(which_apt, root=False)
     env = prereqs.detect(which=no_sudo, run=lambda *a, **k: None, want_agents=(), want_ollama=True, root=True)
+    assert env.get("sudo") is None  # root needs none
     assert env.get("tmux").command == "apt-get install -y tmux"
     assert env.get("ollama").needs == ("curl", "zstd")
 
