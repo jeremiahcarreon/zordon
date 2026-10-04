@@ -601,6 +601,30 @@ def test_keyphrase_mode_sends_only_on_the_cue(tmp_path: Path):
     h.store.close()
 
 
+def test_editing_the_draft_replaces_it_and_send_draft_sends_it(tmp_path: Path):
+    """The page's draft box: an edit replaces what waits (the agent's input is cleared and
+    retyped), Send sends the box's text, an empty edit clears."""
+    from zordon.bus import Draft
+
+    h = Harness(tmp_path)
+    h.config.voice.submit_mode = "keyphrase"
+    h.say("add retry logic to the uplod handler")
+    h.say("add retry logic to the upload handler", source="draft")
+    assert h.sessions.called("clear_input") == [("s1",)]
+    assert h.sessions.called("compose")[-1] == ("s1", "add retry logic to the upload handler")
+    assert h.dispatcher._draft.parts == ["add retry logic to the upload handler"]
+    drafts = [e for e in drain_events(h.bus) if isinstance(e, Draft)]
+    assert drafts[-1].state == "composing" and drafts[-1].text == "add retry logic to the upload handler"
+    h.say("add retry logic to the upload handler and a test", source="draft_send")
+    assert h.sessions.called("submit") == [("s1",)] and h.dispatcher._draft is None
+    assert h.events()[-1] == ("user", "add retry logic to the upload handler and a test")
+    h.say("something", source="voice")
+    h.say("", source="draft")
+    assert h.dispatcher._draft is None and h.sessions.called("clear_input")[-1] == ("s1",)
+    assert [e for e in drain_events(h.bus) if isinstance(e, Draft)][-1].state == "cleared"
+    h.store.close()
+
+
 def test_deferred_submit_off_sends_every_utterance(tmp_path: Path):
     h = Harness(tmp_path)
     h.config.voice.submit_mode = "immediate"

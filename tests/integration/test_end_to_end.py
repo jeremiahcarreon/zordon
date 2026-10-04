@@ -335,7 +335,7 @@ def test_voice_interface_end_to_end(stack):
         before = user_records(jsonl)
         s.text("mute")
         settings = s.wait(lambda m: m["type"] == "settings" and m["muted"] is True, since=mark, what="muted settings")
-        assert settings["verbosity"] == "minimal"
+        assert settings["verbosity"] == "normal"
         assert agent.settings()["muted"] is True
         s.wait(lambda m: m["type"] == "flush", since=mark, what="flush on mute")
         # CONC-12: the acknowledgement is still heard, after the flush, under the new generation.

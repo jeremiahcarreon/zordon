@@ -561,6 +561,12 @@
   }
 
   function onSettings(msg) {
+    if (typeof msg.system_prompt === 'string') {
+      var pt = $('set-prompt');
+      if (pt && document.activeElement !== pt) pt.value = msg.system_prompt;
+      var st = $('set-prompt-state');
+      if (st) st.textContent = msg.system_prompt_custom ? 'your text' : "Zordon's default";
+    }
     S.settings.verbosity = msg.verbosity;
     S.settings.tool_chatter = msg.tool_chatter;
     S.settings.muted = msg.muted;
@@ -819,16 +825,24 @@
     show(el, !!text);
   }
 
+  var draftEditedAt = 0;
+  var draftEditTimer = null;
   function onDraft(msg) {
     var box = $('draft');
     if (!box) return;
+    var ta = $('draft-text');
     if (msg.state === 'composing' && msg.text) {
-      $('draft-text').textContent = msg.text;
+      // The user may be typing in the box right now: do not stomp on their edit.
+      if (Date.now() - draftEditedAt > 1500 || document.activeElement !== ta) ta.value = msg.text;
       show(box, true);
     } else {
       show(box, false);
-      $('draft-text').textContent = '';
+      ta.value = '';
     }
+  }
+
+  function sendDraftEdit() {
+    cmd('set_draft', { text: $('draft-text').value });
   }
 
   function onTranscript(msg) {
@@ -2047,10 +2061,31 @@
       });
     }
     $('draft-send').addEventListener('click', function () {
-      send({ type: 'text', text: 'send it' });  // routed like speech: the dispatcher sends the draft
+      if (draftEditTimer) clearTimeout(draftEditTimer);
+      cmd('send_draft', { text: $('draft-text').value });
     });
     $('draft-clear').addEventListener('click', function () {
-      send({ type: 'text', text: 'scratch that' });
+      if (draftEditTimer) clearTimeout(draftEditTimer);
+      $('draft-text').value = '';
+      cmd('set_draft', { text: '' });
+    });
+    $('draft-text').addEventListener('input', function () {
+      draftEditedAt = Date.now();
+      if (draftEditTimer) clearTimeout(draftEditTimer);
+      draftEditTimer = setTimeout(sendDraftEdit, 600);
+    });
+    $('draft-text').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (draftEditTimer) clearTimeout(draftEditTimer);
+        cmd('send_draft', { text: $('draft-text').value });
+      }
+    });
+    $('set-prompt-save').addEventListener('click', function () {
+      cmd('set_system_prompt', { text: $('set-prompt').value });
+    });
+    $('set-prompt-reset').addEventListener('click', function () {
+      cmd('set_system_prompt', { text: '' });
     });
     $('np-headless').addEventListener('change', function (e) {
       S.np.headless = !!e.target.checked;

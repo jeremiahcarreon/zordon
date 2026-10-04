@@ -233,6 +233,8 @@ def settings_out(settings: dict[str, Any]) -> P.SettingsOut:
         providers=clean,
         permission_mode=settings.get("permission_mode"),
         launch_mode=settings.get("launch_mode"),
+        system_prompt=settings.get("system_prompt"),
+        system_prompt_custom=bool(settings.get("system_prompt_custom", False)),
     )
 
 
@@ -650,7 +652,31 @@ class ClientConnection:
             "open_project": self._cmd_open_project,
             "admin": self._cmd_admin,
             "forget_project": self._cmd_forget_project,
+            "set_system_prompt": self._cmd_set_system_prompt,
+            "set_draft": lambda a: self._cmd_draft(a, "draft"),
+            "send_draft": lambda a: self._cmd_draft(a, "draft_send"),
         }
+
+    def _cmd_set_system_prompt(self, args: dict[str, Any]) -> BaseModel:
+        text = args.get("text")
+        if text is not None and not isinstance(text, str):
+            return _bad_argument("text")
+        setter = getattr(self.agent, "set_system_prompt", None)
+        if not callable(setter):
+            return P.ErrorOut(message="not supported here", code="unsupported")
+        setter(text)
+        return self._settings()
+
+    def _cmd_draft(self, args: dict[str, Any], source: str) -> BaseModel | None:
+        """The draft box: ``set_draft`` replaces what waits to be sent, ``send_draft`` sends it."""
+        text = args.get("text", "")
+        if not isinstance(text, str):
+            return _bad_argument("text")
+        submit = getattr(self.agent, "submit_text", None)
+        if not callable(submit):
+            return P.ErrorOut(message="not supported here", code="unsupported")
+        submit(sanitize_keystrokes(text)[:4000], self.client_id, source=source)
+        return None
 
     # ---- projects (decision 0018) -------------------------------------------------------
 

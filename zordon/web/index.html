@@ -123,13 +123,13 @@
     <div id="draft" class="draft" hidden>
       <div class="draft-main">
         <span class="draft-label">Not sent yet</span>
-        <span id="draft-text" class="draft-text"></span>
+        <textarea id="draft-text" class="draft-text" rows="2" spellcheck="true" aria-label="What you said, not sent yet; edit freely"></textarea>
       </div>
       <div class="draft-actions">
         <button type="button" id="draft-send" class="btn small primary">Send</button>
         <button type="button" id="draft-clear" class="btn small">Clear</button>
+        <span class="muted small draft-hint">Edit anything here. "Send it" or "go ahead" sends; "scratch that" clears.</span>
       </div>
-      <p class="muted small draft-hint">Say "send it" or "go ahead" to send, "scratch that" to clear.</p>
     </div>
 
     <!-- (6) text input, (7) file drop -->
@@ -300,6 +300,16 @@
         <label class="field"><span>Speech to text</span><select id="set-stt"></select></label>
         <label class="field"><span>Text to speech</span><select id="set-tts"></select></label>
         <label class="field"><span>Voice</span><select id="set-voice"></select></label>
+      </section>
+      <section class="card">
+        <h3>What Claude is told</h3>
+        <p class="muted small">Added to every session Zordon starts, so Claude talks like someone on a call. Edit it to taste; applies to projects opened after you save.</p>
+        <textarea id="set-prompt" class="prompt-text" rows="9" spellcheck="true"></textarea>
+        <div class="draft-actions">
+          <button type="button" id="set-prompt-save" class="btn small primary">Save</button>
+          <button type="button" id="set-prompt-reset" class="btn small">Reset to default</button>
+          <span id="set-prompt-state" class="muted small"></span>
+        </div>
       </section>
       <section class="card">
         <h3>Sounds</h3>

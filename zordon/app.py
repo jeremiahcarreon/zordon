@@ -393,6 +393,18 @@ def _join(items: list[str], word: str = "or") -> str:
     return ", ".join(items[:-1]) + f", {word} {items[-1]}"
 
 
+def _voice_prompt_text() -> str:
+    from zordon.agents import voice_prompt  # noqa: PLC0415
+
+    return voice_prompt.custom_prompt() or voice_prompt.default_prompt(talk_first=False)
+
+
+def _voice_prompt_custom() -> bool:
+    from zordon.agents import voice_prompt  # noqa: PLC0415
+
+    return voice_prompt.custom_prompt() is not None
+
+
 def load_or_create_hook_secret(home: Path) -> str:
     """The shared secret the pane hooks present. Kept in ``<home>/hook.secret`` (0600) so a
     restarted server still accepts the hooks of panes launched by the previous one; a
@@ -672,6 +684,8 @@ class Agent:
             "providers": self.providers.names(),
             "permission_mode": mode,
             "launch_mode": self.config.sessions.permission_mode,
+            "system_prompt": _voice_prompt_text(),
+            "system_prompt_custom": _voice_prompt_custom(),
             "tts_sample_rate": self.tts_sample_rate,
         }
 
@@ -779,11 +793,20 @@ class Agent:
         except Exception:  # noqa: BLE001
             log.exception("could not publish settings")
 
-    def submit_text(self, text: str, client_id: str = "") -> None:
+    def submit_text(self, text: str, client_id: str = "", source: str = "text") -> None:
+        """``text`` is sent at once; ``draft`` replaces what is waiting to be sent (the user
+        edited the draft box); ``draft_send`` replaces it and sends (the Send button)."""
         text = (text or "").strip()
-        if not text:
+        if not text and source != "draft":
             return
-        self.bus.utterances.put(Utterance(text=text, source="text", client_id=client_id))
+        self.bus.utterances.put(Utterance(text=text, source=source, client_id=client_id))
+
+    def set_system_prompt(self, text: str | None) -> None:
+        """The user's own voice-mode instruction for new sessions (Settings); empty resets."""
+        from zordon.agents import voice_prompt  # noqa: PLC0415
+
+        voice_prompt.set_custom_prompt(text)
+        self.publish_settings()
 
     def call_state(self, client_id: str, action: str) -> None:
         """One client at a time is in the call. A second ``start`` is refused with an

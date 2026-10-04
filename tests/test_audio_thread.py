@@ -296,7 +296,7 @@ def test_onset_without_playback_is_not_a_bargein(h: Harness):
 # ---- utterance -> STT -> bus ---------------------------------------------------------
 
 
-def test_end_of_speech_publishes_utterance_and_user_row(h: Harness):
+def test_end_of_speech_publishes_utterance_but_no_user_row(h: Harness):
     h.push_many(SPEECH, 25)  # 500 ms of speech
     h.push_many(SILENCE, 40)  # 800 ms of silence -> END
     utt = _wait_queue(h.bus.utterances)
@@ -306,12 +306,10 @@ def test_end_of_speech_publishes_utterance_and_user_row(h: Harness):
     assert utt.source == "voice"
     assert utt.client_id == "client-a"
 
-    row = h.collector.wait_for(lambda e: isinstance(e, TranscriptRow))
-    assert row.kind == "user"
-    assert row.text == utt.text
-    assert row.session_id == "sess-1"
-    assert row.row_id == -1
-    assert h.store.events == [("sess-1", "user", utt.text)]
+    # No transcript row yet: the utterance is a draft until it is sent (decision 0019).
+    time.sleep(0.1)
+    assert not any(isinstance(e, TranscriptRow) for e in h.collector.events)
+    assert h.store.events == []
     # The STT saw the utterance: pre-roll + speech + trailing silence, as float32.
     assert h.stt.call_count == 1
     audio = h.stt.calls[0]

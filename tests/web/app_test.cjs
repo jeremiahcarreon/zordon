@@ -487,18 +487,28 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     recv({ type: 'heard', text: 'add retry logic to the uploader', confidence: 0.9, ts: now() });
     ok(!$('heard').hasAttribute('hidden') && $('heard-text').textContent === 'add retry logic to the uploader', 'what Zordon heard shows at once');
     recv({ type: 'draft', session_id: 's1', text: 'add retry logic to the uploader', state: 'composing', ts: now() });
-    ok(!$('draft').hasAttribute('hidden') && /retry logic/.test($('draft-text').textContent), 'the unsent draft is shown while composing');
-    const before = sent.length;
+    ok(!$('draft').hasAttribute('hidden') && /retry logic/.test($('draft-text').value), 'the unsent draft is shown, editable, while composing');
+    // Editing the box replaces the draft on the agent side; Send sends what the box holds.
+    $('draft-text').value = 'add retry logic to the upload handler';
     $('draft-send').click();
-    const last = sent[sent.length - 1];
-    ok(sent.length === before + 1 && last.type === 'text' && last.text === 'send it', 'the Send button sends the cue');
-    recv({ type: 'draft', session_id: 's1', text: 'add retry logic to the uploader', state: 'sent', ts: now() });
+    const sendCmd = cmds('send_draft')[cmds('send_draft').length - 1];
+    ok(sendCmd && sendCmd.args.text === 'add retry logic to the upload handler', 'the Send button sends the edited text');
+    recv({ type: 'draft', session_id: 's1', text: 'add retry logic to the upload handler', state: 'sent', ts: now() });
     ok($('draft').hasAttribute('hidden'), 'a sent draft disappears');
     recv({ type: 'draft', session_id: 's1', text: 'never mind this', state: 'composing', ts: now() });
     $('draft-clear').click();
-    ok(sent[sent.length - 1].text === 'scratch that', 'the Clear button sends the cue');
+    const clearCmd = cmds('set_draft')[cmds('set_draft').length - 1];
+    ok(clearCmd && clearCmd.args.text === '', 'the Clear button empties the draft');
     recv({ type: 'draft', session_id: 's1', text: '', state: 'cleared', ts: now() });
     ok($('draft').hasAttribute('hidden'), 'a cleared draft disappears');
+    // The prompt editor in Settings shows what Claude is told and saves edits.
+    recv({ type: 'settings', verbosity: 'normal', tool_chatter: false, muted: false, providers: {}, system_prompt: 'You are on a phone call.', system_prompt_custom: false });
+    ok($('set-prompt').value === 'You are on a phone call.' && /default/.test($('set-prompt-state').textContent), 'the system prompt is shown');
+    $('set-prompt').value = 'Talk like a pirate.';
+    $('set-prompt-save').click();
+    ok(cmds('set_system_prompt')[cmds('set_system_prompt').length - 1].args.text === 'Talk like a pirate.', 'Save sends the edited prompt');
+    $('set-prompt-reset').click();
+    ok(cmds('set_system_prompt')[cmds('set_system_prompt').length - 1].args.text === '', 'Reset sends an empty prompt');
     // Partial text while still talking is shown dimmed and stays until the final one.
     recv({ type: 'heard', text: 'add retry', partial: true, ts: now() });
     ok($('heard').classList.contains('partial') && $('heard-text').textContent === 'add retry', 'a partial is shown as partial');

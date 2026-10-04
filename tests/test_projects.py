@@ -400,3 +400,23 @@ def test_enter_is_pressed_again_when_the_message_stays_in_the_box(env):
     clock.advance(5.0)
     mgr._poll_session(s)
     assert not [e for e in drain(bus) if isinstance(e, Notice) and "did not take" in e.text]
+
+
+def test_voice_prompt_override_file(monkeypatch, tmp_path: Path):
+    """~/.zordon/voice_prompt.md replaces the default instruction for new sessions; the
+    talk-first paragraph is appended unless the user's text already covers "go ahead";
+    empty resets."""
+    from zordon import paths
+    from zordon.agents import voice_prompt as vp
+
+    monkeypatch.setattr(paths, "zordon_home", lambda: tmp_path)
+    assert vp.custom_prompt() is None and vp.system_prompt() == vp.default_prompt(talk_first=True)
+    assert "phone call" in vp.default_prompt(talk_first=False)
+    vp.set_custom_prompt("Talk like a pirate.")
+    assert (tmp_path / "voice_prompt.md").stat().st_mode & 0o777 == 0o600
+    assert vp.system_prompt(talk_first=False) == "Talk like a pirate."
+    assert vp.system_prompt(talk_first=True).startswith("Talk like a pirate.\n\n") and "go ahead" in vp.system_prompt()
+    vp.set_custom_prompt("Say arr, then wait for go ahead.")
+    assert vp.system_prompt(talk_first=True) == "Say arr, then wait for go ahead."
+    vp.set_custom_prompt("")
+    assert vp.custom_prompt() is None and not (tmp_path / "voice_prompt.md").exists()

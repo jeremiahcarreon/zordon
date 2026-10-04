@@ -92,7 +92,9 @@ class ProvidersConfig:
 
 @dataclass
 class VoiceConfig:
-    verbosity: str = "minimal"
+    # "normal" speaks every sentence Claude writes (it writes for the ear now); "minimal"
+    # keeps only the first and last sentences of a turn, for agents that still write reports.
+    verbosity: str = "normal"
     tool_chatter: bool = False
     idle_watchdog_seconds: int = 20
     router_confidence: float = 0.85
@@ -115,7 +117,7 @@ class VoiceConfig:
     # partial_interval_ms and shown dimmed. "auto" does it when recognition runs on a GPU
     # (20 ms a pass); on a CPU a pass costs most of a second and would lag behind.
     partial_transcripts: str = "auto"  # auto | on | off
-    partial_interval_ms: int = 600
+    partial_interval_ms: int = 250
     # How many normalized sentences to buffer before playback starts.
     prebuffer_sentences: int = 3
 

@@ -257,6 +257,9 @@ class DispatcherThread(threading.Thread):
 
     def _handle(self, u: Utterance) -> None:
         text = (u.text or "").strip()
+        if u.source in ("draft", "draft_send"):
+            self._edit_draft(text, send=u.source == "draft_send")
+            return
         if not text:
             return
         self._source = u.source or "voice"
@@ -346,6 +349,35 @@ class DispatcherThread(threading.Thread):
         self.store.add_event(sid, "user", text)
 
     # ---- deferred submit -----------------------------------------------------------------
+
+    def _edit_draft(self, text: str, *, send: bool) -> None:
+        """The draft box was edited (or its Send pressed): what is in the box is the draft.
+        The agent's input is cleared and retyped so the pane matches the page."""
+        sid = self._draft.session_id if self._draft is not None else self._focused()
+        if sid is None:
+            self._speak("No project is open.", None, "error")
+            return
+        clear = getattr(self.sessions, "clear_input", None)
+        compose = getattr(self.sessions, "compose", None)
+        if self._draft is not None and callable(clear):
+            try:
+                clear(sid)
+            except Exception:  # noqa: BLE001
+                log.exception("clear_input failed")
+        self._draft = None
+        if not text:
+            try:
+                self.bus.publish(Draft(session_id=sid, text="", state="cleared"))
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if callable(compose):
+            compose(sid, text)
+        self._draft = _Draft(sid, [text], float("inf"))
+        if send:
+            self._flush_draft()
+        else:
+            self._publish_draft("composing")
 
     def _submit_mode(self) -> str:
         mode = str(getattr(self.config.voice, "submit_mode", "") or "")

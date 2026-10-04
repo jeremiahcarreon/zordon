@@ -54,6 +54,9 @@
     'open_project',
     'admin',
     'forget_project',
+    'set_system_prompt',
+    'set_draft',
+    'send_draft',
   ];
 
   var OUTBOUND_TYPES = [
@@ -288,7 +291,9 @@
         isBool(m.muted) &&
         isStrDict(m.providers) &&
         optional(m.permission_mode, isStr) &&
-        optional(m.launch_mode, isStr)
+        optional(m.launch_mode, isStr) &&
+        optional(m.system_prompt, isStr) &&
+        optional(m.system_prompt_custom, isBool)
       );
     },
     heard: function (m) {

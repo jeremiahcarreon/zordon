@@ -51,6 +51,9 @@ COMMANDS = (
     "open_project",
     "admin",
     "forget_project",
+    "set_system_prompt",
+    "set_draft",
+    "send_draft",
 )
 
 
@@ -291,6 +294,8 @@ class SettingsOut(_Strict):
     providers: dict[str, str]
     permission_mode: str | None = None
     launch_mode: str | None = None  # sessions.permission_mode: what "New session" preselects
+    system_prompt: str | None = None  # what Claude is told about talking (the voice-mode instruction)
+    system_prompt_custom: bool = False  # the user edited it (false: Zordon's default text)
 
 
 class HeardOut(_Strict):

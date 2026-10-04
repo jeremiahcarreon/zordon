@@ -439,7 +439,8 @@ class AudioThread(threading.Thread):
             Utterance(text=text, confidence=result.confidence, source="voice", client_id=client_id)
         )
         self.utterances_sent += 1
-        self._record_user_row(text)
+        # No transcript row here: what was said lives in the draft until it is sent (decision
+        # 0019); the dispatcher writes the user row at that point.
         log.info("utterance (%.2f s, conf=%s): %s", duration_s, _fmt(result.confidence), text)
 
     def _record_user_row(self, text: str) -> None:

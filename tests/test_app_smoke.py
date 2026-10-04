@@ -251,7 +251,7 @@ def test_agent_api_surface(agent: A.Agent):
 
 def test_settings_round_trip(agent: A.Agent):
     s = agent.settings()
-    assert s["verbosity"] == "minimal" and s["tool_chatter"] is False and s["muted"] is False
+    assert s["verbosity"] == "normal" and s["tool_chatter"] is False and s["muted"] is False
     assert {k: s["providers"][k] for k in ("stt", "tts", "normalizer", "router")} == {"stt": "fake-stt", "tts": "fake-tts", "normalizer": "passthrough", "router": "fake-router"}
     assert s["tts_sample_rate"] == 16000
     agent.set_verbosity("technical")
@@ -427,7 +427,7 @@ def test_prompt_on_focused_session_is_spoken(agent: A.Agent, parts: dict[str, An
     tts: FakeTTS = parts["tts"]
     assert wait_until(lambda: any("rm -rf build" in t for t in tts.calls))
     # Permission prompts are spoken even when the verbosity filter is at minimal and muted is off.
-    assert agent.config.voice.verbosity == "minimal"
+    assert agent.config.voice.verbosity == "normal"  # every sentence is spoken now; prompts are spoken at any level
 
 
 def test_prompt_on_background_session_is_a_notice(agent: A.Agent, tmp_path: Path):

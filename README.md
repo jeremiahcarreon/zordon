@@ -305,11 +305,14 @@ read out any more; Claude explains them in its own words.
 second, and the Heard line updates while you are still talking. The health strip warns when a
 GPU is present but unused.
 
-**Claude is told it is in a conversation.** Every session Zordon launches carries a short
-system prompt: two or three plain sentences, no markdown or paths, one question at a time
-through the question tool, say the plan and wait for "go ahead". Replies go straight to the
-voice: the rewriter is off by default now that Claude writes for the ear (`voice.normalize =
-"never"`); the deterministic pre-pass still strips markdown. A project with **Talk it through first**
+**Claude is told it is on a call.** Every session Zordon launches carries a short system
+prompt: short turns, keep the listener in the loop like a colleague on a phone call, one
+question at a time through the question tool, no overview or detail unless asked, say the plan
+and wait for "go ahead". Read and rewrite it under Settings > What Claude is told (it lives in
+`~/.zordon/voice_prompt.md`). Zordon speaks every sentence Claude writes (`voice.verbosity =
+"normal"`; `minimal` keeps a turn's first and last sentences and is for agents that still write
+reports). The rewriter is off (`voice.normalize = "never"`); the deterministic pre-pass still
+strips markdown. A project with **Talk it through first**
 (the default) also starts in plan mode when it asks before acting: Claude cannot change anything
 until you approve its plan, and "go ahead" is the approval.
 
@@ -416,7 +419,7 @@ channel = "main"
 permission_mode = "default" # what new sessions start in; "auto" for fewer prompts
 
 [voice]
-verbosity = "minimal"
+verbosity = "normal"        # every sentence; "minimal" keeps a turn's first and last only
 tool_chatter = false
 idle_watchdog_seconds = 20
 router_confidence = 0.85

@@ -44,6 +44,11 @@ last conversation, else start fresh in its folder; focuses it); `admin` (focus n
 every pane keeps running); `forget_project {project_id, confirm}` (drops the record,
 touches no files). Each answers with `sessions` then `projects`.
 
+The draft box: `set_draft {text}` replaces what is waiting to be sent (an empty text clears),
+`send_draft {text}` replaces it and sends. `set_system_prompt {text}` stores the user's own
+voice-mode instruction for new sessions (empty resets to Zordon's default); `settings` carries
+`system_prompt` and `system_prompt_custom`.
+
 ## Agent to client
 
 | type | fields | meaning |
@@ -57,7 +62,7 @@ touches no files). Each answers with `sessions` then `projects`.
 | `transcript` | `row_id`, `session_id`, `kind` (`spoken`/`user`/`notice`/`raw`), `text`, `raw_lines[]`, `ts`, `sentence_id`, `spoken` | One transcript row; tapping shows `raw_lines`. |
 | `state` | `session_id`, `state`, `detail`, `ts` | Session state change (`idle`, `working`, `awaiting_permission`, `awaiting_plan_approval`, `awaiting_question`, `stalled`, `detached`). |
 | `prompt` | `prompt_id`, `session_id`, `kind` (`permission`/`plan`/`question`/`trust`), `title`, `options[]`, `raw_lines[]`, `cleared` | Render as a card with buttons. `cleared: true` removes it. |
-| `settings` | `verbosity`, `tool_chatter`, `muted`, `providers`, `permission_mode`, `launch_mode` | Current settings after any change. `launch_mode` is the configured default for new sessions. |
+| `settings` | `verbosity`, `tool_chatter`, `muted`, `providers`, `permission_mode`, `launch_mode`, `system_prompt`, `system_prompt_custom` | Current settings after any change. `launch_mode` is the configured default for new sessions; `system_prompt` is what new Claude sessions are told. |
 | `tunnel` | `url`, `qr_svg` | Public URL when `--tunnel` is active. |
 | `update` | `current`, `latest`, `command`, `auto`, `notes_url` | A newer Zordon exists; `auto: true` means it was installed and a restart picks it up. |
 | `health` | `status` (`ok`/`warn`/`fail`), `items[]` of `{key, label, status, detail, fix}`, `ts` | Runtime health of every component; sent on connect, on change, and at least every 60 s. Also at `GET /health`. |
