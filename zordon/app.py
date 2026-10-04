@@ -24,6 +24,7 @@ built from raw pane captures and may hold a key that was on screen.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import re
 import secrets
@@ -392,6 +393,29 @@ def _join(items: list[str], word: str = "or") -> str:
     return ", ".join(items[:-1]) + f", {word} {items[-1]}"
 
 
+def load_or_create_hook_secret(home: Path) -> str:
+    """The shared secret the pane hooks present. Kept in ``<home>/hook.secret`` (0600) so a
+    restarted server still accepts the hooks of panes launched by the previous one; a
+    fresh secret per process left every running session's hooks answering 403 after
+    ``zordon restart``, which silently turned the prompt hook off for them."""
+    path = Path(home) / "hook.secret"
+    try:
+        value = path.read_text().strip()
+        if len(value) >= 32:
+            return value
+    except OSError:
+        pass
+    value = secrets.token_urlsafe(32)
+    try:
+        paths.ensure_private_dir(path.parent)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(value + "\n")
+    except OSError:
+        log.warning("could not persist the hook secret in %s; hooks of running sessions stop working across restarts", path)
+    return value
+
+
 # ---- the session surface the agent hands out -----------------------------------------
 
 
@@ -451,7 +475,7 @@ class Agent:
         self.config = config
         self.bus = AgentBus()
         self.store = store or TranscriptStore(paths.db_path())
-        self.hook_secret = secrets.token_urlsafe(32)
+        self.hook_secret = load_or_create_hook_secret(zordon_home or paths.zordon_home())
         self.tunnel_url: str | None = None
         # Set by the update check (zordon.cli.start_update_check): {current, latest, available, installed}.
         self.update_status: dict[str, Any] | None = None

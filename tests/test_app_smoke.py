@@ -779,3 +779,11 @@ def test_default_config_without_keys_or_models_degrades_to_local(cfg: Config, tm
         assert any("tts" in w for w in a.warnings)
     finally:
         a.stop()
+
+
+def test_hook_secret_survives_restarts(tmp_path: Path):
+    """The pane hooks carry the secret in their curl config; a new server must accept them."""
+    home = tmp_path / "zh"
+    first = A.load_or_create_hook_secret(home)
+    assert len(first) >= 32 and (home / "hook.secret").stat().st_mode & 0o777 == 0o600
+    assert A.load_or_create_hook_secret(home) == first

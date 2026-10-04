@@ -74,7 +74,9 @@ def source_url(channel: str = DEFAULT_CHANNEL) -> str:
 def fetch_latest_version(channel: str = DEFAULT_CHANNEL, *, timeout: float = 3.0, client: httpx.Client | None = None) -> str:
     url = f"{RAW}/{channel}/zordon/__init__.py"
     c = client or httpx.Client(timeout=timeout, follow_redirects=True)
-    resp = c.get(url)
+    # raw.githubusercontent.com caches for a few minutes; a per-minute query string keeps a
+    # forced check (`zordon update`) from reading a stale copy that still says "current".
+    resp = c.get(url, params={"t": int(time.time() // 60)}, headers={"Cache-Control": "no-cache"})
     resp.raise_for_status()
     m = VERSION_RE.search(resp.text)
     if not m:
