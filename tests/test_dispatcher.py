@@ -105,6 +105,20 @@ class FakeSessions:
     def send_text(self, session_id, text):
         self._rec("send_text", session_id, text)
 
+    # deferred submit (decision 0019)
+    def compose(self, session_id, text):
+        self._rec("compose", session_id, text)
+        self.composing = getattr(self, "composing", {})
+        self.composing[session_id] = self.composing.get(session_id, "") + text
+
+    def submit(self, session_id):
+        self._rec("submit", session_id)
+        return bool(getattr(self, "composing", {}).pop(session_id, ""))
+
+    def clear_input(self, session_id):
+        self._rec("clear_input", session_id)
+        return bool(getattr(self, "composing", {}).pop(session_id, ""))
+
     def send_escape(self, session_id):
         self._rec("send_escape", session_id)
 
@@ -211,6 +225,7 @@ class Harness:
     def __init__(self, tmp_path: Path, router=None, focused: str | None = "s1") -> None:
         self.bus = Bus()
         self.config = Config()
+        self.config.voice.submit_quiet_ms = 0  # the routing tests want every utterance sent at once
         self.router = router or FakeRouter()
         self.sessions = FakeSessions(
             [
@@ -499,6 +514,59 @@ def test_unknown_command_is_refused(h: Harness):
     h.say("x")
     assert h.said()[-1] == "I don't know that command."
     assert h.sessions.calls == []
+
+
+def test_deferred_submit_types_now_and_sends_after_the_quiet(tmp_path: Path):
+    """Speech goes into the input box as it arrives; Enter follows the quiet (or "go ahead");
+    "scratch that" clears; a prompt pauses the send; typed text still sends at once."""
+    h = Harness(tmp_path)
+    h.config.voice.submit_quiet_ms = 2500
+    h.say("add retry logic to the upload handler")
+    assert h.sessions.called("compose") == [("s1", "add retry logic to the upload handler")]
+    assert h.sessions.called("send_text") == [] and h.sessions.called("submit") == []
+    h.say("and make the backoff exponential")
+    assert len(h.sessions.called("compose")) == 2
+    d = h.dispatcher._draft
+    assert d is not None and d.session_id == "s1" and len(d.parts) == 2
+    # Not yet: the quiet has not passed.
+    assert not h.dispatcher.check_submit(now=d.deadline - 0.5)
+    assert h.dispatcher.check_submit(now=d.deadline + 0.01)
+    assert h.sessions.called("submit") == [("s1",)] and h.dispatcher._draft is None
+    assert h.events()[-1] == ("user", "add retry logic to the upload handler and make the backoff exponential")
+
+    # "go ahead" sends at once.
+    h.say("also add a test")
+    h.router.routes["go ahead"] = RouteResult("shim_command", 0.99, command="send")
+    h.say("go ahead")
+    assert h.sessions.called("submit") == [("s1",), ("s1",)] and h.said()[-1] == "Sent."
+    # "scratch that" clears the box and the draft.
+    h.say("rename the module")
+    h.router.routes["scratch that"] = RouteResult("shim_command", 0.99, command="scratch")
+    h.say("scratch that")
+    assert h.sessions.called("clear_input") == [("s1",)] and h.dispatcher._draft is None and h.said()[-1] == "Cleared."
+    h.say("go ahead")
+    assert h.said()[-1] == "Nothing is waiting to be sent."
+
+    # A prompt that comes up while a draft waits: the send is held until it is answered.
+    h.say("one more thing")
+    d = h.dispatcher._draft
+    h.sessions.states["s1"] = SessionState.AWAITING_PERMISSION
+    assert not h.dispatcher.check_submit(now=d.deadline + 1)
+    h.sessions.states["s1"] = SessionState.IDLE
+    assert h.dispatcher.check_submit(now=d.deadline + 3)
+
+    # Typed text (the web composer) is sent immediately, as before.
+    h.say("typed instruction", source="text")
+    assert h.sessions.called("send_text")[-1] == ("s1", "typed instruction")
+    h.store.close()
+
+
+def test_deferred_submit_off_sends_every_utterance(tmp_path: Path):
+    h = Harness(tmp_path)
+    h.config.voice.submit_quiet_ms = 0
+    h.say("run the tests")
+    assert h.sessions.called("send_text") == [("s1", "run the tests")] and h.sessions.called("compose") == []
+    h.store.close()
 
 
 def test_projects_by_voice(tmp_path: Path):

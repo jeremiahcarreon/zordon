@@ -93,3 +93,7 @@
 {"utterance": "new project", "expected": "shim_command", "command": "new_project", "state": "idle", "notes": ""}
 {"utterance": "pause", "expected": "shim_command", "command": "admin", "state": "idle", "notes": "admin mode: focus nothing, panes keep running"}
 {"utterance": "back to projects", "expected": "shim_command", "command": "admin", "state": "working", "notes": ""}
+{"utterance": "go ahead", "expected": "shim_command", "command": "send", "state": "idle", "notes": "deferred submit: send the draft now"}
+{"utterance": "send it", "expected": "shim_command", "command": "send", "state": "working", "notes": ""}
+{"utterance": "scratch that", "expected": "shim_command", "command": "scratch", "state": "idle", "notes": "deferred submit: throw the draft away"}
+{"utterance": "never mind", "expected": "shim_command", "command": "scratch", "state": "working", "notes": ""}

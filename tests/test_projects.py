@@ -294,3 +294,22 @@ def test_scope_decision_denies_outside_edits(env, tmp_path: Path, monkeypatch):
     # scope_edits off: never an opinion
     free = mgr.create_project(str(home), "Free", scope_edits=False)
     assert mgr.scope_decision({"session_id": free["session_id"], "tool_input": {"file_path": "/etc/passwd"}}) == {}
+
+
+def test_compose_submit_and_clear(env):
+    """Deferred submit (decision 0019): compose types without Enter, submit presses it,
+    clear_input sends Ctrl-U; nothing happens when nothing was composed."""
+    from tests.test_manager import started
+
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env)
+    assert not mgr.submit(sid) and not mgr.clear_input(sid)
+    mgr.compose(sid, "add retry logic")
+    mgr.compose(sid, "to the upload handler")
+    assert mgr.is_composing(sid)
+    typed = [c for c in tmux.calls if c[0] == "literal"]
+    assert typed == [("literal", target, "add retry logic"), ("literal", target, " to the upload handler")]
+    assert ("enter", target) not in tmux.calls
+    assert mgr.submit(sid) and ("enter", target) in tmux.calls and not mgr.is_composing(sid)
+    mgr.compose(sid, "never mind this")
+    assert mgr.clear_input(sid) and ("key", target, "C-u") in tmux.calls and not mgr.is_composing(sid)

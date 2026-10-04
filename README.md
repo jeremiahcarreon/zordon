@@ -290,6 +290,17 @@ When Claude Code is waiting on a permission, routing is replaced by a strict yes
 else is read back to you. "Stop" sends Escape to the pane and interrupts Claude Code itself;
 simply starting to talk only interrupts playback.
 
+**You can pause to think.** What you say is typed into Claude Code's input box as each phrase is
+transcribed, but not sent. It goes when you have been quiet for 2.5 seconds (`voice.submit_quiet_ms`),
+or at once when you say "go ahead" or "send it". "Scratch that" clears the box. Text typed on the
+page is sent immediately.
+
+**Prompts come through Claude Code's own hook, not the screen.** When Claude Code wants permission,
+asks a question, or has a plan ready, it tells Zordon directly (its `PermissionRequest` hook) with
+the exact command description, every option, or the plan text, and waits. You hear it in full and
+your yes, no, choice or feedback is the answer; nothing is drawn in the terminal unless you do not
+answer, in which case Claude Code shows its usual dialog and Zordon reads that instead.
+
 ### Projects and how much the agent asks
 
 A project is a folder in your home directory plus how its agent runs there. Zordon remembers
@@ -385,6 +396,7 @@ verbosity = "minimal"
 tool_chatter = false
 idle_watchdog_seconds = 20
 router_confidence = 0.85
+submit_quiet_ms = 2500      # quiet before what you said is sent; 0 sends each phrase at once
 ```
 
 Set `ZORDON_HOME` to relocate the whole state directory.

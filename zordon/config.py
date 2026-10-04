@@ -101,6 +101,10 @@ class VoiceConfig:
     speech_onset_frames: int = 3  # 3 x 20 ms = 60 ms
     speech_end_ms: int = 700
     echo_guard_ms: int = 120
+    # Deferred submit (decision 0019): speech is typed into the agent's input box as it
+    # is transcribed and sent only after this much quiet with nothing more said, or on
+    # "go ahead". 0 sends every utterance at once (the old behaviour).
+    submit_quiet_ms: int = 2500
     # How many normalized sentences to buffer before playback starts.
     prebuffer_sentences: int = 3
 

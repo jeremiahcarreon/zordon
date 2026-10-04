@@ -265,6 +265,7 @@ class Session:
     bypass_allowed: bool = False  # launched for a project created in bypass mode: its warning may be accepted
     scope_dir: str | None = None  # file edits outside this directory (and ~/.claude) are denied by the hook
     hook_prompt: hookprompts.HookPrompt | None = None  # a PermissionRequest waiting for the user (decision 0019)
+    composing: bool = False  # text typed into the input box and not yet submitted (deferred submit)
 
     @property
     def jsonl(self) -> TranscriptSource | None:
@@ -1404,6 +1405,56 @@ class SessionManager(threading.Thread):
         self.tmux.send_literal(s.target, clean)
         self.tmux.send_enter(s.target)
         log.debug("%s: sent %d characters", session_id[:8], len(clean))
+
+    # ---- deferred submit (decision 0019) ----------------------------------------------------
+
+    def compose(self, session_id: str, text: str) -> None:
+        """Type ``text`` into the input box without Enter; ``submit`` sends it later."""
+        self._call(self._do_compose, session_id, text)
+
+    def _do_compose(self, session_id: str, text: str) -> None:
+        s = self._live(session_id)
+        clean = strip_control(text).strip()
+        if not clean:
+            return
+        self._require_tui(s)
+        self.tmux.send_literal(s.target, (" " if s.composing else "") + clean)
+        s.composing = True
+        log.debug("%s: composed %d characters", session_id[:8], len(clean))
+
+    def submit(self, session_id: str) -> bool:
+        """Press Enter on what ``compose`` typed. False when nothing was composed."""
+        return self._call(self._do_submit, session_id)
+
+    def _do_submit(self, session_id: str) -> bool:
+        s = self._live(session_id)
+        if not s.composing:
+            return False
+        self._require_tui(s)
+        screen = s.prev_screen
+        s.echo_signature = _signature(screen) if screen is not None else None
+        s.echo_deadline = self.clock() + ECHO_TIMEOUT
+        self.tmux.send_enter(s.target)
+        s.composing = False
+        return True
+
+    def clear_input(self, session_id: str) -> bool:
+        """Erase what ``compose`` typed (Ctrl-U clears Claude Code's input box)."""
+        return self._call(self._do_clear_input, session_id)
+
+    def _do_clear_input(self, session_id: str) -> bool:
+        s = self._live(session_id)
+        if not s.composing:
+            return False
+        self._require_tui(s)
+        self.tmux.send_key(s.target, "C-u")
+        s.composing = False
+        return True
+
+    def is_composing(self, session_id: str) -> bool:
+        with self._lock:
+            s = self.sessions.get(session_id)
+        return bool(s and s.composing)
 
     def send_escape(self, session_id: str) -> None:
         self._call(self._do_send_key, session_id, "Escape")

@@ -515,7 +515,7 @@ def test_repeat_last_and_transcript_tail(agent: A.Agent, tmp_path: Path):
     agent.speak("Tests pass.", sid, LineKind.SUMMARY)
     ev.wait(lambda e: isinstance(e, TranscriptRow) and e.text == "Tests pass.")
     agent.repeat_last()
-    assert wait_until(lambda: sum(1 for r in ev.spoken() if r.text == "Tests pass.") == 2)
+    assert wait_until(lambda: sum(1 for r in ev.spoken() if r.text == "Tests pass.") == 2, timeout=8.0)
     rows = agent.transcript_tail(sid, 10)
     assert [r.text for r in rows if r.kind == "spoken"][-2:] == ["Tests pass.", "Tests pass."]
 

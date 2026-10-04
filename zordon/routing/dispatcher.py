@@ -27,6 +27,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePath
@@ -64,7 +65,7 @@ SPEAK_KINDS: dict[str, LineKind] = {
 
 # Shim commands that may run while a prompt is waiting: none of them moves the session.
 SAFE_IN_PROMPT = frozenset(
-    {"mute", "unmute", "repeat", "status", "list_sessions", "set_verbosity", "set_tool_chatter"}
+    {"mute", "unmute", "repeat", "status", "list_sessions", "set_verbosity", "set_tool_chatter", "scratch"}
 )
 # Shim commands that need a focused session.
 NEEDS_SESSION = frozenset({"stop", "repeat", "status", "set_permission_mode", "delete", "detach"})
@@ -109,6 +110,13 @@ _MODE_SPOKEN = {
     "dontAsk": "don't-ask mode",
     "bypass": "bypass permissions",
 }
+
+
+@dataclass(slots=True)
+class _Draft:
+    session_id: str
+    parts: list[str]
+    deadline: float  # time.monotonic() after which it is submitted
 
 
 @dataclass(slots=True)
@@ -213,6 +221,10 @@ class DispatcherThread(threading.Thread):
         self._stop_event = threading.Event()
         self._pending: _Pending | None = None
         self.handled = 0
+        # Deferred submit (decision 0019): what has been typed into the focused session's
+        # input box by voice and not yet sent, and when to send it.
+        self._draft: _Draft | None = None
+        self._source = "voice"
 
     # ---- thread ------------------------------------------------------------------------
 
@@ -225,8 +237,10 @@ class DispatcherThread(threading.Thread):
             try:
                 u = self.bus.utterances.get(timeout=self.poll_interval)
             except queue.Empty:
+                self.check_submit()
                 continue
             self.handle(u)
+            self.check_submit()
         log.info("dispatcher stopped")
 
     def handle(self, u: Utterance) -> None:
@@ -245,6 +259,7 @@ class DispatcherThread(threading.Thread):
         text = (u.text or "").strip()
         if not text:
             return
+        self._source = u.source or "voice"
         sid = self._focused()
         if self._pending is not None and self._handle_pending(text, sid):
             return
@@ -290,14 +305,80 @@ class DispatcherThread(threading.Thread):
         elif dest == "shim_command":
             self._execute(r.command, r.argument, text, sid, ctx)
         else:
-            self._to_claude(text, sid, ctx.session_state)
+            self._to_claude(text, sid, ctx.session_state, source=self._source)
 
-    def _to_claude(self, text: str, sid: str, state: str) -> None:
+    def _to_claude(self, text: str, sid: str, state: str, *, source: str = "voice") -> None:
         if state == SessionState.DETACHED.value:
             self._speak("That session is detached. Resume it from the app first.", sid, "error")
             return
+        quiet_ms = int(getattr(self.config.voice, "submit_quiet_ms", 0) or 0)
+        compose = getattr(self.sessions, "compose", None)
+        if source == "voice" and quiet_ms > 0 and callable(compose):
+            # Deferred submit: type now, send after a quiet or on "go ahead".
+            if self._draft is not None and self._draft.session_id != sid:
+                self._flush_draft()
+            compose(sid, text)
+            now = time.monotonic()
+            if self._draft is None:
+                self._draft = _Draft(sid, [text], now + quiet_ms / 1000.0)
+            else:
+                self._draft.parts.append(text)
+                self._draft.deadline = now + quiet_ms / 1000.0
+            return
         self.sessions.send_text(sid, text)
         self.store.add_event(sid, "user", text)
+
+    # ---- deferred submit -----------------------------------------------------------------
+
+    def check_submit(self, now: float | None = None) -> bool:
+        """Send the draft when its quiet period has passed. Not while a prompt is up: an
+        Enter then would answer nothing and queue the text behind the prompt."""
+        d = self._draft
+        if d is None:
+            return False
+        now = time.monotonic() if now is None else now
+        if now < d.deadline:
+            return False
+        state = self._state(d.session_id)
+        if state.startswith("awaiting_"):
+            d.deadline = now + 1.0  # look again once the prompt is answered
+            return False
+        return self._flush_draft()
+
+    def _flush_draft(self) -> bool:
+        d, self._draft = self._draft, None
+        if d is None:
+            return False
+        text = " ".join(p.strip() for p in d.parts if p.strip())
+        try:
+            sent = self.sessions.submit(d.session_id)
+        except Exception:  # noqa: BLE001
+            log.exception("submit failed")
+            sent = False
+        if sent:
+            self.store.add_event(d.session_id, "user", text)
+            log.info("submitted %d part(s) to %s", len(d.parts), d.session_id[:8])
+        return bool(sent)
+
+    def _cmd_send(self, argument: str | None, text: str, sid: str | None) -> None:
+        if self._draft is None:
+            self._speak("Nothing is waiting to be sent.", sid, "ack")
+            return
+        if self._flush_draft():
+            self._speak("Sent.", sid, "ack")
+        else:
+            self._speak("I couldn't send that.", sid, "error")
+
+    def _cmd_scratch(self, argument: str | None, text: str, sid: str | None) -> None:
+        d, self._draft = self._draft, None
+        target = d.session_id if d is not None else sid
+        cleared = False
+        if target:
+            try:
+                cleared = bool(self.sessions.clear_input(target))
+            except Exception:  # noqa: BLE001
+                log.exception("clear_input failed")
+        self._speak("Cleared." if cleared or d is not None else "Nothing to clear.", sid, "ack")
 
     def _transcript(self, text: str, sid: str, tail: list[str], raw: list[str] | None = None) -> None:
         answer = self._answerer.answer(text, tail, raw=raw)
