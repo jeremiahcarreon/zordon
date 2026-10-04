@@ -20,7 +20,11 @@ BASH = {
     "permission_mode": "default",
     "hook_event_name": "PermissionRequest",
     "tool_name": "Bash",
-    "tool_input": {"command": "touch /home/u/proj/marker.txt", "description": "Create marker file"},
+    # the same command the bash_permission.txt fixture shows on screen
+    "tool_input": {
+        "command": "touch /tmp/claude-1000/-home-operator-Code-zordon/0a0a0a0a-0000-4000-8000-00000000000a/scratchpad/research/probe_marker && echo done",
+        "description": "Create marker file",
+    },
     "permission_suggestions": [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}],
 }
 QUESTION = {
@@ -64,8 +68,8 @@ def with_sid(payload: dict[str, Any], sid: str) -> dict[str, Any]:
 def test_build_permission_question_and_plan():
     bash = H.build(BASH)
     assert bash is not None and bash.match.kind is PromptKind.PERMISSION
-    assert bash.match.title == "Bash command: touch /home/u/proj/marker.txt"
-    assert bash.match.command == "touch /home/u/proj/marker.txt" and bash.match.description == "Create marker file"
+    assert bash.match.title.startswith("Bash command: touch /tmp/claude-1000/")
+    assert bash.match.command.startswith("touch /tmp/claude-1000/") and bash.match.description == "Create marker file"
     assert bash.match.labels == ["Yes", "No"] and H.is_hook(bash.match)
 
     q = H.build(QUESTION)
@@ -132,12 +136,22 @@ def test_permission_by_voice_through_the_hook(env):
     tmux.set_screen(target, lines_of("bash_permission.txt"), alt=True)
     mgr._poll_session(s)
     assert s.current_prompt is not None and s.current_prompt.prompt_id == before
-    assert s.current_match.title.startswith("Bash command: touch") and s.current_match.description == "Create marker file"
+    assert s.current_match.title.startswith("Bash command: touch /tmp/claude-1000/") and s.current_match.description == "Create marker file"
     assert not [e for e in drain(bus) if isinstance(e, PromptDetected)]
     assert mgr.approve(sid)
     t.join(2)
     assert out == [H.allow()]
     assert s.hook_prompt is None and s.current_prompt is None and s.state is SessionState.WORKING
+    # Right after the decision Claude Code may still paint the dialog for the same command
+    # (seen live): ignored for a few seconds, so nothing is asked twice.
+    drain(bus)
+    mgr._poll_session(s)
+    assert s.current_prompt is None and not [e for e in drain(bus) if isinstance(e, PromptDetected)]
+    clock.advance(5.0)
+    mgr._poll_session(s)
+    assert s.current_prompt is not None  # still there well after the grace: a real prompt, read off the screen
+    tmux.set_screen(target, lines_of("idle.txt"), alt=True)
+    mgr._poll_session(s)
     kinds = [type(e).__name__ for e in drain(bus)]
     assert "PromptCleared" in kinds and "StateChanged" in kinds
     assert not [c for c in tmux.calls if c[0] in ("key", "literal") and c[1] == target]  # nothing typed

@@ -116,6 +116,7 @@ COMMAND_TIMEOUT = 3.0
 ECHO_TIMEOUT = 1.5  # seconds for the screen to change after send_text
 SUBMIT_CHECK_S = 1.2  # seconds for a sent message to leave the input box before Enter is pressed again
 SUBMIT_HEAD_CHARS = 40
+HOOK_DIALOG_GRACE_S = 4.0  # the screen's copy of a hook-decided request is ignored this long
 REGISTRY_INTERVAL = 1.0  # seconds between registry status reads per session
 REGISTRY_WAITING_SCORE = 0.95
 HOOK_HINT_SCORE = 0.9  # fallback prompt score for a hook hint that carries none
@@ -141,6 +142,13 @@ def stall_text(agent_name: str) -> str:
 
 def no_tui_text(agent_name: str) -> str:
     return f"{agent_name} isn't on screen in that pane, so I won't type into it. Resume the session first."
+
+
+def _prompt_gist(m: PromptMatch) -> str:
+    """What a permission or question is about, loosely: enough to recognise the same request
+    whether it came through the hook or was read off the screen."""
+    core = m.command or m.target_file or m.question or m.title or ""
+    return " ".join(core.split()).lower()[:60]
 
 
 def scope_reason(path: str, scope_dir: str, agent_home: Path) -> str | None:
@@ -275,6 +283,9 @@ class Session:
     submit_text: str | None = None
     submit_deadline: float | None = None
     submit_retried: bool = False
+    # After a hook decision: the request's gist and until when the screen's copy of it is ignored.
+    hook_done_gist: str | None = None
+    hook_done_until: float = 0.0
 
     @property
     def jsonl(self) -> TranscriptSource | None:
@@ -510,6 +521,16 @@ class SessionManager(threading.Thread):
             s.last_output_ts = now
         since = max(0.0, now - s.last_output_ts)
         match = adapter.detect_prompt(screen)
+        if (
+            match is not None
+            and match.kind in (PromptKind.PERMISSION, PromptKind.QUESTION)
+            and s.hook_done_gist is not None
+            and now < s.hook_done_until
+            and _prompt_gist(match) == s.hook_done_gist
+        ):
+            # Claude Code paints the dialog for a moment after the hook already decided it
+            # (seen live); it is not a new question.
+            match = None
         if s.hook_prompt is not None and s.hook_prompt.pending and (match is None or match.kind in (PromptKind.PERMISSION, PromptKind.QUESTION)):
             # The PermissionRequest hook is waiting on us. Claude Code usually draws nothing
             # meanwhile, but sometimes paints its dialog as well (seen live); either way the
@@ -1851,6 +1872,8 @@ class SessionManager(threading.Thread):
         hp.decision = decision
         with self._lock:
             s.hook_prompt = None
+            s.hook_done_gist = _prompt_gist(hp.match)
+            s.hook_done_until = self.clock() + HOOK_DIALOG_GRACE_S
             events = self._clear_prompt(s)
             s.state = SessionState.WORKING
             s.detail = detail
