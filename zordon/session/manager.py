@@ -99,6 +99,7 @@ from zordon.projects import (
     inside_home,
     new_project,
 )
+from zordon.session import hookprompts
 from zordon.session.prompts import PromptMatch
 from zordon.session.screen import Screen, diff_screens, held_tail
 from zordon.session.state import Observation, next_state
@@ -263,6 +264,7 @@ class Session:
     project_id: str | None = None  # the project this session belongs to (decision 0018)
     bypass_allowed: bool = False  # launched for a project created in bypass mode: its warning may be accepted
     scope_dir: str | None = None  # file edits outside this directory (and ~/.claude) are denied by the hook
+    hook_prompt: hookprompts.HookPrompt | None = None  # a PermissionRequest waiting for the user (decision 0019)
 
     @property
     def jsonl(self) -> TranscriptSource | None:
@@ -498,6 +500,10 @@ class SessionManager(threading.Thread):
             s.last_output_ts = now
         since = max(0.0, now - s.last_output_ts)
         match = adapter.detect_prompt(screen)
+        if match is None and s.hook_prompt is not None and s.hook_prompt.pending:
+            # Claude Code draws nothing while its PermissionRequest hook waits on us; the
+            # hook payload is the prompt (decision 0019).
+            match = s.hook_prompt.match
         self._check_echo(s, screen, now)
 
         watchdog = float(self.config.voice.idle_watchdog_seconds)
@@ -1416,6 +1422,9 @@ class SessionManager(threading.Thread):
             return False
         if m.kind is PromptKind.TRUST:
             return self._do_accept_trust(session_id)
+        if hookprompts.is_hook(m):
+            self._resolve_hook(s, hookprompts.allow(), "allowed by voice")
+            return True
         yes = s.adapter.yes_option(m)
         if yes is None:
             log.warning("%s: no plain Yes option; not approving", session_id[:8])
@@ -1438,6 +1447,9 @@ class SessionManager(threading.Thread):
             return False
         if m.kind is PromptKind.TRUST:
             return self._do_decline_trust(session_id)
+        if hookprompts.is_hook(m):
+            self._resolve_hook(s, hookprompts.deny("The user said no."), "denied by voice")
+            return True
         no = s.adapter.no_option(m)
         if no is None:
             self._require_tui(s, m)
@@ -1456,6 +1468,9 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.PLAN)
         if m is None:
             return False
+        if hookprompts.is_hook(m):
+            self._resolve_hook(s, hookprompts.allow(), "plan approved by voice")
+            return True
         manual = s.adapter.plan_approve_option(m)
         if manual is None:
             return False
@@ -1472,6 +1487,10 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.PLAN)
         if m is None:
             return False
+        if hookprompts.is_hook(m):
+            note = strip_control(feedback).strip() or "Please revise the plan."
+            self._resolve_hook(s, hookprompts.deny(f"The user wants changes to the plan: {note}"), "plan sent back by voice")
+            return True
         revise = s.adapter.plan_revise_option(m)
         if revise is None:
             return False
@@ -1488,6 +1507,9 @@ class SessionManager(threading.Thread):
         s, m = self._prompt_for(session_id, PromptKind.PLAN)
         if m is None:
             return False
+        if hookprompts.is_hook(m):
+            self._resolve_hook(s, hookprompts.deny("The user rejected the plan."), "plan rejected by voice")
+            return True
         self._require_tui(s, m)
         self.tmux.send_key(s.target, "Escape")
         return True
@@ -1502,7 +1524,29 @@ class SessionManager(threading.Thread):
         idx = s.adapter.question_option(m, option)
         if idx is None:
             return False
+        if hookprompts.is_hook(m):
+            return self._answer_hook_question(s, m, idx)
         self._select(s, m, idx)
+        return True
+
+    def _answer_hook_question(self, s: Session, m: PromptMatch, idx: int) -> bool:
+        """Record the chosen option; move to the next question or answer the hook."""
+        hp = s.hook_prompt
+        if hp is None or not hp.pending:
+            return False
+        chosen = m.option(idx)
+        if chosen is None:
+            return False
+        hp.answers[m.question] = chosen.label
+        hp.question_index += 1
+        if hp.question_index < len(hp.questions):
+            hp.match = hookprompts.question_match(hp.questions[hp.question_index], hp.question_index + 1, len(hp.questions))
+            with self._lock:
+                events = self._update_prompt(s, hp.match)
+            for ev in events:
+                self.bus.publish(ev)
+            return True
+        self._resolve_hook(s, hookprompts.allow(hookprompts.answers_input(hp)), "answered by voice")
         return True
 
     def accept_trust(self, session_id: str) -> bool:
@@ -1591,6 +1635,100 @@ class SessionManager(threading.Thread):
         self.tmux.send_literal(s.target, answer)
         self.tmux.send_enter(s.target)
         log.info("%s: answered inline prompt with %r", s.session_id[:8], answer)
+
+    # ---- PermissionRequest hook (decision 0019) -------------------------------------------------
+
+    def permission_request(self, payload: dict[str, Any], *, timeout_s: float = 870.0) -> dict[str, Any]:
+        """Called from the transport's executor thread with the hook payload; blocks until the
+        user answers (through approve/deny/answer_question/plan_*) or ``timeout_s`` passes.
+        Returns the decision for the hook to print, or ``{}`` for "no opinion"."""
+        hp = self._call(self._do_hook_prompt, payload, timeout=10.0)
+        if hp is None:
+            return hookprompts.NO_OPINION
+        hp.event.wait(timeout_s)
+        if hp.pending:
+            self._call(self._do_hook_timeout, hp, timeout=10.0)
+            return hookprompts.NO_OPINION
+        return hp.decision or hookprompts.NO_OPINION
+
+    def _hook_session(self, payload: dict[str, Any]) -> Session | None:
+        sid = str(payload.get("session_id") or "")
+        cwd = str(payload.get("cwd") or "")
+        with self._lock:
+            s = self.sessions.get(sid)
+            if s is None:
+                for cand in self.sessions.values():
+                    info_sid = getattr(cand.info, "session_id", None) if cand.info is not None else None
+                    if info_sid == sid:
+                        s = cand
+                        break
+            if s is None and cwd:
+                s = next((c for c in self.sessions.values() if c.attached and c.cwd and os.path.realpath(c.cwd) == os.path.realpath(cwd)), None)
+        return s if s is not None and s.attached else None
+
+    def _do_hook_prompt(self, payload: dict[str, Any]) -> hookprompts.HookPrompt | None:
+        s = self._hook_session(payload)
+        if s is None:
+            log.info("permission hook for an unknown session %s; no opinion", str(payload.get("session_id") or "?")[:8])
+            return None
+        hp = hookprompts.build(payload)
+        if hp is None:
+            return None
+        if s.hook_prompt is not None and s.hook_prompt.pending:
+            # One at a time: a second request while the first waits gets no opinion.
+            log.warning("%s: a second permission request arrived while one is pending; no opinion", s.session_id[:8])
+            return None
+        mode = payload.get("permission_mode")
+        if isinstance(mode, str) and mode:
+            s.permission_mode = mode
+        state = {
+            PromptKind.PERMISSION: SessionState.AWAITING_PERMISSION,
+            PromptKind.QUESTION: SessionState.AWAITING_QUESTION,
+            PromptKind.PLAN: SessionState.AWAITING_PLAN_APPROVAL,
+        }[hp.match.kind]
+        with self._lock:
+            events = self._update_prompt(s, hp.match)
+            s.believed_prompt = None
+            if s.state is not state:
+                s.state = state
+                s.detail = f"{hp.match.kind.value} request through the hook"
+                events.append(StateChanged(s.session_id, state, s.detail))
+            s.last_active = time.time()
+            s.hook_prompt = hp  # last: a lock-free reader that sees it also sees the state
+        log.info("%s: hook %s for %s", s.session_id[:8], hp.match.kind.value, hp.tool_name)
+        for ev in events:
+            self.bus.publish(ev)
+        return hp
+
+    def _resolve_hook(self, s: Session, decision: dict[str, Any], detail: str) -> None:
+        hp = s.hook_prompt
+        if hp is None or not hp.pending:
+            return
+        hp.decision = decision
+        with self._lock:
+            s.hook_prompt = None
+            events = self._clear_prompt(s)
+            s.state = SessionState.WORKING
+            s.detail = detail
+            s.last_active = time.time()
+            s.last_output_ts = self.clock()
+            events.append(StateChanged(s.session_id, SessionState.WORKING, detail))
+        hp.event.set()
+        log.info("%s: hook %s -> %s", s.session_id[:8], hp.tool_name, detail)
+        for ev in events:
+            self.bus.publish(ev)
+
+    def _do_hook_timeout(self, hp: hookprompts.HookPrompt) -> None:
+        """The user never answered: drop the prompt; Claude Code draws its dialog next."""
+        with self._lock:
+            s = next((c for c in self.sessions.values() if c.hook_prompt is hp), None)
+            if s is None:
+                return
+            s.hook_prompt = None
+            events = self._clear_prompt(s)
+        hp.event.set()
+        for ev in events:
+            self.bus.publish(ev)
 
     # ---- projects (decision 0018) ------------------------------------------------------------------
 

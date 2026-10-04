@@ -697,6 +697,31 @@ def scope_hook_command(port: int, curl_config: Path | str, host: str = HOOK_DEFA
     )
 
 
+PERMISSION_HOOK_TIMEOUT_S = 900  # Claude Code waits this long for the user's spoken answer
+PERMISSION_NO_OPINION = "{}"  # printed when Zordon is unreachable: Claude Code shows its own dialog
+
+
+def permission_hook_command(port: int, curl_config: Path | str, host: str = HOOK_DEFAULT_HOST) -> str:
+    """The PermissionRequest handler (decision 0019): synchronous, prints Zordon's decision.
+
+    Its stdout is the answer: allow, deny with a message, or ``{}`` for "no opinion"
+    (Claude Code then draws its dialog and the screen reader handles it). The curl
+    waits as long as the hook timeout so the user can answer by voice; when Zordon
+    cannot be reached it prints ``{}`` so nothing is ever decided by accident.
+    """
+    if not (1 <= int(port) <= 65535):
+        raise ValueError("port out of range")
+    host = hook_host(host)
+    path = str(curl_config)
+    if not path or "\n" in path:
+        raise ValueError("curl config path must be a single non-empty line")
+    return (
+        f"curl -s -f -m {PERMISSION_HOOK_TIMEOUT_S - 10} -X POST -H 'Content-Type: application/json' "
+        f"-K {shlex.quote(path)} --data-binary @- "
+        f"http://{host}:{int(port)}/hooks/permission 2>/dev/null || printf '%s' {shlex.quote(PERMISSION_NO_OPINION)}"
+    )
+
+
 def hook_settings_json(
     port: int,
     curl_config: Path | str,
@@ -704,26 +729,32 @@ def hook_settings_json(
     host: str = HOOK_DEFAULT_HOST,
     *,
     scope: bool = False,
+    permission: bool = True,
 ) -> dict[str, Any]:
     """Settings for ``--settings``: command hooks that POST each event to Zordon.
 
     ``Notification`` is filtered to the prompt-related matchers; the other events
-    have no matcher. No ``PermissionRequest`` hook is ever registered (it could
-    answer a prompt). With ``scope`` a synchronous ``PreToolUse`` hook on the file
-    editing tools asks Zordon whether the file is inside the project (decision
-    0018); it can only deny, never approve something Claude Code would have asked
-    about. The JSON contains no secret.
+    have no matcher. With ``permission`` (the default, decision 0019) a synchronous
+    ``PermissionRequest`` hook hands every permission, question and plan approval to
+    Zordon, which answers only with the user's explicit decision. With ``scope`` a
+    synchronous ``PreToolUse`` hook on the file editing tools asks Zordon whether
+    the file is inside the project (decision 0018); it can only deny. The JSON
+    contains no secret.
     """
     command = hook_command(port, curl_config, host)
     handler = {"type": "command", "command": command, "timeout": 5, "async": True}
     hooks: dict[str, Any] = {}
     for event in events:
         if event == "PermissionRequest":
-            raise ValueError("a PermissionRequest hook could answer prompts; refused")
+            raise ValueError("PermissionRequest is installed through the `permission` flag, not the event list")
         entry: dict[str, Any] = {"hooks": [dict(handler)]}
         if event == "Notification":
             entry = {"matcher": HOOK_MATCHER, "hooks": [dict(handler)]}
         hooks[event] = [entry]
+    if permission:
+        hooks["PermissionRequest"] = [
+            {"hooks": [{"type": "command", "command": permission_hook_command(port, curl_config, host), "timeout": PERMISSION_HOOK_TIMEOUT_S}]}
+        ]
     if scope:
         hooks["PreToolUse"] = [
             {

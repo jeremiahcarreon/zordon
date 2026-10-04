@@ -89,7 +89,7 @@ def test_resume_command_with_hooks_writes_settings_and_curl_config(adapter: Clau
     assert all(p.is_file() for p in spec.settings_paths)
     text = settings.read_text()
     assert "s3cr3t" not in text and "http://127.0.0.1:8765/hooks/claude" in text  # wildcard bind -> loopback
-    assert "PermissionRequest" not in text
+    assert "/hooks/permission" in text  # the PermissionRequest hook of decision 0019
 
 
 def test_hook_write_failure_launches_without_hooks(adapter: ClaudeCodeAdapter, tmp_path: Path):

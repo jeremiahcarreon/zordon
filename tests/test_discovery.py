@@ -433,7 +433,7 @@ def test_hook_settings_json_shape():
     rc = Path("/home/u/.zordon/hooks/abc12345.curlrc")
     data = hook_settings_json(8765, rc)
     hooks = data["hooks"]
-    assert set(hooks) == {"Notification", "UserPromptSubmit", "Stop"}
+    assert set(hooks) == {"Notification", "UserPromptSubmit", "Stop", "PermissionRequest"}
     notif = hooks["Notification"]
     assert len(notif) == 1
     assert notif[0]["matcher"] == "permission_prompt|idle_prompt|agent_needs_input|elicitation_dialog"
@@ -446,8 +446,13 @@ def test_hook_settings_json_shape():
     )
     assert "matcher" not in hooks["Stop"][0]
     assert hooks["Stop"][0]["hooks"][0]["command"].endswith("|| true")
-    assert "PermissionRequest" not in hooks
-    only = hook_settings_json(8765, rc, events=("Notification",))
+    # The PermissionRequest hook (decision 0019): synchronous, long timeout, prints the
+    # decision; "no opinion" when Zordon cannot be reached so Claude Code draws its dialog.
+    perm = hooks["PermissionRequest"][0]["hooks"][0]
+    assert perm["timeout"] == 900 and "async" not in perm
+    assert "/hooks/permission" in perm["command"] and perm["command"].endswith("|| printf '%s' '{}'")
+    assert "PermissionRequest" not in hook_settings_json(8765, rc, permission=False)["hooks"]
+    only = hook_settings_json(8765, rc, events=("Notification",), permission=False)
     assert set(only["hooks"]) == {"Notification"}
     with pytest.raises(ValueError):
         hook_settings_json(8765, rc, events=("PermissionRequest",))

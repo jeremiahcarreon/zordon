@@ -226,8 +226,7 @@ def test_start_opens_pane_with_hooks_and_publishes_working(env):
     assert settings.is_file()
     assert stat.S_IMODE(settings.stat().st_mode) == 0o600
     data = json.loads(settings.read_text())
-    assert set(data["hooks"]) == {"Notification", "UserPromptSubmit", "Stop"}
-    assert "PermissionRequest" not in data["hooks"]
+    assert set(data["hooks"]) == {"Notification", "UserPromptSubmit", "Stop", "PermissionRequest"}
     hook_cmd = data["hooks"]["Stop"][0]["hooks"][0]["command"]
     assert "s3cr3t" not in hook_cmd and "s3cr3t" not in settings.read_text()  # SEC-6
     curlrc = discovery.hook_curl_config_path(settings)

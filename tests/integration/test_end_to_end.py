@@ -412,7 +412,7 @@ def test_hook_endpoint_feeds_the_session_manager(stack):
         settings_file = agent.manager.sessions[sid].settings_path
         assert settings_file is not None and settings_file.is_file()
         hooks = json.loads(settings_file.read_text())["hooks"]
-        assert set(hooks) == {"Notification", "UserPromptSubmit", "Stop"}
+        assert set(hooks) == {"Notification", "UserPromptSubmit", "Stop", "PermissionRequest"}
         assert agent.hook_secret not in settings_file.read_text()
         assert agent.hook_secret in discovery.hook_curl_config_path(settings_file).read_text()
         bad = client.post("/hooks/claude", json={"session_id": sid, "hook_event_name": "Stop"}, headers={"X-Zordon-Hook-Secret": "nope"})
@@ -426,6 +426,41 @@ def test_hook_endpoint_feeds_the_session_manager(stack):
         # The session is idle on screen, so the hint changes nothing visible; it must not break polling.
         time.sleep(0.4)
         assert agent.manager.state_of(sid).value == "idle"
+
+        # The PermissionRequest hook (decision 0019): the POST waits for the user's answer,
+        # the client sees the prompt card and the spoken question, approve answers the hook.
+        import threading
+
+        answers: list = []
+        payload = {
+            "session_id": sid,
+            "cwd": str(project),
+            "permission_mode": "default",
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "touch marker.txt", "description": "Create a marker file"},
+        }
+
+        def post():
+            answers.append(client.post("/hooks/permission", json=payload, headers={"X-Zordon-Hook-Secret": agent.hook_secret}))
+
+        mark = s.mark()
+        t = threading.Thread(target=post, daemon=True)
+        t.start()
+        prompt = s.wait(lambda m: m["type"] == "prompt" and not m.get("cleared"), since=mark, what="hook prompt")
+        assert prompt["kind"] == "permission" and prompt["options"] == ["Yes", "No"]
+        s.wait_state(sid, "awaiting_permission", since=mark)
+        spoken = s.wait(lambda m: m["type"] == "transcript" and m["kind"] == "spoken" and "wants to run a command" in m["text"], since=mark, what="spoken hook prompt")
+        assert spoken["text"] == "Claude Code wants to run a command: Create a marker file. Yes or no?"
+        mark = s.mark()
+        s.command("approve")
+        t.join(10)
+        assert answers and answers[0].status_code == 200
+        assert answers[0].json() == {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}
+        s.wait(lambda m: m["type"] == "prompt" and m.get("cleared"), since=mark, what="hook prompt cleared")
+        forbidden = client.post("/hooks/permission", json=payload, headers={"X-Zordon-Hook-Secret": "nope"})
+        assert forbidden.status_code == 403
+
         mark = s.mark()
         s.command("delete", session_id=sid, confirm=True)
         s.wait(lambda m: m["type"] == "state" and m["session_id"] == sid and m["state"] == "detached", since=mark, what="deleted")

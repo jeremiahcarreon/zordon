@@ -268,6 +268,39 @@ def create_app(
             log.exception("scope_decision failed")
             return {}
 
+    @app.post("/hooks/permission")
+    async def hooks_permission(request: Request) -> Any:
+        """PermissionRequest hook (decision 0019): Claude Code waits here for the user.
+
+        Same caller and secret as the other hooks. The body is the hook input (tool
+        name and input). The answer is the user's decision, or ``{}`` when they did
+        not answer in time, when the session is unknown, or when Zordon has no
+        permission handler: Claude Code then draws its own dialog.
+        """
+        if not is_direct_loopback(request):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
+        presented = request.headers.get(HOOK_SECRET_HEADER, "")
+        expected = str(getattr(agent, "hook_secret", "") or "")
+        if not expected or not hmac.compare_digest(presented.encode(), expected.encode()):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
+        try:
+            payload = json.loads(await _read_capped(request, HOOK_MAX_BYTES) or b"{}")
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="body must be JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="body must be a JSON object")
+        decide = getattr(agent.sessions, "permission_request", None)
+        if not callable(decide):
+            return {}
+        loop = asyncio.get_running_loop()
+        try:
+            # Blocks an executor thread for as long as the user takes; the hook's own
+            # timeout bounds it from Claude Code's side.
+            return await loop.run_in_executor(None, decide, payload) or {}
+        except Exception:  # noqa: BLE001
+            log.exception("permission_request failed")
+            return {}
+
     @app.post("/upload")
     async def upload(request: Request, _sid: str = Depends(require_cookie_http)) -> Any:
         name, data = await read_upload(request, UPLOAD_MAX_BYTES)

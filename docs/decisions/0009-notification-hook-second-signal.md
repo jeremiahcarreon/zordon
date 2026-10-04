@@ -61,6 +61,9 @@ was written to the real `~/.claude`.
   The payload's `message` is spoken when the regex has no options to offer.
 * **No `PermissionRequest` hook is registered.** It is the one hook type that can
   answer a prompt, and the design forbids anything in Zordon doing that.
+  *Superseded by decision 0019 (0.5.0):* the hook is registered, and it answers
+  only with the user's own spoken or tapped decision; nothing in Zordon decides
+  on its own. The screen reader below is the fallback when the hook has no answer.
 * The pane regex stays primary because the hook says only *that* a prompt is up and
   its one-line message, not the options or which key answers which; because it does
   not fire under `disableAllHooks`; and because the `--settings` hooks vanish if the
@@ -73,8 +76,8 @@ was written to the real `~/.claude`.
   is used regardless. `curl` is a soft dependency: `zordon doctor` reports WARN
   ("hook signals are disabled") when it is missing.
 * The delay before `idle_prompt` fires is undocumented.
-* A `PermissionRequest` observer that exits 0 with empty stdout would be inert and
-  would carry `tool_name` and `tool_input` for a richer spoken prompt. It is not
-  registered until a test proves it never changes an outcome.
+* ~~A `PermissionRequest` observer~~ Done in 0019: the hook carries `tool_name`
+  and `tool_input` (and the question tool's questions, and the plan), Zordon
+  speaks them, and the user's answer is the decision.
 * The `Stop` payload carries `last_assistant_message`, a clean prose source that
   could cross-check the jsonl tail; unused for now.
