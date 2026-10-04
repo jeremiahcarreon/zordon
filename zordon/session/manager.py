@@ -114,6 +114,8 @@ PANE_WIDTH = 160
 PANE_HEIGHT = 45
 COMMAND_TIMEOUT = 3.0
 ECHO_TIMEOUT = 1.5  # seconds for the screen to change after send_text
+SUBMIT_CHECK_S = 1.2  # seconds for a sent message to leave the input box before Enter is pressed again
+SUBMIT_HEAD_CHARS = 40
 REGISTRY_INTERVAL = 1.0  # seconds between registry status reads per session
 REGISTRY_WAITING_SCORE = 0.95
 HOOK_HINT_SCORE = 0.9  # fallback prompt score for a hook hint that carries none
@@ -268,6 +270,11 @@ class Session:
     hook_prompt: hookprompts.HookPrompt | None = None  # a PermissionRequest waiting for the user (decision 0019)
     plan_text: str | None = None  # the plan the ExitPlanMode hook announced; read with the on-screen menu
     composing: bool = False  # text typed into the input box and not yet submitted (deferred submit)
+    # After Enter: the head of the text that should leave the input box, and when to retry.
+    composed_text: str = ""
+    submit_text: str | None = None
+    submit_deadline: float | None = None
+    submit_retried: bool = False
 
     @property
     def jsonl(self) -> TranscriptSource | None:
@@ -510,6 +517,7 @@ class SessionManager(threading.Thread):
             # the hook payload stays the one prompt (decision 0019).
             match = s.hook_prompt.match
         self._check_echo(s, screen, now)
+        self._check_submitted(s, screen, now)
 
         watchdog = float(self.config.voice.idle_watchdog_seconds)
         idle = adapter.is_idle(screen)
@@ -1441,7 +1449,43 @@ class SessionManager(threading.Thread):
         s.echo_deadline = self.clock() + ECHO_TIMEOUT
         self.tmux.send_literal(s.target, clean)
         self.tmux.send_enter(s.target)
+        self._expect_submitted(s, clean)
         log.debug("%s: sent %d characters", session_id[:8], len(clean))
+
+    def _expect_submitted(self, s: Session, text: str) -> None:
+        """Watch for the text leaving the input box; press Enter once more if it does not.
+
+        Claude Code can swallow an Enter that lands right after a burst of typed text
+        (it looks like a paste), above all while the TUI is still settling after a
+        resume. Seen live: the message sat in the box and nothing happened.
+        """
+        s.submit_text = text.strip()[:SUBMIT_HEAD_CHARS]
+        s.submit_deadline = self.clock() + SUBMIT_CHECK_S
+        s.submit_retried = False
+
+    def _check_submitted(self, s: Session, screen: Screen, now: float) -> None:
+        if s.submit_deadline is None or not s.submit_text:
+            return
+        box = screen.input_box
+        still_there = box is not None and (box.text or "").strip().startswith(s.submit_text[: min(len(s.submit_text), 24)])
+        if not still_there:
+            s.submit_text = None
+            s.submit_deadline = None
+            return
+        if now < s.submit_deadline:
+            return
+        if not s.submit_retried:
+            s.submit_retried = True
+            s.submit_deadline = now + SUBMIT_CHECK_S
+            log.info("%s: message still in the input box; pressing Enter again", s.session_id[:8])
+            self.tmux.send_enter(s.target)
+            return
+        s.submit_text = None
+        s.submit_deadline = None
+        self.bus.publish(
+            Notice(text="Claude Code did not take that message; it is still in its input box. Say go ahead to send it again.", level="warning", session_id=s.session_id, speak=True)
+        )
+        s.composing = True  # "go ahead" presses Enter on it
 
     # ---- deferred submit (decision 0019) ----------------------------------------------------
 
@@ -1456,6 +1500,7 @@ class SessionManager(threading.Thread):
             return
         self._require_tui(s)
         self.tmux.send_literal(s.target, (" " if s.composing else "") + clean)
+        s.composed_text = (s.composed_text + " " + clean).strip() if s.composing else clean
         s.composing = True
         log.debug("%s: composed %d characters", session_id[:8], len(clean))
 
@@ -1473,6 +1518,8 @@ class SessionManager(threading.Thread):
         s.echo_deadline = self.clock() + ECHO_TIMEOUT
         self.tmux.send_enter(s.target)
         s.composing = False
+        self._expect_submitted(s, s.composed_text)
+        s.composed_text = ""
         return True
 
     def clear_input(self, session_id: str) -> bool:
@@ -1486,6 +1533,9 @@ class SessionManager(threading.Thread):
         self._require_tui(s)
         self.tmux.send_key(s.target, "C-u")
         s.composing = False
+        s.composed_text = ""
+        s.submit_text = None
+        s.submit_deadline = None
         return True
 
     def is_composing(self, session_id: str) -> bool:

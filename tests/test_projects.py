@@ -346,3 +346,38 @@ def test_launch_carries_the_voice_prompt_and_talk_first_plan_mode(env, tmp_path:
     mgr.start(str(proj))
     command = claude_argv(tmux.windows[3][3])
     assert "--append-system-prompt" in command and command[command.index("--permission-mode") + 1] == "default"
+
+
+def test_enter_is_pressed_again_when_the_message_stays_in_the_box(env):
+    """Seen live: Claude Code can swallow the Enter after a burst of typed text. If the text
+    is still in the input box after a moment, Enter goes once more; after that the user is
+    told and "go ahead" sends it."""
+    from tests.test_manager import lines_of, started
+    from zordon.bus import Notice
+
+    mgr, bus, tmux, clock, proj = env
+    sid, target = started(env)
+    s = mgr.sessions[sid]
+    mgr.send_text(sid, "Create a file named hello.txt containing hi")
+    enters = lambda: [c for c in tmux.calls if c[0] == "enter"]  # noqa: E731
+    assert len(enters()) == 1
+    # The screen shows the text sitting in the box.
+    idle = lines_of("idle.txt")
+    box = [ln[:2] + "Create a file named hello.txt containing hi" if ln.startswith("❯") else ln for ln in idle]  # keep ❯ + NBSP
+    tmux.set_screen(target, box, alt=True)
+    mgr._poll_session(s)
+    assert len(enters()) == 1  # not yet
+    clock.advance(2.0)
+    mgr._poll_session(s)
+    assert len(enters()) == 2 and s.submit_retried
+    clock.advance(2.0)
+    mgr._poll_session(s)
+    notices = [e for e in drain(bus) if isinstance(e, Notice)]
+    assert notices and "did not take that message" in notices[-1].text and s.composing
+    assert mgr.submit(sid) and len(enters()) == 3
+    # The happy path: the text leaves the box and nothing more is pressed.
+    mgr.send_text(sid, "second message here")
+    tmux.set_screen(target, idle, alt=True)
+    clock.advance(2.0)
+    mgr._poll_session(s)
+    assert len(enters()) == 4 and s.submit_deadline is None
