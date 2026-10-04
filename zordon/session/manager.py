@@ -503,9 +503,11 @@ class SessionManager(threading.Thread):
             s.last_output_ts = now
         since = max(0.0, now - s.last_output_ts)
         match = adapter.detect_prompt(screen)
-        if match is None and s.hook_prompt is not None and s.hook_prompt.pending:
-            # Claude Code draws nothing while its PermissionRequest hook waits on us; the
-            # hook payload is the prompt (decision 0019).
+        if s.hook_prompt is not None and s.hook_prompt.pending and (match is None or match.kind in (PromptKind.PERMISSION, PromptKind.QUESTION)):
+            # The PermissionRequest hook is waiting on us. Claude Code usually draws nothing
+            # meanwhile, but sometimes paints its dialog as well (seen live); either way the
+            # dialog is the same request as the hook, and the hook's answer dismisses it, so
+            # the hook payload stays the one prompt (decision 0019).
             match = s.hook_prompt.match
         self._check_echo(s, screen, now)
 

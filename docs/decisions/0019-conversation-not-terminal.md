@@ -82,6 +82,14 @@ permission tool) removes the terminal entirely and is tracked separately.
   One prompt per session at a time; a second request while one waits gets no
   opinion and falls back to the dialog.
 
+## Observed after shipping
+
+* Claude Code sometimes paints its permission dialog while the hook is still
+  waiting (nondeterministic; seen with the full hook set) and still honours the
+  hook's decision when it arrives, dismissing the dialog. While a hook prompt is
+  pending, the screen reader's permission and question matches are therefore
+  treated as the same request: no second prompt, and the answer goes to the hook.
+
 ## Open
 
 * The plan tool through the hook was not exercised live; its payload shape is

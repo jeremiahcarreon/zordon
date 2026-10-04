@@ -124,6 +124,16 @@ def test_permission_by_voice_through_the_hook(env):
     # Polls while the hook waits keep the prompt (the screen shows no dialog).
     mgr._poll_session(s)
     assert s.current_prompt is not None and s.state is SessionState.AWAITING_PERMISSION
+    # Claude Code sometimes paints its own dialog while the hook waits (seen live): that is
+    # the same request, so no second prompt is raised and the answer still goes to the hook.
+    from tests.test_manager import lines_of
+
+    before = s.current_prompt.prompt_id
+    tmux.set_screen(target, lines_of("bash_permission.txt"), alt=True)
+    mgr._poll_session(s)
+    assert s.current_prompt is not None and s.current_prompt.prompt_id == before
+    assert s.current_match.title.startswith("Bash command: touch") and s.current_match.description == "Create marker file"
+    assert not [e for e in drain(bus) if isinstance(e, PromptDetected)]
     assert mgr.approve(sid)
     t.join(2)
     assert out == [H.allow()]
