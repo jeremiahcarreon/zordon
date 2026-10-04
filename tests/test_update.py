@@ -55,10 +55,16 @@ def test_apply_uses_the_installing_tool(monkeypatch):
         returncode = 0
 
     monkeypatch.setenv("ZORDON_TOOL_MANAGER", "uv")
+    monkeypatch.setattr(upd, "installed_extras", lambda: [])
     ok, msg = upd.apply("main", run=lambda argv, **k: (calls.append(argv), R())[1], which=lambda n: "/usr/bin/uv" if n == "uv" else None, log=lambda s: None)
     assert ok and "restart" in msg
     assert calls[0][:5] == ["/usr/bin/uv", "tool", "install", "--force", "--reinstall"]
     assert calls[0][-1] == "zordon @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz"
+    # The extras the environment carries ride along: a reinstall without [gpu] dropped the
+    # CUDA libraries and put recognition back on the CPU.
+    monkeypatch.setattr(upd, "installed_extras", lambda: ["gpu"])
+    ok, _ = upd.apply("main", run=lambda argv, **k: (calls.append(argv), R())[1], which=lambda n: "/usr/bin/uv" if n == "uv" else None, log=lambda s: None)
+    assert ok and calls[-1][-1] == "zordon[gpu] @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz"
     monkeypatch.delenv("ZORDON_TOOL_MANAGER")
     ok, msg = upd.apply("main", run=lambda *a, **k: R(), which=lambda n: None, log=lambda s: None)
     assert not ok and "not installed with uv or pipx" in msg

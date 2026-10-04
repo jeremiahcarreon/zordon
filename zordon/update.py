@@ -129,17 +129,45 @@ def check(
     return status
 
 
-def tool_manager(which=shutil.which) -> tuple[str, list[str]] | None:
+def installed_extras() -> list[str]:
+    """The optional extras this environment carries, so a reinstall keeps them. ``gpu``
+    is recognised by its CUDA libraries: a reinstall without it silently dropped them and
+    put speech recognition back on the CPU (seen live)."""
+    extras: list[str] = []
+    try:
+        from zordon.speech.stt.faster_whisper import nvidia_libs_present  # noqa: PLC0415
+
+        if nvidia_libs_present():
+            extras.append("gpu")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import sounddevice  # noqa: F401, PLC0415
+
+        extras.append("hostaudio")
+    except Exception:  # noqa: BLE001
+        pass
+    return extras
+
+
+def requirement(extras: list[str] | None = None) -> str:
+    """``zordon[gpu] @ {src}`` or ``zordon @ {src}``."""
+    ex = extras if extras is not None else installed_extras()
+    return ("zordon[" + ",".join(ex) + "] @ {src}") if ex else "zordon @ {src}"
+
+
+def tool_manager(which=shutil.which, extras: list[str] | None = None) -> tuple[str, list[str]] | None:
     """How zordon was installed and the argv that reinstalls it from a given source.
     The source placeholder ``{src}`` is filled in by ``apply``."""
     prefix = Path(sys.prefix)
     parts = {p.lower() for p in prefix.parts}
     uv = which("uv")
     pipx = which("pipx")
+    req = requirement(extras)
     if ("uv" in parts and "tools" in parts and uv) or (os.environ.get("ZORDON_TOOL_MANAGER") == "uv" and uv):
-        return "uv", [uv, "tool", "install", "--force", "--reinstall", "--python", f"{sys.version_info.major}.{sys.version_info.minor}", "zordon @ {src}"]
+        return "uv", [uv, "tool", "install", "--force", "--reinstall", "--python", f"{sys.version_info.major}.{sys.version_info.minor}", req]
     if "pipx" in parts and pipx:
-        return "pipx", [pipx, "install", "--force", "{src}"]
+        return "pipx", [pipx, "install", "--force", req]
     return None
 
 
