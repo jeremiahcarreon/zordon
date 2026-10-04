@@ -60,8 +60,11 @@ def _faster_whisper(config: Config) -> FasterWhisperSTT:
     p = config.providers
     models_dir = models_dir_override()
     local = model_dir_for(p.stt_model, models_dir)
-    device = (p.stt_device or "cpu").lower()
+    from zordon.speech.stt.faster_whisper import resolve_device
+
+    device = resolve_device(p.stt_device)
     compute = CUDA_COMPUTE_TYPE if device == "cuda" else CPU_COMPUTE_TYPE
+    log.info("faster-whisper device: %s (configured %s)", device, p.stt_device or "auto")
     return FasterWhisperSTT(
         local if local.is_dir() else p.stt_model,
         device=device,

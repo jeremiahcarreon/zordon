@@ -57,6 +57,10 @@ local = []
 # Jev (TypeSafe System One) router. 0.7.2 added the http2 extra; 0.8 is unreleased (decision 0006).
 # Kept as an empty alias: the TypeSafe SDK is part of the core install now.
 jev = []
+# NVIDIA GPU for speech recognition: the CUDA runtime libraries CTranslate2 dlopens
+# (about 900 MB). Setup offers it when a GPU is found; recognition then takes ~20 ms
+# instead of ~800 ms for a sentence, which is what makes live partial text possible.
+gpu = ["nvidia-cublas-cu12>=12.1", "nvidia-cudnn-cu12>=9"]
 # Optional host-side mic/speaker when the agent runs on the same machine as the browser.
 hostaudio = ["sounddevice>=0.4"]
 dev = [

@@ -295,6 +295,16 @@ transcribed, but not sent. It goes when you have been quiet for 2.5 seconds (`vo
 or at once when you say "go ahead" or "send it". "Scratch that" clears the box. Text typed on the
 page is sent immediately.
 
+**You can tell when it is working.** The project header shows a pulsing "working" indicator,
+"waiting for you" when it needs an answer, and the page plays a short two-note tone when the
+agent starts and when it is done (Settings > Sounds to turn it off). Failed tool calls are not
+read out any more; Claude explains them in its own words.
+
+**Use the GPU for speech recognition.** With an NVIDIA GPU, setup offers the CUDA libraries
+(`zordon[gpu]`, about 900 MB). A sentence is then recognised in about 20 ms instead of most of a
+second, and the Heard line updates while you are still talking. The health strip warns when a
+GPU is present but unused.
+
 **Claude is told it is in a conversation.** Every session Zordon launches carries a short
 system prompt: two or three plain sentences, no markdown or paths, one question at a time
 through the question tool, say the plan and wait for "go ahead". Replies go straight to the

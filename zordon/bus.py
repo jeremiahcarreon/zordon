@@ -159,6 +159,7 @@ class Heard:
     text: str
     confidence: float | None = None
     client_id: str = ""
+    partial: bool = False  # the utterance is still going; the text will be replaced
     ts: float = field(default_factory=now)
 
 

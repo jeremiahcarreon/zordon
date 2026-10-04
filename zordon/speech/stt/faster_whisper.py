@@ -67,6 +67,50 @@ def ensure_model(models_dir: Path, name: str = DEFAULT_MODEL) -> Path:
     return dest
 
 
+def cuda_available() -> bool:
+    """A CUDA device CTranslate2 can see *and* the cuBLAS/cuDNN libraries to drive it
+    (the ``gpu`` extra). Both are needed; either alone falls back to the CPU."""
+    try:
+        import ctranslate2
+
+        if int(ctranslate2.get_cuda_device_count()) < 1:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    return nvidia_libs_present()
+
+
+def nvidia_libs_present() -> bool:
+    roots: list[str] = []
+    try:
+        roots.extend(site.getsitepackages())
+    except AttributeError:  # pragma: no cover
+        pass
+    purelib = sysconfig.get_paths().get("purelib")
+    if purelib and purelib not in roots:
+        roots.append(purelib)
+    found = {rel for root in roots for rel in _NVIDIA_LIBS if glob.glob(os.path.join(root, rel))}
+    return len(found) == len(_NVIDIA_LIBS)
+
+
+def gpu_present() -> bool:
+    """An NVIDIA GPU on this machine, whether or not the libraries are installed."""
+    try:
+        import ctranslate2
+
+        return int(ctranslate2.get_cuda_device_count()) >= 1
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def resolve_device(requested: str | None) -> str:
+    """``auto`` picks cuda when ``cuda_available``; anything else is taken as written."""
+    want = (requested or "auto").lower()
+    if want == "auto":
+        return "cuda" if cuda_available() else "cpu"
+    return want
+
+
 def preload_nvidia_libs() -> int:
     """dlopen the pip-installed cuBLAS/cuDNN libraries (RTLD_GLOBAL) when present.
 

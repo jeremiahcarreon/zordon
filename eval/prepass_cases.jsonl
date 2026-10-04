@@ -33,7 +33,7 @@
 {"id": "pane_result_tests_passed", "source": "pane", "input": "  ⎿  ===== 42 passed, 1 warning in 3.21s =====", "expect": [{"kind": "tool_result", "spoken": "tests passed"}]}
 {"id": "pane_result_tests_failed", "source": "pane", "input": "  ⎿  2 failed, 40 passed in 1.02s", "expect": [{"kind": "tool_result", "spoken": "tests failed"}]}
 {"id": "pane_result_generic", "source": "pane", "input": "  ⎿  Read 120 lines", "expect": [{"kind": "tool_result", "spoken": "done"}]}
-{"id": "pane_result_error", "source": "pane", "input": "  ⎿  Error: ENOENT: no such file or directory, open 'missing.txt'", "expect": [{"kind": "error", "spoken": "error: ENOENT: no such file or directory, open 'missing.txt'"}]}
+{"id": "pane_result_error", "source": "pane", "input": "  \u23bf  Error: ENOENT: no such file or directory, open 'missing.txt'", "expect": [{"kind": "tool_result", "spoken": "that failed: ENOENT: no such file or directory, open 'missing.txt'"}], "note": "a failed tool call is the agent's to explain; not spoken at minimal"}
 {"id": "pane_prose_bullet", "source": "pane", "input": "● Added the retry loop to the upload handler.", "expect": [{"kind": "prose", "spoken": "Added the retry loop to the upload handler.", "meta": {"paragraph_start": true}}]}
 {"id": "pane_prose_continuation", "source": "pane", "input": "  Client-server model: server holds sessions, clients attach.", "expect": [{"kind": "prose", "spoken": "Client-server model: server holds sessions, clients attach."}]}
 {"id": "pane_caveman_terse", "source": "pane", "input": "● Fix lint. Bump deps. Done.", "expect": [{"kind": "prose", "spoken": "Fix lint. Bump deps. Done."}], "note": "terse shorthand stays prose; the normalizer expands it"}

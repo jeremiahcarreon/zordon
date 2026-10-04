@@ -541,9 +541,15 @@
   }
 
   function onState(msg) {
+    var prev = (S.states[msg.session_id] || {}).state;
     S.states[msg.session_id] = { state: msg.state, detail: msg.detail || '', ts: msg.ts };
     var s = S.sessionsById[msg.session_id];
     if (s) s.state = msg.state;
+    if (msg.session_id === S.focused && prev !== msg.state) {
+      if (msg.state === 'working' && prev !== 'working') playCue('working');
+      else if (msg.state === 'idle' && prev === 'working') playCue('done');
+      else if (msg.state.indexOf('awaiting') === 0) playCue('ask');
+    }
     // A prompt that is no longer reflected in the state is gone.
     if (msg.state.indexOf('awaiting') !== 0) {
       Object.keys(S.prompts).forEach(function (pid) {
@@ -780,9 +786,37 @@
     var box = $('heard');
     if (!box) return;
     $('heard-text').textContent = msg.text;
+    box.classList.toggle('partial', !!msg.partial);
     show(box, true);
     if (heardTimer) clearTimeout(heardTimer);
-    heardTimer = setTimeout(function () { show(box, false); }, 8000);
+    if (!msg.partial) heardTimer = setTimeout(function () { show(box, false); }, 8000);
+  }
+
+  // ---- sound cues (working / done / a question) ----------------------------------
+
+  function cuesEnabled() {
+    try {
+      return localStorage.getItem('zordon.cues') !== 'off';
+    } catch (_) {
+      return true;
+    }
+  }
+  function playCue(kind) {
+    if (!cuesEnabled()) return;
+    try {
+      if (audio && typeof audio.cue === 'function') audio.cue(kind);
+    } catch (_) {}
+  }
+
+  function renderWorkStatus() {
+    var el = $('work-status');
+    if (!el) return;
+    var st = S.focused ? ((S.states[S.focused] || {}).state || (S.sessionsById[S.focused] || {}).state) : null;
+    var text = st === 'working' ? 'working' : st && st.indexOf('awaiting') === 0 ? 'waiting for you' : st === 'stalled' ? 'quiet for a while' : '';
+    $('work-status-text').textContent = text;
+    el.classList.toggle('is-working', st === 'working');
+    el.classList.toggle('is-waiting', !!st && st.indexOf('awaiting') === 0);
+    show(el, !!text);
   }
 
   function onDraft(msg) {
@@ -1208,6 +1242,7 @@
           : 'unknown';
     }
     document.body.dataset.state = st || 'none';
+    renderWorkStatus();
     renderView();
     // Rows from the focused session are no longer "other"; cheap to recompute.
     Object.keys(S.rows).forEach(function (id) {
@@ -2002,6 +2037,15 @@
     $('np-talk').addEventListener('change', function (e) {
       S.np.talk = !!e.target.checked;
     });
+    var cues = $('set-cues');
+    if (cues) {
+      cues.checked = cuesEnabled();
+      cues.addEventListener('change', function (e) {
+        try {
+          localStorage.setItem('zordon.cues', e.target.checked ? 'on' : 'off');
+        } catch (_) {}
+      });
+    }
     $('draft-send').addEventListener('click', function () {
       send({ type: 'text', text: 'send it' });  // routed like speech: the dispatcher sends the draft
     });

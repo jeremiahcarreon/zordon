@@ -1560,3 +1560,11 @@ body.view-projects #drop-hint {
 .draft-text { font-size: 15px; }
 .draft-actions { display: flex; gap: 8px; margin-top: 8px; }
 .draft-hint { margin: 6px 0 0; }
+
+/* working indicator in the work head */
+.work-status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-2); margin-left: 8px; }
+.work-status .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-3); }
+.work-status.is-working .pulse { background: var(--accent); animation: zpulse 1.1s ease-in-out infinite; }
+.work-status.is-waiting .pulse { background: var(--warn); animation: zpulse 0.7s ease-in-out infinite; }
+@keyframes zpulse { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }
+.heard.partial .heard-text { color: var(--fg-2); font-style: italic; }

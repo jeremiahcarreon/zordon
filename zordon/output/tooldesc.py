@@ -241,13 +241,16 @@ def describe_tool_result(text: str, is_error: bool = False, is_rejection: bool =
         passed, failed = tests
         meta.update(passed=passed, failed=failed)
         if failed:
-            kind = LineKind.ERROR if is_error else LineKind.TOOL_RESULT
-            return Tagged(kind, display, "tests failed", clean, meta)
+            return Tagged(LineKind.TOOL_RESULT, display, "tests failed", clean, meta)
         return Tagged(LineKind.TOOL_RESULT, display, "tests passed", clean, meta)
 
     if is_error:
+        # A failed tool call is the agent's business: it sees the error and says what it
+        # means in its own words. Spoken only with tool chatter or at technical verbosity
+        # (TOOL_RESULT), never as a Zordon error: "error: Exit code 1" after every failed
+        # command was noise the listener could do nothing with.
         short = _short_error_line(clean)
-        spoken = f"error: {short}" if short else "that failed"
-        return Tagged(LineKind.ERROR, display or "error", spoken, clean, meta)
+        spoken = f"that failed: {short}" if short else "that failed"
+        return Tagged(LineKind.TOOL_RESULT, display or "error", spoken, clean, meta)
 
     return Tagged(LineKind.TOOL_RESULT, display or "done", "done", clean, meta)

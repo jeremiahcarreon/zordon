@@ -51,8 +51,9 @@ def test_recommend_prefers_key_then_ollama_then_claude_cli_then_passthrough():
 def test_interview_defaults_on_enter_and_eof():
     out = io.StringIO()
     d = detected(ollama_server=True, ollama_models=["qwen2.5:3b-instruct"], gpu="RTX")
-    c = wiz.interview(d, scripted("", "", "", "", "", ""), out)  # Enter for every question, agent and GPU included
+    c = wiz.interview(d, scripted("", "", "", "", "", "", ""), out)  # Enter for every question, agent, GPU libraries and 14b included
     assert (c.speech, c.normalizer, c.router, c.access) == ("local", "ollama", "keyword", "local")
+    assert c.install_gpu_libs is (not wiz.gpu_libs_present())  # a GPU without the CUDA libraries: offered, default yes
     text = out.getvalue()
     for must in ("Local (recommended)", "Anthropic API key", "Your Claude login", "Built-in rules", "Phone anywhere"):
         assert must in text
@@ -75,7 +76,9 @@ def test_interview_cloud_and_keys_and_tunnel():
 def test_interview_ollama_without_install_offers_installer_and_14b():
     out = io.StringIO()
     d = detected(gpu="RTX 4090")
-    c = wiz.interview(d, scripted("", "1", "1", "y", "1", "1"), out)
+    gpu_answers = ("n",) if not wiz.gpu_libs_present() else ()
+    c = wiz.interview(d, scripted("", "1", *gpu_answers, "1", "y", "1", "1"), out)
+    assert c.install_gpu_libs is False
     assert c.normalizer == "ollama" and c.pull_ollama_model is True
     assert c.ollama_model == "qwen2.5:14b-instruct"
     assert "prerequisites step will offer to install it" in out.getvalue()

@@ -465,6 +465,14 @@ class SpeechScreen(QuestionScreen):
         if key == "local":
             have = len(d.models_present)
             yield Static(Text(f"{have} of 4 model files already present; " + ("nothing to download." if have >= 4 else "the rest is fetched in the Downloads step."), style=DIM))
+            if d.gpu and not setup.gpu_libs_present():
+                yield Checkbox(
+                    f"Use the GPU ({d.gpu}) for speech recognition: downloads about 900 MB of CUDA libraries; a sentence then takes 20 ms instead of most of a second",
+                    value=c.install_gpu_libs or True,
+                    id="use-gpu",
+                )
+            elif d.gpu:
+                yield Static(Text(f"GPU ({d.gpu}) will be used for speech recognition.", style=DIM))
         elif key == "cloud":
             yield from self.key_input("OpenAI", "OPENAI_API_KEY", d.openai_key_env, id="key-openai", current=c.keys.get("openai", ""))
             if d.elevenlabs_key_env:
@@ -487,6 +495,7 @@ class SpeechScreen(QuestionScreen):
             c.keys["groq"] = self.input_value("key-groq")
             self.wizard.tts_override = "elevenlabs" if (d.elevenlabs_key_env and self.checkbox_value("use-elevenlabs")) else None
         c.download_models = key == "local" and len(d.models_present) < 4
+        c.install_gpu_libs = bool(key == "local" and d.gpu and not setup.gpu_libs_present() and self.checkbox_value("use-gpu"))
 
 
 class NormalizerScreen(QuestionScreen):
@@ -939,6 +948,8 @@ class DownloadScreen(WizardScreen):
             todo.append(f"pull {c.ollama_model} with Ollama")
         if c.download_models and c.speech == "local":
             todo.append("download the local speech models (about 820 MB)")
+        if c.install_gpu_libs:
+            todo.append("install the CUDA libraries for GPU speech recognition (about 900 MB)")
         if c.download_cloudflared:
             todo.append("download cloudflared")
         head = Text("Writing config.toml", style="bold")

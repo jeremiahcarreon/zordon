@@ -499,6 +499,19 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     ok(sent[sent.length - 1].text === 'scratch that', 'the Clear button sends the cue');
     recv({ type: 'draft', session_id: 's1', text: '', state: 'cleared', ts: now() });
     ok($('draft').hasAttribute('hidden'), 'a cleared draft disappears');
+    // Partial text while still talking is shown dimmed and stays until the final one.
+    recv({ type: 'heard', text: 'add retry', partial: true, ts: now() });
+    ok($('heard').classList.contains('partial') && $('heard-text').textContent === 'add retry', 'a partial is shown as partial');
+    recv({ type: 'heard', text: 'add retry logic', partial: false, ts: now() });
+    ok(!$('heard').classList.contains('partial'), 'the final text replaces it');
+    // The work head shows a working indicator for the focused session.
+    recv({ type: 'sessions', sessions: [{ session_id: 's1', directory: '/home/u/Code/site', title: 'site', last_active: now(), attached: true, running: true, state: 'idle', focused: true }] });
+    recv({ type: 'state', session_id: 's1', state: 'working', detail: 'producing output', ts: now() });
+    ok(!$('work-status').hasAttribute('hidden') && $('work-status').classList.contains('is-working') && $('work-status-text').textContent === 'working', 'working shows a pulsing indicator');
+    recv({ type: 'state', session_id: 's1', state: 'awaiting_permission', detail: '', ts: now() });
+    ok($('work-status-text').textContent === 'waiting for you', 'a prompt shows "waiting for you"');
+    recv({ type: 'state', session_id: 's1', state: 'idle', detail: '', ts: now() });
+    ok($('work-status').hasAttribute('hidden'), 'idle hides it');
   }
 
   console.log(`app_test: all passed (${passed} checks)`);

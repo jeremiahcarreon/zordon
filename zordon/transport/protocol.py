@@ -299,6 +299,7 @@ class HeardOut(_Strict):
     type: Literal["heard"] = "heard"
     text: str
     confidence: float | None = None
+    partial: bool = False  # still talking: shown dimmed and replaced by the next one
     ts: float
 
 

@@ -53,6 +53,7 @@ LABELS = {
 FIX_DOWNLOAD = "zordon doctor --download"
 FIX_ROOT = "create a normal user with sudo and run Zordon there: useradd -m -s /bin/bash <name>; usermod -aG sudo <name>; passwd <name>; su - <name>"
 FIX_TMUX = "install tmux 3.2 or newer (or run `zordon setup`)"
+FIX_GPU = "install the CUDA libraries into Zordon's environment: zordon setup (it offers GPU support) or `uv tool install --force 'zordon[gpu] @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz'`, then restart"
 FIX_CLAUDE = "install Claude Code and log in (or run `zordon setup`)"
 FIX_CURL = "install curl (or run `zordon setup`)"
 FIX_ANTHROPIC_KEY = "set providers.keys.anthropic in config.toml or export ANTHROPIC_API_KEY"
@@ -346,11 +347,16 @@ def check_stt(agent: Any) -> Item:
         fix = FIX_DOWNLOAD if configured in ("faster-whisper", "faster_whisper") else _key_fix(configured)
         return Item("stt", FAIL, f"voice input is unavailable: {reason}", fix)
     if name == "faster-whisper":
+        device = str(getattr(stt, "device", "cpu") or "cpu")
+        if device == "cpu" and _gpu_without_libs():
+            # Recognition is ~40x slower here than it could be: a sentence takes most of a
+            # second instead of 20 ms, which is the whole wait before "Heard" appears.
+            return Item("stt", WARN, "faster-whisper on the CPU although an NVIDIA GPU is present (~0.8 s per sentence; ~20 ms on the GPU)", FIX_GPU)
         if getattr(stt, "loaded", False):
-            return Item("stt", OK, f"faster-whisper loaded on {getattr(stt, 'device', 'cpu')}")
+            return Item("stt", OK, f"faster-whisper loaded on {device}")
         spec = Path(str(getattr(stt, "model_spec", "") or "")).expanduser()
         if spec.is_dir() and (spec / "model.bin").is_file():
-            return Item("stt", OK, f"faster-whisper {spec.name} on {getattr(stt, 'device', 'cpu')}")
+            return Item("stt", OK, f"faster-whisper {spec.name} on {device}")
         model = str(getattr(cfg, "stt_model", "") or spec.name or "model")
         return Item("stt", WARN, f"faster-whisper {model} not downloaded yet; the first utterance fetches it", FIX_DOWNLOAD)
     if name in ("openai", "groq"):
@@ -358,6 +364,18 @@ def check_stt(agent: Any) -> Item:
             return Item("stt", FAIL, f"{name}: no API key", _key_fix(name))
         return Item("stt", OK, name)
     return Item("stt", OK, name)
+
+
+def _gpu_without_libs() -> bool:
+    try:
+        from zordon.speech.stt.faster_whisper import (  # noqa: PLC0415
+            gpu_present,
+            nvidia_libs_present,
+        )
+
+        return gpu_present() and not nvidia_libs_present()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def check_vad(agent: Any) -> Item:

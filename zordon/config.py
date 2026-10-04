@@ -68,7 +68,7 @@ class ProvidersConfig:
 
     # Per-provider knobs. All have working defaults.
     stt_model: str = "small.en"
-    stt_device: str = "cpu"  # cpu | cuda
+    stt_device: str = "auto"  # auto (cuda when an NVIDIA GPU and the gpu extra are present) | cpu | cuda
     tts_voice: str = "af_heart"
     tts_speed: float = 1.15  # a little faster than Kokoro's default reads as natural speech
     normalizer_model: str = "claude-haiku-4-5"
@@ -111,6 +111,11 @@ class VoiceConfig:
     # written after the deterministic pre-pass (Claude is told it is talking, decision 0019),
     # "technical" only for text with code, paths or symbols, "always" for everything.
     normalize: str = "never"  # never | technical | always
+    # Live text while you still talk: the utterance so far is transcribed every
+    # partial_interval_ms and shown dimmed. "auto" does it when recognition runs on a GPU
+    # (20 ms a pass); on a CPU a pass costs most of a second and would lag behind.
+    partial_transcripts: str = "auto"  # auto | on | off
+    partial_interval_ms: int = 600
     # How many normalized sentences to buffer before playback starts.
     prebuffer_sentences: int = 3
 
@@ -262,6 +267,8 @@ class Config:
             raise ConfigError("tunnel.provider must be cloudflared or ngrok")
         if self.voice.submit_mode not in ("keyphrase", "quiet", "immediate"):
             raise ConfigError("voice.submit_mode must be keyphrase, quiet or immediate")
+        if self.voice.partial_transcripts not in ("auto", "on", "off"):
+            raise ConfigError("voice.partial_transcripts must be auto, on or off")
         if self.voice.normalize not in ("never", "technical", "always"):
             raise ConfigError("voice.normalize must be never, technical or always")
         if self.sessions.permission_mode not in LAUNCH_MODES:

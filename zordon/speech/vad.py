@@ -264,6 +264,11 @@ class SpeechGate:
     def speaking(self) -> bool:
         return self._speaking
 
+    def utterance_so_far(self) -> bytes:
+        """The frames of the utterance in progress (pre-roll included); empty when quiet.
+        For partial transcription while the user still talks (decision 0019)."""
+        return b"".join(self._utterance) if self._speaking else b""
+
     @property
     def onset_at(self) -> float | None:
         return self._onset_at if self._speaking else None

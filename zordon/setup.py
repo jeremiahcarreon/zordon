@@ -113,6 +113,7 @@ class Choices:
     pull_ollama_model: bool = False
     download_models: bool = True
     download_cloudflared: bool = False
+    install_gpu_libs: bool = False  # the CUDA libraries for recognition on an NVIDIA GPU (the gpu extra)
     ollama_model: str = "qwen2.5:3b-instruct"
     agent: str = "claude-code"
 
@@ -303,6 +304,12 @@ def interview(d: Detected, ask: Ask, out: TextIO, defaults: Choices | None = Non
         if _yes(ask, "Use Groq for transcription (faster than OpenAI)?", default=False):
             c.keys["groq"] = _key(ask, out, "Groq", "GROQ_API_KEY", False)
     c.download_models = c.speech == "local" and len(d.models_present) < 4
+    if c.speech == "local" and d.gpu and not gpu_libs_present():
+        c.install_gpu_libs = _yes(
+            ask,
+            f"GPU detected ({d.gpu}). Use it for speech recognition? Downloads about 900 MB of CUDA libraries; recognition then takes 20 ms instead of most of a second",
+            default=True,
+        )
 
     norm_default = {"ollama": 1, "anthropic": 2, "claude-cli": 3, "passthrough": 4}[c.normalizer]
     norm = _pick(ask, out, NORMALIZER_TEXT, norm_default, 4)
@@ -417,6 +424,36 @@ def _summary(d: Detected) -> str:
 # ---- actions ---------------------------------------------------------------------------
 
 
+GPU_PACKAGES = ("nvidia-cublas-cu12>=12.1", "nvidia-cudnn-cu12>=9")
+
+
+def gpu_libs_present() -> bool:
+    try:
+        from zordon.speech.stt.faster_whisper import nvidia_libs_present  # noqa: PLC0415
+
+        return nvidia_libs_present()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def install_gpu_libs(*, runner: Callable[..., Any] = subprocess.run) -> str | None:
+    """Install the ``gpu`` extra's packages into this interpreter's environment.
+    Returns a problem string, or None when done. Uses ``uv pip`` when uv is around
+    (the installer's environments have no pip), else ``python -m pip``."""
+    uv = shutil.which("uv")
+    if uv:
+        argv = [uv, "pip", "install", "--python", sys.executable, *GPU_PACKAGES]
+    else:
+        argv = [sys.executable, "-m", "pip", "install", "--quiet", *GPU_PACKAGES]
+    try:
+        res = runner(argv, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"could not install the CUDA libraries: {e}"
+    if getattr(res, "returncode", 1) != 0:
+        return "the CUDA libraries did not install; later: " + " ".join(argv)
+    return None
+
+
 def run_actions(
     c: Choices,
     cfg: Config,
@@ -458,6 +495,13 @@ def run_actions(
                     problems.append(f"{chk.name}: {chk.detail}")
         except Exception as e:  # noqa: BLE001
             problems.append(f"model download failed: {e}")
+    if c.install_gpu_libs:
+        out.write("\nInstalling the CUDA libraries for GPU speech recognition (about 900 MB)...\n")
+        err = install_gpu_libs(runner=runner)
+        if err:
+            problems.append(err)
+        else:
+            manifest.record("python", "zordon[gpu]", command="uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
     if c.download_cloudflared:
         out.write("\nDownloading cloudflared...\n")
         try:

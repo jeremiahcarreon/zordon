@@ -99,6 +99,9 @@ class AudioThread(threading.Thread):
         self._call_lock = threading.Lock()
         self._in_call = False
         self._speech_ended_at: float | None = None
+        self._partial_inflight = False
+        self._last_partial_at = 0.0
+        self.partials_sent = 0
         self.held_chunks = 0  # forward attempts deferred because the user was speaking
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zordon-stt")
         # Playback estimate.
@@ -335,6 +338,44 @@ class AudioThread(threading.Thread):
         if event.kind is GateKind.END:
             self._speech_ended_at = now
             self._submit_transcription(event.utterance_pcm or b"", event.duration_s)
+            return
+        self._maybe_partial(now)
+
+    # ---- partial transcripts (decision 0019) ----------------------------------------
+
+    def partials_enabled(self) -> bool:
+        mode = str(getattr(self.config.voice, "partial_transcripts", "auto") or "auto") if self.config is not None else "auto"
+        if mode == "off":
+            return False
+        if mode == "on":
+            return True
+        return str(getattr(self.stt, "device", "cpu") or "cpu") == "cuda"
+
+    def _maybe_partial(self, now: float) -> None:
+        if not self.partials_enabled() or self._partial_inflight:
+            return
+        interval = (int(getattr(self.config.voice, "partial_interval_ms", 600) or 600) if self.config is not None else 600) / 1000.0
+        if now - self._last_partial_at < interval:
+            return
+        pcm = self.gate.utterance_so_far()
+        if len(pcm) < 2 * self.gate.sample_rate // 2:  # under half a second: nothing to hear yet
+            return
+        self._last_partial_at = now
+        self._partial_inflight = True
+        self._executor.submit(self._partial_job, pcm16_to_float32(pcm), self._client_id)
+
+    def _partial_job(self, audio, client_id: str) -> None:
+        try:
+            result = self.stt.transcribe(audio)
+        except Exception:  # noqa: BLE001 - a partial is best effort
+            log.debug("partial transcription failed", exc_info=True)
+            return
+        finally:
+            self._partial_inflight = False
+        text = (result.text or "").strip()
+        if text and self.gate.speaking:
+            self.bus.publish(Heard(text=text, confidence=result.confidence, client_id=client_id, partial=True))
+            self.partials_sent += 1
 
     # ---- barge-in -----------------------------------------------------------------
 

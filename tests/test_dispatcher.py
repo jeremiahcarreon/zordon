@@ -550,7 +550,7 @@ def test_deferred_submit_types_now_and_sends_after_the_quiet(tmp_path: Path):
     h.say("also add a test")
     h.router.routes["go ahead"] = RouteResult("shim_command", 0.99, command="send")
     h.say("go ahead")
-    assert h.sessions.called("submit") == [("s1",), ("s1",)] and h.said()[-1] == "Sent."
+    assert h.sessions.called("submit") == [("s1",), ("s1",)] and "Sent." not in h.said()
     # "scratch that" clears the box and the draft.
     h.say("rename the module")
     h.router.routes["scratch that"] = RouteResult("shim_command", 0.99, command="scratch")
@@ -590,7 +590,7 @@ def test_keyphrase_mode_sends_only_on_the_cue(tmp_path: Path):
     assert drafts and drafts[-1].state == "composing" and drafts[-1].text.endswith("backoff exponential")
     h.say("also add a test for it, send it zoredon")
     assert h.sessions.called("compose")[-1] == ("s1", "also add a test for it")
-    assert h.sessions.called("submit") == [("s1",)] and h.dispatcher._draft is None and h.said()[-1] == "Sent."
+    assert h.sessions.called("submit") == [("s1",)] and h.dispatcher._draft is None and "Sent." not in h.said()
     assert h.events()[-1][1] == "add retry logic to the upload handler um, and make the backoff exponential also add a test for it"
     # Typed "send it" (the page's Send button) sends too; typed prose with a trailing cue does not.
     h.say("one more thing")

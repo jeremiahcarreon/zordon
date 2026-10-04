@@ -341,7 +341,7 @@ def test_describe_tool_use_never_speaks_secrets_from_input():
         ("anything", {"is_rejection": True}, LineKind.TOOL_RESULT, "that was denied"),
         ("===== 12 passed, 1 warning in 0.34s =====", {}, LineKind.TOOL_RESULT, "tests passed"),
         ("2 failed, 10 passed in 1.2s", {}, LineKind.TOOL_RESULT, "tests failed"),
-        ("2 failed, 10 passed in 1.2s", {"is_error": True}, LineKind.ERROR, "tests failed"),
+        ("2 failed, 10 passed in 1.2s", {"is_error": True}, LineKind.TOOL_RESULT, "tests failed"),
         ("Tests:       3 failed, 40 passed, 43 total", {}, LineKind.TOOL_RESULT, "tests failed"),
         ("Tests:       43 passed, 43 total", {}, LineKind.TOOL_RESULT, "tests passed"),
         (
@@ -356,19 +356,21 @@ def test_describe_tool_use_never_speaks_secrets_from_input():
         ("Ran 7 tests in 0.004s\n\nFAILED (failures=2)", {}, LineKind.TOOL_RESULT, "tests failed"),
         ("some output", {}, LineKind.TOOL_RESULT, "done"),
         ("", {}, LineKind.TOOL_RESULT, "done"),
+        # A failed tool call is a TOOL_RESULT (spoken only with tool chatter or at technical),
+        # never a Zordon error: the agent explains failures in its own words.
         (
             "Error: ENOENT: no such file",
             {"is_error": True},
-            LineKind.ERROR,
-            "error: ENOENT: no such file",
+            LineKind.TOOL_RESULT,
+            "that failed: ENOENT: no such file",
         ),
         (
             "Traceback (most recent call last):\n  File x\nValueError: bad value",
             {"is_error": True},
-            LineKind.ERROR,
-            "error: ValueError: bad value",
+            LineKind.TOOL_RESULT,
+            "that failed: ValueError: bad value",
         ),
-        ("", {"is_error": True}, LineKind.ERROR, "that failed"),
+        ("", {"is_error": True}, LineKind.TOOL_RESULT, "that failed"),
     ],
 )
 def test_describe_tool_result(text, flags, kind, spoken):

@@ -97,6 +97,7 @@
     <div class="work-head-main">
       <span id="work-title" class="work-title"></span>
       <span id="work-mode" class="badge mode" hidden></span>
+      <span id="work-status" class="work-status" hidden><span class="pulse"></span><span id="work-status-text">working</span></span>
     </div>
     <button type="button" id="btn-pause" class="btn small" title="Back to projects; the agent keeps running">Pause</button>
   </div>
@@ -299,6 +300,10 @@
         <label class="field"><span>Speech to text</span><select id="set-stt"></select></label>
         <label class="field"><span>Text to speech</span><select id="set-tts"></select></label>
         <label class="field"><span>Voice</span><select id="set-voice"></select></label>
+      </section>
+      <section class="card">
+        <h3>Sounds</h3>
+        <label class="opt"><input type="checkbox" id="set-cues" checked><span>Play a short tone when the agent starts working and when it is done</span></label>
       </section>
       <section class="card">
         <h3>Permissions</h3>

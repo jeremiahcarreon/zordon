@@ -121,6 +121,29 @@
     return true;
   };
 
+  // Short cues ("working", "done") played on the same context so they never fight
+  // speech for the output: two sine tones, a few hundred milliseconds in all.
+  ZordonAudio.prototype.cue = function (kind) {
+    var ctx = this.ctx;
+    if (!ctx || ctx.state !== 'running' || !this.gain) return false;
+    var notes = kind === 'working' ? [[523, 0], [784, 0.11]] : kind === 'done' ? [[784, 0], [523, 0.11]] : [[659, 0]];
+    var t0 = ctx.currentTime + 0.01;
+    for (var i = 0; i < notes.length; i++) {
+      var osc = ctx.createOscillator();
+      var g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = notes[i][0];
+      g.gain.setValueAtTime(0.0001, t0 + notes[i][1]);
+      g.gain.exponentialRampToValueAtTime(0.12, t0 + notes[i][1] + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + notes[i][1] + 0.16);
+      osc.connect(g);
+      g.connect(this.gain);
+      osc.start(t0 + notes[i][1]);
+      osc.stop(t0 + notes[i][1] + 0.18);
+    }
+    return true;
+  };
+
   // Create or resume the AudioContext. Call from inside a user gesture; safe to
   // call again from any later gesture (recovers from 'suspended'/'interrupted').
   ZordonAudio.prototype.unlock = function () {

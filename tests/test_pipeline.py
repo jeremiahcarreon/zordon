@@ -702,13 +702,19 @@ def test_tool_result_blocks(make):
     assert h.tts.calls == ["tests passed", "that was denied"]
 
 
-def test_errors_are_spoken_at_minimal(make):
+def test_tool_failures_are_not_spoken_at_minimal(make):
+    """A failed tool call is the agent's to explain in its own words; at minimal the
+    listener hears nothing about it, with tool chatter they hear "that failed: ...".
+    Zordon's own errors (speak_now with ERROR) are unaffected."""
     h = make(verbosity="minimal")
-    h.line(
-        "Error: ENOENT: no such file", source="jsonl", block="tool_result", meta={"is_error": True}
-    )
+    h.line("Error: ENOENT: no such file", source="jsonl", block="tool_result", meta={"is_error": True})
+    h.turn_end()
+    time.sleep(0.4)
+    assert h.tts.calls == []
+    h.config.voice.tool_chatter = True
+    h.line("Error: ENOENT: no such file", source="jsonl", block="tool_result", meta={"is_error": True})
     assert h.wait_synth(1)
-    assert h.tts.calls == ["error: ENOENT: no such file"]
+    assert h.tts.calls == ["that failed: ENOENT: no such file"]
 
 
 def test_thinking_and_user_prompt_blocks_are_never_spoken(make):

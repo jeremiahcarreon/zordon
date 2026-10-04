@@ -398,10 +398,10 @@ class DispatcherThread(threading.Thread):
         if self._draft is None:
             self._speak("Nothing is waiting to be sent.", sid, "ack")
             return
-        if self._flush_draft():
-            self._speak("Sent.", sid, "ack")
-        else:
+        if not self._flush_draft():
             self._speak("I couldn't send that.", sid, "error")
+        # A successful send says nothing: the draft box clears and the agent starts working,
+        # and the page plays its "working" cue. "Sent." after every message was noise.
 
     def _cmd_scratch(self, argument: str | None, text: str, sid: str | None) -> None:
         d, self._draft = self._draft, None

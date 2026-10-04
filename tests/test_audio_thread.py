@@ -480,3 +480,34 @@ def _wait_until(pred: Callable[[], bool], timeout: float = 2.0) -> None:
             return
         time.sleep(0.002)
     raise AssertionError("condition not met in time")
+
+
+def test_partial_transcripts_while_still_talking():
+    """With partials on, the utterance so far is transcribed every interval and published as
+    a partial Heard; the final Heard follows at the end; a CPU recogniser gets none in auto."""
+    from zordon.bus import Heard
+    from zordon.config import Config
+
+    cfg = Config()
+    cfg.voice.partial_transcripts = "on"
+    cfg.voice.partial_interval_ms = 300
+    harness = Harness()
+    harness.thread.config = cfg
+    harness.start()
+    try:
+        harness.push_many(SPEECH, 60)  # 1.2 s of speech: at least one partial pass
+        heard = harness.collector.wait_for(lambda e: isinstance(e, Heard) and e.partial)
+        assert heard.text == "add retry logic to the upload handler" and harness.thread.partials_sent >= 1
+        harness.push_many(SILENCE, 40)
+        final = harness.collector.wait_for(lambda e: isinstance(e, Heard) and not e.partial)
+        assert final.text == heard.text
+        assert harness.stt.call_count >= 2
+    finally:
+        harness.stop()
+    # auto + a CPU recogniser: no partials (a pass costs most of a second there).
+    cfg.voice.partial_transcripts = "auto"
+    harness2 = Harness()
+    harness2.thread.config = cfg
+    assert not harness2.thread.partials_enabled()
+    harness2.stt.device = "cuda"
+    assert harness2.thread.partials_enabled()

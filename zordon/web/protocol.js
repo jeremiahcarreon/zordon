@@ -292,7 +292,7 @@
       );
     },
     heard: function (m) {
-      return isStr(m.text) && optional(m.confidence, isNum) && isNum(m.ts);
+      return isStr(m.text) && optional(m.confidence, isNum) && optional(m.partial, isBool) && isNum(m.ts);
     },
     draft: function (m) {
       return isStr(m.session_id) && isStr(m.text) && ['composing', 'sent', 'cleared'].indexOf(m.state) !== -1 && isNum(m.ts);

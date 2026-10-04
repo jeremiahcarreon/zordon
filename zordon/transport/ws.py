@@ -141,7 +141,7 @@ def to_outbound(event: Any) -> list[BaseModel | dict[str, Any]]:
     if isinstance(event, TranscriptRow):
         return [transcript_out(event)]
     if isinstance(event, Heard):
-        return [P.HeardOut(text=event.text, confidence=event.confidence, ts=event.ts)]
+        return [P.HeardOut(text=event.text, confidence=event.confidence, partial=event.partial, ts=event.ts)]
     if isinstance(event, Draft):
         return [P.DraftOut(session_id=event.session_id, text=event.text, state=event.state, ts=event.ts)]  # type: ignore[arg-type]
     if isinstance(event, Notice):
