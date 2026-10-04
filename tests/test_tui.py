@@ -131,7 +131,7 @@ async def test_setup_enter_all_the_way_takes_the_recommended_defaults(quiet_mach
         await pilot.pause()
         assert isinstance(app.screen, DoneScreen)
         card = str(app.screen.query_one(".summary-card", Static).render())
-        assert app.cfg.server.token in card and "zordon serve" in card
+        assert app.cfg.server.token in card and "zordon start" in card and "Start Zordon" in card
         await pilot.click("#exit")
     expected = wiz.recommend(detected(models_present=["a", "b", "c", "d"]))
     assert app.choices == expected

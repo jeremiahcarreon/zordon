@@ -429,7 +429,7 @@ def test_setup_summary_is_printed_after_the_tui_closes(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_setup_tui_or_none", lambda *a, **k: 0)
     assert cli.main(["setup"]) == 0
     out = capsys.readouterr().out
-    assert cfg.server.token in out and "Start with:  zordon serve" in out
+    assert cfg.server.token in out and "Start with:  zordon start" in out
 
 
 @pytest.mark.parametrize(
@@ -470,3 +470,33 @@ def test_root_check_is_skipped_for_inspection_commands_and_with_the_override(mon
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     monkeypatch.delenv("ZORDON_ALLOW_ROOT", raising=False)
     cli.refuse_root("serve")
+
+
+def test_setup_start_button_launches_detached_and_celebrates(monkeypatch, capsys):
+    """"Start Zordon" on the summary card: zordon start (with --tunnel when the user chose
+    the phone), then the page address, QR and token in the plain terminal."""
+    from types import SimpleNamespace
+
+    from zordon import cli, daemon, paths
+
+    cfg = Config.default()
+    cfg.save(paths.config_path())
+    launched: list[list[str]] = []
+    monkeypatch.setattr(cli, "want_tui", lambda args: True)
+    monkeypatch.setattr(daemon, "status", lambda: SimpleNamespace(running=False, pid=None))
+    monkeypatch.setattr(daemon, "start", lambda argv, **kw: launched.append(list(argv)) or SimpleNamespace(running=True, pid=4242))
+    monkeypatch.setattr(cli, "_wait_for_tunnel_url", lambda *, timeout_s: "https://brisk-fox-99.trycloudflare.com")
+    monkeypatch.setattr(cli, "run_setup_tui_or_none", lambda config_path, *, do_actions, serve=None: serve(["--tunnel"]))
+    assert cli.main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert launched == [["--tunnel"]]
+    assert "Great, everything is up and running. Have fun talking with Zordon!" in out
+    assert "https://brisk-fox-99.trycloudflare.com" in out and cfg.server.token in out and "pid 4242" in out
+    assert "Start with:" not in out  # the summary is for the Exit path only
+
+    # Local access: no tunnel, just the address.
+    launched.clear()
+    monkeypatch.setattr(cli, "run_setup_tui_or_none", lambda config_path, *, do_actions, serve=None: serve([]))
+    assert cli.main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert launched == [[]] and "Open:  http://127.0.0.1:8765" in out and "trycloudflare" not in out

@@ -14,8 +14,10 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 Which = Callable[[str], str | None]
 Runner = Callable[..., object]
@@ -279,6 +281,75 @@ def open_for_login(key: str, *, run: Runner = subprocess.run) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return getattr(res, "returncode", 1) == 0
+
+
+def claude_logged_in() -> bool:
+    """Credentials on disk or an API key in the environment (the adapter's own check)."""
+    try:
+        from zordon.agents.claude_code import ClaudeCodeAdapter  # noqa: PLC0415
+
+        return bool(ClaudeCodeAdapter(None).logged_in())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+LOGIN_SETTLE_S = 2.0  # time to let "Login successful" show before the agent is closed
+LOGIN_POLL_S = 0.5
+
+
+def login_and_wait(
+    key: str,
+    *,
+    logged_in: Callable[[], bool] | None = None,
+    popen: Callable[..., Any] = subprocess.Popen,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout_s: float = 600.0,
+) -> bool:
+    """Open the agent in the user's terminal for its sign-in, watch for the credentials,
+    and close it by itself once they appear (so the user is brought straight back to
+    setup instead of having to find the exit key while the agent holds the keyboard).
+
+    Returns True when signed in afterwards: either the watcher saw it or the user
+    exited the agent on their own after signing in. A user who exits without signing
+    in gets False and can do it later.
+    """
+    cmd = login_command(key)
+    if not cmd or not shutil.which(cmd[0]):
+        return False
+    check = logged_in or (claude_logged_in if key == "claude-code" else (lambda: False))
+    if check():
+        return True
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE_"))}
+    try:
+        proc = popen(cmd, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    waited = 0.0
+    while proc.poll() is None and waited < timeout_s:
+        if check():
+            sleep(LOGIN_SETTLE_S)
+            _close(proc, sleep)
+            return True
+        sleep(LOGIN_POLL_S)
+        waited += LOGIN_POLL_S
+    if proc.poll() is None:
+        _close(proc, sleep)
+    return check()
+
+
+def _close(proc: Any, sleep: Callable[[float], None]) -> None:
+    try:
+        proc.terminate()
+    except OSError:
+        return
+    for _ in range(6):
+        if proc.poll() is not None:
+            return
+        sleep(0.5)
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def is_tty() -> bool:

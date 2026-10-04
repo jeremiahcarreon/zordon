@@ -311,12 +311,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
     do_actions = not getattr(args, "no_download", False)
     if want_tui(args):
 
-        def serve_now(extra: list[str]) -> int:
-            return main(["serve", *(["--config", str(config_path)] if config_path else []), "--no-setup", *extra])
+        started = {"ok": False}
 
-        code = run_setup_tui_or_none(config_path, do_actions=do_actions, serve=serve_now)
+        def start_now(extra: list[str]) -> int:
+            # "Start Zordon" on the summary card: detached, with the tunnel when the user
+            # chose phone access, then the page address (and QR) in the terminal.
+            code = start_after_setup(config_path, extra)
+            started["ok"] = code == EXIT_OK
+            return code
+
+        code = run_setup_tui_or_none(config_path, do_actions=do_actions, serve=start_now)
         if code is not None:
-            print_setup_summary(config_path)
+            if not started["ok"]:
+                print_setup_summary(config_path)
             return code
     try:
         _cfg, _choices, problems = wizard.run(config_path, assume_yes=bool(getattr(args, "yes", False)), do_actions=do_actions)
@@ -556,6 +563,48 @@ def cmd_update(args: argparse.Namespace) -> int:
     ok, msg = upd.apply(channel)
     print(msg)
     return EXIT_OK if ok else EXIT_MISSING
+
+
+def start_after_setup(config_path: Path | None, extra: list[str]) -> int:
+    """Launch ``zordon start`` detached once setup is done and print where to go.
+
+    With ``--tunnel`` among ``extra`` (the user chose phone access) the public URL and
+    its QR code are shown together with the token; otherwise the local address.
+    """
+    from zordon import daemon  # noqa: PLC0415
+    from zordon.setup import path_hint  # noqa: PLC0415
+
+    cfg, _ = load_or_create(config_path)
+    argv = list(extra) + (["--config", str(config_path)] if config_path else [])
+    try:
+        if daemon.status().running:
+            daemon.stop()
+        st = daemon.start(argv)
+    except RuntimeError as e:
+        print(f"\nZordon did not start: {e}\nTry: zordon start{' ' + ' '.join(extra) if extra else ''}", file=sys.stderr)
+        return EXIT_ERROR
+    tunnel = "--tunnel" in extra
+    print("\nGreat, everything is up and running. Have fun talking with Zordon!\n")
+    local = f"http://{display_host(cfg.server.bind)}:{cfg.server.port}"
+    if tunnel:
+        url = _wait_for_tunnel_url(timeout_s=60.0)
+        if url:
+            from zordon.transport.qr import terminal_qr  # noqa: PLC0415
+
+            print(terminal_qr(url))
+            print(f"  On your phone:  {url}")
+        else:
+            print("  The tunnel is still connecting; `zordon status --qr` shows the address once it is up.")
+        print(f"  On this machine: {local}")
+    else:
+        print(f"  Open:  {local}")
+    print(f"  Token: {cfg.server.token}   (zordon token show prints it again)")
+    print(f"\n  Running in the background (pid {st.pid}). zordon status · zordon logs -f · zordon stop")
+    hint = path_hint()
+    if hint:
+        print("\n  " + hint)
+    print()
+    return EXIT_OK
 
 
 def print_setup_summary(config_path: Path | None) -> None:

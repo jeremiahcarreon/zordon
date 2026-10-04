@@ -341,3 +341,49 @@ def test_login_is_a_prerequisite_step_when_claude_is_installed_but_signed_out():
     assert env2.get("claude-login").present == "yes" and prereqs.plan_steps(env2) == []
     env3 = fake_env({"claude"}, logged_in=False)
     assert env3.get("claude-login").present == "n/a"  # no binary: the install step comes first
+
+
+def test_login_and_wait_closes_the_agent_once_signed_in(monkeypatch):
+    """The sign-in opens the agent and watches for credentials; once they appear the agent is
+    closed so setup resumes without the user hunting for the exit key."""
+    monkeypatch.setattr(prereqs.shutil, "which", lambda n: f"/usr/bin/{n}")
+    state = {"signed": False, "ticks": 0}
+
+    class Proc:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return 0 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    procs: list[Proc] = []
+
+    def popen(cmd, env=None):
+        assert cmd == ["claude"] and not any(k.startswith("CLAUDE_CODE_") for k in env)
+        procs.append(Proc())
+        return procs[-1]
+
+    def sleep(s):
+        state["ticks"] += 1
+        if state["ticks"] == 3:
+            state["signed"] = True  # the user finished the browser sign-in
+
+    assert prereqs.login_and_wait("claude-code", logged_in=lambda: state["signed"], popen=popen, sleep=sleep)
+    assert procs[0].terminated and not procs[0].killed
+
+    # The user exits the agent without signing in: False, nothing to close.
+    class Gone(Proc):
+        def poll(self):
+            return 1
+
+    procs.clear()
+    assert not prereqs.login_and_wait("claude-code", logged_in=lambda: False, popen=lambda cmd, env=None: Gone(), sleep=lambda s: None)
+    # Already signed in: nothing is opened.
+    assert prereqs.login_and_wait("claude-code", logged_in=lambda: True, popen=lambda *a, **k: (_ for _ in ()).throw(AssertionError("opened")))

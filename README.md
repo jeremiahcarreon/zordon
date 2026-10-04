@@ -163,7 +163,12 @@ installed outside its environment is a checkbox each.
 
 ### After setup
 
-1. Open `http://127.0.0.1:8765`, paste the token. You land on **Projects**. Tap **Start a new
+Setup ends with a **Start Zordon** button: it starts Zordon in the background (with the phone
+tunnel when you chose phone access) and prints the address, the QR code and the token in the
+terminal. The sign-in step for Claude Code opens it in the terminal and closes it by itself
+once you are signed in.
+
+1. Open `http://127.0.0.1:8765` (or scan the code), paste the token. You land on **Projects**. Tap **Start a new
    project**: pick a folder inside your home directory (or make one), choose how much the
    agent should ask, tap Start. Next time, **Continue a previous project** brings it back.
 2. A brand-new folder shows Claude Code's trust dialog. Its highlighted default is "No, exit",

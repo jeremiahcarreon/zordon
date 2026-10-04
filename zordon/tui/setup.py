@@ -880,14 +880,24 @@ class PrereqScreen(WizardScreen):
         def answer(yes: bool) -> None:
             if yes:
                 with self.app.suspend():
-                    print(f"\n  ◆ Opening {label} so you can log in. Exit it when done.\n", flush=True)
-                    prereqs.open_for_login(agent_key, run=subprocess.run)
+                    print(f"\n  ◆ Opening {label} so you can sign in. It closes by itself once you are signed in,", flush=True)
+                    print("    and setup continues here. (Exit it yourself to skip for now.)\n", flush=True)
+                    signed = prereqs.login_and_wait(agent_key)
                 if p.key == "claude-login":
-                    row.set_state("done", "signed in")
+                    if signed:
+                        row.set_state("done", "signed in")
+                        self.query_one(LogPanel).write("✓ Claude Code is signed in", style=GREEN)
+                    else:
+                        row.set_state("failed", "not signed in yet; run `claude` in a terminal later")
             self.query_one("#next", Button).focus()
 
         self.app.push_screen(
-            Confirm(f"Log in to {label} now?", f"{label} is installed. It opens in this terminal; exit it when you are done and setup resumes.", yes="Open it", no="Later"),
+            Confirm(
+                f"Sign in to {label} now?",
+                f"{label} is installed. It opens in this terminal for the sign-in and closes by itself once you are signed in; setup then continues.",
+                yes="Open it",
+                no="Later",
+            ),
             answer,
         )
 
@@ -1029,11 +1039,12 @@ class DoneScreen(WizardScreen):
                 card.append("Your session token is:  ", style="bold")
                 card.append(cfg.server.token or "", style=f"bold {BLUE}")
             elif line.startswith("Start with:"):
-                card.append("Start with:  ", style="bold")
+                card.append("Start Zordon below, or later with:  ", style="bold")
                 card.append(line.split(":", 1)[1].strip(), style=BLUE)
             else:
                 card.append(line, style="" if line else DIM)
             card.append("\n")
+        card.append("\nStart Zordon runs it in the background" + (" with the phone tunnel" if c.access == "tunnel" else "") + " and shows where to open it.", style=DIM)
         yield Static(card, classes="summary-card")
         still = app.still_missing + app.problems
         if still:
@@ -1041,7 +1052,7 @@ class DoneScreen(WizardScreen):
 
     def buttons(self) -> ComposeResult:
         yield Button("Exit", id="exit")
-        yield Button("Start zordon serve now", id="serve", variant="success")
+        yield Button("Start Zordon", id="serve", variant="success")
 
     def on_mount(self) -> None:
         self.query_one("#serve", Button).focus()
@@ -1069,9 +1080,9 @@ def run_setup_tui(
 ) -> int:
     """Run the full-screen setup. Returns an exit code.
 
-    ``serve`` is called (after the terminal is restored) with the extra ``zordon serve``
-    arguments when the user presses "Start zordon serve now"; without it that choice
-    returns :data:`SERVE_REQUESTED`. Raises :class:`TuiUnavailable` when the app could
+    ``serve`` is called (after the terminal is restored) with the extra serve/start
+    arguments (``--tunnel`` or ``--bind tailscale``) when the user presses "Start
+    Zordon"; without it that choice returns :data:`SERVE_REQUESTED`. Raises :class:`TuiUnavailable` when the app could
     not start, so the caller can fall back to the plain wizard.
     """
     if os.environ.get("TERM", "") in ("", "dumb"):

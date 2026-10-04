@@ -394,8 +394,11 @@ def prerequisites(
         elif p is not None:
             still.append(f"{p.label}: {p.command}" + (f"; then {p.after}" if p.after else ""))
     for p in missing:
-        if p.present and prereqs.login_command(p.key) and _yes(ask, f"Open {p.label} now to log in (exit it when done)?", default=True):
-            prereqs.open_for_login(p.key, run=runner)
+        if p.present and prereqs.login_command(p.key) and _yes(ask, f"Open {p.label} now to sign in (it closes by itself once you are signed in)?", default=True):
+            if runner is not subprocess.run:
+                prereqs.open_for_login(p.key, run=runner)  # tests: a fake runner, no process to watch
+            elif not prereqs.login_and_wait(p.key):
+                still.append(f"{p.label}: not signed in yet; run `{prereqs.login_command(p.key)[0]}` once in a terminal")
     return still
 
 
@@ -501,7 +504,7 @@ def ensure_ollama_server(url: str, binary: str, out: TextIO, *, wait_s: float = 
 
 
 def next_steps(c: Choices, cfg: Config) -> str:
-    cmd = "zordon serve"
+    cmd = "zordon start"
     if c.access == "tunnel":
         cmd += " --tunnel"
     elif c.access == "tailscale":
