@@ -453,6 +453,7 @@ def test_root_is_refused_for_commands_that_start_zordon(argv, monkeypatch: pytes
     assert cli.main(argv) == 1
     err = capsys.readouterr().err
     assert "not as root" in err and "useradd" in err and "su - <name>" in err and "ZORDON_ALLOW_ROOT" in err
+    assert "usermod -aG sudo" in err and "not in the sudoers file" in err  # the user must be able to sudo
 
 
 def test_root_check_is_skipped_for_inspection_commands_and_with_the_override(monkeypatch: pytest.MonkeyPatch, capsys):

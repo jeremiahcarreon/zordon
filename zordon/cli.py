@@ -57,13 +57,19 @@ ROOT_REFUSAL = """zordon {command}: not as root.
 Zordon drives a coding agent with the permissions of the account it runs under,
 so as root every project could change anything on this machine. Claude Code
 itself refuses to run in bypass-permissions mode as root. Create a normal user
-and continue there:
+that can use sudo (the setup wizard installs tmux, Node and the agent with it)
+and continue there. As root:
 
-  sudo useradd -m -s /bin/bash <name>   # or: adduser <name>
-  sudo usermod -aG sudo <name>          # wheel on Fedora/Arch
-  sudo passwd <name>
-  su - <name>
+  useradd -m -s /bin/bash <name>        # or: adduser <name>
+  usermod -aG sudo <name>               # the sudo group; "wheel" on Fedora/Arch
+  passwd <name>                         # sudo asks for this password later
+  su - <name>                           # a fresh login so the group applies
   curl -fsSL https://raw.githubusercontent.com/jeremiahcarreon/zordon/main/install.sh | sh
+
+Already have the user but sudo says "not in the sudoers file"? As root:
+usermod -aG sudo <name>, then log in again (su - <name>). For a container
+where no password prompt is wanted at all:
+echo '<name> ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/<name>; chmod 0440 /etc/sudoers.d/<name>
 
 (Set ZORDON_ALLOW_ROOT=1 to override; not recommended.)"""
 

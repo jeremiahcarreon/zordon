@@ -51,7 +51,7 @@ LABELS = {
 
 # Fix wording shared with ``zordon doctor`` so the strip and the CLI agree.
 FIX_DOWNLOAD = "zordon doctor --download"
-FIX_ROOT = "create a normal user and run Zordon there: sudo useradd -m -s /bin/bash <name>; sudo usermod -aG sudo <name>; sudo passwd <name>; su - <name>"
+FIX_ROOT = "create a normal user with sudo and run Zordon there: useradd -m -s /bin/bash <name>; usermod -aG sudo <name>; passwd <name>; su - <name>"
 FIX_TMUX = "install tmux 3.2 or newer (or run `zordon setup`)"
 FIX_CLAUDE = "install Claude Code and log in (or run `zordon setup`)"
 FIX_CURL = "install curl (or run `zordon setup`)"

@@ -66,6 +66,9 @@ line there, then open `http://localhost:8765` from your Windows browser (WSL2 fo
 microphone works because the browser is on Windows). Native PowerShell support would need a
 different pane backend and is not planned for the MVP.
 
+**A normal user account with `sudo`.** Zordon will not run as root (see Install). The account
+needs `sudo` only during setup, to install the system pieces below; serving needs none.
+
 Zordon assumes nothing else about your machine. The setup wizard checks each item below, shows
 the exact install command for your package manager (apt, dnf, pacman, zypper, apk or brew),
 runs it only when you say yes (sudo prompts as usual), and offers to open the agent for its
@@ -95,11 +98,26 @@ The script is short and worth reading first. It installs [uv](https://docs.astra
 `~/.local/bin` (no sudo; a pinned uv release whose installer is checksum-verified before it runs), lets uv fetch a managed Python 3.12 if the system has none, installs
 zordon as an isolated tool, and starts the guided setup. Nothing else happens without a yes.
 
-Run it as a normal user. If you run it as root (a fresh container, say), it stops, creates a
-user for you (it asks for the name, default `zordon`), gives that user `sudo`, asks for a
-password, and continues the install as them. Zordon refuses to serve as root: it drives a
-coding agent with the power of the account it runs under, and Claude Code itself will not skip
-permission checks for root.
+Run it as a normal user **that can use `sudo`**: the setup wizard installs tmux, Node.js, the
+agent and Ollama through it and asks for your password once. If you run the installer as root
+(a fresh container, say), it stops, creates such a user for you (it asks for the name, default
+`zordon`), adds it to the `sudo` group, asks for a password, and continues the install as
+them. Zordon refuses to serve as root: it drives a coding agent with the power of the account
+it runs under, and Claude Code itself will not skip permission checks for root.
+
+Making the user yourself instead? As root:
+
+```bash
+useradd -m -s /bin/bash jeremiahc      # or: adduser jeremiahc
+usermod -aG sudo jeremiahc             # "wheel" instead of "sudo" on Fedora/Arch
+passwd jeremiahc                       # sudo asks for this during setup
+su - jeremiahc                         # a fresh login, so the group applies
+```
+
+If `sudo` answers "jeremiahc is not in the sudoers file", the `usermod` step was skipped or the
+shell predates it: run it as root and log in again. For a throwaway container you can skip the
+password prompt entirely with
+`echo 'jeremiahc ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/jeremiahc && chmod 0440 /etc/sudoers.d/jeremiahc`.
 Already have Python 3.12+ and pipx? This works too:
 
 ```bash
