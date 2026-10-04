@@ -115,6 +115,7 @@ PANE_HEIGHT = 45
 COMMAND_TIMEOUT = 3.0
 ECHO_TIMEOUT = 1.5  # seconds for the screen to change after send_text
 SUBMIT_CHECK_S = 1.2  # seconds for a sent message to leave the input box before Enter is pressed again
+SUBMIT_SETTLE_S = 0.8  # how long the TUI may take to draw the keystrokes at all
 SUBMIT_HEAD_CHARS = 40
 HOOK_DIALOG_GRACE_S = 4.0  # the screen's copy of a hook-decided request is ignored this long
 REGISTRY_INTERVAL = 1.0  # seconds between registry status reads per session
@@ -283,6 +284,8 @@ class Session:
     submit_text: str | None = None
     submit_deadline: float | None = None
     submit_retried: bool = False
+    submit_seen: bool = False  # the box was seen holding the text (the TUI can lag the keystrokes)
+    submit_started: float = 0.0
     # After a hook decision: the request's gist and until when the screen's copy of it is ignored.
     hook_done_gist: str | None = None
     hook_done_until: float = 0.0
@@ -1481,18 +1484,27 @@ class SessionManager(threading.Thread):
         resume. Seen live: the message sat in the box and nothing happened.
         """
         s.submit_text = text.strip()[:SUBMIT_HEAD_CHARS]
-        s.submit_deadline = self.clock() + SUBMIT_CHECK_S
+        s.submit_started = self.clock()
+        s.submit_deadline = s.submit_started + SUBMIT_CHECK_S
         s.submit_retried = False
+        s.submit_seen = False
 
     def _check_submitted(self, s: Session, screen: Screen, now: float) -> None:
         if s.submit_deadline is None or not s.submit_text:
             return
         box = screen.input_box
         still_there = box is not None and (box.text or "").strip().startswith(s.submit_text[: min(len(s.submit_text), 24)])
-        if not still_there:
+        if still_there:
+            s.submit_seen = True
+        elif s.submit_seen or now - s.submit_started >= SUBMIT_SETTLE_S:
+            # Gone from the box after we saw it there, or never shown within the settle time
+            # (Claude Code took it straight away): submitted.
+            log.debug("%s: message left the input box (box=%r)", s.session_id[:8], (box.text[:30] if box else None))
             s.submit_text = None
             s.submit_deadline = None
             return
+        else:
+            return  # the TUI has not drawn the keystrokes yet; keep watching
         if now < s.submit_deadline:
             return
         if not s.submit_retried:

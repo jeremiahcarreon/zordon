@@ -381,3 +381,16 @@ def test_enter_is_pressed_again_when_the_message_stays_in_the_box(env):
     clock.advance(2.0)
     mgr._poll_session(s)
     assert len(enters()) == 4 and s.submit_deadline is None
+    # The TUI lags: the first poll still shows the old screen, the text appears later and
+    # stays. Watching continues through the lag, and Enter is pressed again.
+    mgr.send_text(sid, "third message here")
+    mgr._poll_session(s)  # old screen, 0 s later: not a verdict yet
+    assert s.submit_deadline is not None and not s.submit_seen
+    box3 = [ln[:2] + "third message here" if ln.startswith("❯") else ln for ln in idle]
+    clock.advance(0.5)
+    tmux.set_screen(target, box3, alt=True)
+    mgr._poll_session(s)
+    assert s.submit_seen
+    clock.advance(1.5)
+    mgr._poll_session(s)
+    assert len(enters()) == 6 and s.submit_retried

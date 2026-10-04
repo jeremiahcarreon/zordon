@@ -1,3 +1,3 @@
 """Zordon: a full-duplex voice interface for a Claude Code session running in tmux."""
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
