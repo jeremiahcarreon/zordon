@@ -312,7 +312,6 @@ def test_headless_process_ends_with_the_server_and_orphans_are_terminated(headle
     """Seen live: zordon restart left the claude -p process running, and opening the project
     resumed the same conversation in a second process. The pid is recorded on the project,
     stop() closes the process, and a relaunch or a fresh server terminates a leftover first."""
-    import os
 
     mgr, bus, proj = headless_env
     row = mgr.create_project(str(proj.parent), "orphan", runner="headless", talk_first=False)
