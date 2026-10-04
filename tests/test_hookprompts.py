@@ -188,6 +188,17 @@ def test_deny_question_and_plan_through_the_hook(env):
     assert s.plan_text is None  # handed over once
 
 
+def test_file_prompt_gist_matches_screen_and_hook():
+    from zordon.session.manager import _prompt_gist
+
+    hook = H.build(dict(BASH, tool_name="Write", tool_input={"file_path": "/home/u/proj/hello.txt", "content": "hi"}))
+    assert hook.match.target_file == "/home/u/proj/hello.txt"
+    from zordon.session.prompts import PromptMatch, PromptOption
+
+    screen = PromptMatch(PromptKind.PERMISSION, "Create file hello.txt", "Do you want to create hello.txt?", [PromptOption(1, "Yes")], [], 1.0, target_file="hello.txt")
+    assert _prompt_gist(hook.match) == _prompt_gist(screen) == "hello.txt"
+
+
 def test_two_questions_are_asked_one_at_a_time(env):
     mgr, bus, tmux, clock, proj = env
     sid, target = started(env)

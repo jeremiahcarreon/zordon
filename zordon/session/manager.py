@@ -148,7 +148,12 @@ def no_tui_text(agent_name: str) -> str:
 def _prompt_gist(m: PromptMatch) -> str:
     """What a permission or question is about, loosely: enough to recognise the same request
     whether it came through the hook or was read off the screen."""
-    core = m.command or m.target_file or m.question or m.title or ""
+    if m.command:
+        core = m.command
+    elif m.target_file:
+        core = os.path.basename(m.target_file.rstrip("/"))  # the screen shows the bare name, the hook the full path
+    else:
+        core = m.question or m.title or ""
     return " ".join(core.split()).lower()[:60]
 
 
