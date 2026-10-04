@@ -44,8 +44,15 @@ def _generic(config: Any) -> AgentAdapter:
     return BaseAdapter(config)
 
 
+def _headless(config: Any) -> AgentAdapter:
+    from zordon.agents.headless import HeadlessAdapter  # noqa: PLC0415
+
+    return HeadlessAdapter(config)
+
+
 ADAPTERS: dict[str, Callable[[Any], AgentAdapter]] = {
     "claude-code": _claude,
+    "claude-headless": _headless,
     "codex": _codex,
     "generic": _generic,
 }
@@ -53,7 +60,7 @@ ADAPTERS: dict[str, Callable[[Any], AgentAdapter]] = {
 DEFAULT_AGENT = "claude-code"
 
 # Binary names, so availability can be answered even when an adapter module is absent.
-BINARIES: dict[str, str] = {"claude-code": "claude", "codex": "codex", "generic": ""}
+BINARIES: dict[str, str] = {"claude-code": "claude", "claude-headless": "claude", "codex": "codex", "generic": ""}
 
 
 def get_adapter(key: str | None, config: Any | None = None) -> AgentAdapter:

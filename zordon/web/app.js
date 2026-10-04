@@ -1195,7 +1195,7 @@
   // client refuses to offer is never rendered as a choice). An empty `current` with
   // `otherLabel` shows a disabled "unknown" placeholder instead of a misleading default.
   // Adapter keys as shown to people. Unknown keys fall back to the key itself.
-  var AGENT_LABELS = { 'claude-code': 'Claude Code', codex: 'Codex', generic: 'Generic pane' };
+  var AGENT_LABELS = { 'claude-code': 'Claude Code', 'claude-headless': 'Claude Code (headless)', codex: 'Codex', generic: 'Generic pane' };
 
   function agentLabel(key) {
     return AGENT_LABELS[key] || key;
@@ -1450,8 +1450,9 @@
   function installedAgents() {
     // Assistants a project can be *started* with. The generic adapter only attaches to a
     // pane somebody else started, so it is not a choice here (it stays under Advanced).
+    // The headless runner is a way of running Claude Code, chosen by the switch, not an assistant.
     return agentKeys().filter(function (k) {
-      return k !== 'generic' && S.agents[k] !== false;
+      return k !== 'generic' && k !== 'claude-headless' && S.agents[k] !== false;
     });
   }
 
@@ -1470,11 +1471,13 @@
     np.mode = 'default';
     np.scope = true;
     np.talk = true;
+    np.headless = false;
     np.pending = null;
     np.listing = null;
     $('np-folder-name').value = '';
     $('np-scope').checked = true;
     $('np-talk').checked = true;
+    $('np-headless').checked = false;
     npError('');
     closeSheets();
     show($('new-project'), true);
@@ -1593,7 +1596,7 @@
       npSetStep('where');
       return;
     }
-    var args = { parent: np.folder.parent, name: np.folder.name || np.name, permission_mode: np.mode, scope_edits: !!np.scope, talk_first: np.talk !== false };
+    var args = { parent: np.folder.parent, name: np.folder.name || np.name, permission_mode: np.mode, scope_edits: !!np.scope, talk_first: np.talk !== false, runner: np.headless ? 'headless' : 'terminal' };
     if (np.folder.existing) args.existing = true;
     if (np.agent && np.agent !== S.defaultAgent) args.agent = np.agent;
     np.pending = 'create_project';
@@ -1724,6 +1727,10 @@
     show($('np-bypass-warn'), S.np.mode === 'bypassPermissions');
     $('np-scope').checked = !!S.np.scope;
     $('np-talk').checked = S.np.talk !== false;
+    $('np-headless').checked = !!S.np.headless;
+    var canHeadless = (S.np.agent || S.defaultAgent) === 'claude-code';
+    $('np-headless').disabled = !canHeadless;
+    if (!canHeadless) S.np.headless = false;
   }
 
   function renderNpSummary() {
@@ -1741,6 +1748,7 @@
     row('Permissions', m ? m.label : modeWord(np.mode));
     row('File edits', np.scope ? 'kept inside the folder' : 'anywhere the agent is allowed');
     row('Before acting', np.talk !== false ? 'asks and says its plan first' : 'gets to work');
+    row('Runs', np.headless ? 'headless, no terminal' : 'in a terminal pane');
   }
 
   // ---- composer, uploads --------------------------------------------------------------------------
@@ -1965,6 +1973,9 @@
     });
     $('np-talk').addEventListener('change', function (e) {
       S.np.talk = !!e.target.checked;
+    });
+    $('np-headless').addEventListener('change', function (e) {
+      S.np.headless = !!e.target.checked;
     });
     $('btn-settings').addEventListener('click', function () {
       openSheet('settings');

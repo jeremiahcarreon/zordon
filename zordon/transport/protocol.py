@@ -198,6 +198,7 @@ class ProjectSummary(_Strict):
     permission_mode: str = "default"
     scope_edits: bool = True
     talk_first: bool = True
+    runner: str = "terminal"  # terminal | headless (decision 0020)
     running: bool = False
     session_id: str | None = None
     focused: bool = False

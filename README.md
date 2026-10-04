@@ -302,6 +302,12 @@ straight to the voice without the rewriter in between. A project with **Talk it 
 (the default) also starts in plan mode when it asks before acting: Claude cannot change anything
 until you approve its plan, and "go ahead" is the approval.
 
+**Terminal or headless, per project.** By default a project runs Claude Code in a tmux pane you
+can look at. Choose **Run without a terminal (headless)** when starting a project and it runs
+`claude -p` over a JSON stream instead: no screen, no trust dialog, nothing to scrape, and every
+permission or question comes to Zordon through its own MCP permission tool. The page's
+transcript is the whole view. Details in `docs/headless.md`.
+
 **Prompts come through Claude Code's own hook, not the screen.** When Claude Code wants permission,
 asks a question, or has a plan ready, it tells Zordon directly (its `PermissionRequest` hook) with
 the exact command description, every option, or the plan text, and waits. You hear it in full and

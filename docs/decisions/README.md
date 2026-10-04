@@ -24,6 +24,7 @@ and what it leaves open.
 | [0015](0015-curl-installer.md) | `curl ... install.sh | sh` installs uv, a managed Python and zordon with no sudo, then runs the wizard; Windows via WSL2 only | Install path |
 | [0017](0017-updates-and-health.md) | serve checks the tracked channel and auto-installs updates through uv/pipx, telling terminal and clients to restart; a runtime health strip with fixes per component | Operations |
 | [0016](0016-setup-tui.md) | `zordon setup` and `zordon uninstall` open a full-screen Textual UI on a terminal; the plain wizards stay as the fallback and the only logic | Install path |
+| [0020](0020-headless-runner.md) | A per-project runner: the tmux pane (default) or headless `claude -p` over stream-json with Zordon's MCP permission tool answering prompts; no screen, no terminal races | Voice loop |
 | [0019](0019-conversation-not-terminal.md) | The PermissionRequest hook owns permissions, questions and plan approval (the user's answer is the decision); deferred submit; Claude shaped for voice with a system prompt; headless next | Voice loop |
 | [0018](0018-projects-and-user-account.md) | Projects (folder + how the agent runs there) replace sessions in the client; admin mode; bypass permissions only as a per-project launch choice, with scoped file edits; never run as root, the installer creates a user | UX, permission safety |
 

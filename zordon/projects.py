@@ -31,6 +31,7 @@ from zordon import paths
 
 BYPASS_MODE = "bypassPermissions"  # the one spelling; see discovery.BYPASS_MODE and decision 0018
 LAUNCH_MODES_WITH_BYPASS: tuple[str, ...] = ("default", "acceptEdits", "plan", "auto", "dontAsk", BYPASS_MODE)
+RUNNERS: tuple[str, ...] = ("terminal", "headless")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$")
 HIDDEN_PREFIX = "."
 
@@ -48,6 +49,7 @@ class Project:
     permission_mode: str = "default"
     scope_edits: bool = True
     talk_first: bool = True  # ask questions and state a plan before changing anything (decision 0019)
+    runner: str = "terminal"  # terminal (a tmux pane you can look at) | headless (claude -p, decision 0020)
     session_id: str | None = None  # the agent's last session in this project (resumes it)
     tmux_target: str | None = None  # where it last ran; reconnected when still alive
     created_at: float = field(default_factory=time.time)
@@ -190,9 +192,12 @@ def new_project(
     permission_mode: str = "default",
     scope_edits: bool = True,
     talk_first: bool = True,
+    runner: str = "terminal",
 ) -> Project:
     if permission_mode not in LAUNCH_MODES_WITH_BYPASS:
         raise ProjectError(f"permission mode {permission_mode!r} is not one of {LAUNCH_MODES_WITH_BYPASS}")
+    if runner not in RUNNERS:
+        raise ProjectError(f"runner {runner!r} is not one of {RUNNERS}")
     directory = _norm(directory)
     return Project(
         id=str(uuid.uuid4()),
@@ -202,6 +207,7 @@ def new_project(
         permission_mode=permission_mode,
         scope_edits=bool(scope_edits),
         talk_first=bool(talk_first),
+        runner=runner,
     )
 
 

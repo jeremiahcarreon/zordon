@@ -226,7 +226,7 @@ def test_generic_adapter_surface(adapter: BaseAdapter, tmp_path):
 
 
 def test_registry_and_availability():
-    assert set(agents.ADAPTERS) == {"claude-code", "codex", "generic"}
+    assert set(agents.ADAPTERS) == {"claude-code", "claude-headless", "codex", "generic"}
     assert agents.DEFAULT_AGENT == "claude-code"
     assert isinstance(agents.get_adapter("generic"), BaseAdapter)
     assert isinstance(agents.get_adapter(" Generic "), BaseAdapter)

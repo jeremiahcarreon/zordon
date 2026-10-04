@@ -295,6 +295,7 @@ class Session:
     # After a hook decision: the request's gist and until when the screen's copy of it is ignored.
     hook_done_gist: str | None = None
     hook_done_until: float = 0.0
+    headless: Any | None = None  # agents.headless.HeadlessSession when the agent runs without a pane (decision 0020)
 
     @property
     def jsonl(self) -> TranscriptSource | None:
@@ -476,6 +477,9 @@ class SessionManager(threading.Thread):
     def _poll_session(self, s: Session) -> None:
         now = self.clock()
         sid = s.session_id
+        if s.headless is not None:
+            self._poll_headless(s, now)
+            return
         if not self.tmux.pane_exists(s.target):
             self._apply(s, Observation(False, None, False, False, False, 0.0), now, None)
             return
@@ -1322,7 +1326,10 @@ class SessionManager(threading.Thread):
             events = self._clear_prompt(s)
             s.attached = False
             s.state = SessionState.DETACHED
-            s.detail = "detached; the pane keeps running"
+            s.detail = "detached; the pane keeps running" if s.headless is None else "closed; open the project to resume"
+            if s.headless is not None:
+                s.headless.close()
+                s.headless = None
             s.exit_polls = 0
             if self._focused == session_id:
                 self._set_focus(self._next_focus(exclude=session_id), auto=True)
@@ -1342,11 +1349,15 @@ class SessionManager(threading.Thread):
             del self.sessions[session_id]
             if self._focused == session_id:
                 self._set_focus(self._next_focus(exclude=session_id), auto=True)
-        try:
-            if self.tmux.pane_exists(s.target):
-                self.tmux.kill_window(s.target)
-        except TmuxError as e:
-            log.warning("could not kill pane %s: %s", s.target, e)
+        if s.headless is not None:
+            s.headless.close()
+            s.headless = None
+        else:
+            try:
+                if self.tmux.pane_exists(s.target):
+                    self.tmux.kill_window(s.target)
+            except TmuxError as e:
+                log.warning("could not kill pane %s: %s", s.target, e)
         self._remove_settings(s)
         for ev in events:
             self.bus.publish(ev)
@@ -1433,6 +1444,10 @@ class SessionManager(threading.Thread):
         a command. A plain-screen agent is checked with ``adapter.exited`` on a
         fresh capture instead.
         """
+        if s.headless is not None:
+            if s.headless.alive:
+                return
+            raise SessionError(f"{s.display_name} is not running; open the project again.")
         if not s.adapter.uses_alternate_screen():
             try:
                 screen = s.adapter.parse(self.tmux.capture(s.target))
@@ -1474,6 +1489,9 @@ class SessionManager(threading.Thread):
             )
             return
         self._require_tui(s)
+        if s.headless is not None:
+            self._headless_send(s, clean)
+            return
         screen = s.prev_screen
         s.echo_signature = _signature(screen) if screen is not None else None
         s.echo_deadline = self.clock() + ECHO_TIMEOUT
@@ -1481,6 +1499,22 @@ class SessionManager(threading.Thread):
         self.tmux.send_enter(s.target)
         self._expect_submitted(s, clean)
         log.debug("%s: sent %d characters", session_id[:8], len(clean))
+
+    def _headless_send(self, s: Session, text: str) -> None:
+        assert s.headless is not None
+        try:
+            s.headless.send(text)
+        except (OSError, RuntimeError) as e:
+            raise SessionError(f"could not send to {s.display_name}: {e}") from e
+        with self._lock:
+            s.composing = False
+            s.composed_text = ""
+            s.state = SessionState.WORKING
+            s.detail = "producing output"
+            s.last_output_ts = self.clock()
+            s.last_active = time.time()
+        self.bus.publish(StateChanged(s.session_id, SessionState.WORKING, s.detail))
+        log.debug("%s: sent %d characters (headless)", s.session_id[:8], len(text))
 
     def _expect_submitted(self, s: Session, text: str) -> None:
         """Watch for the text leaving the input box; press Enter once more if it does not.
@@ -1538,7 +1572,8 @@ class SessionManager(threading.Thread):
         if not clean:
             return
         self._require_tui(s)
-        self.tmux.send_literal(s.target, (" " if s.composing else "") + clean)
+        if s.headless is None:
+            self.tmux.send_literal(s.target, (" " if s.composing else "") + clean)
         s.composed_text = (s.composed_text + " " + clean).strip() if s.composing else clean
         s.composing = True
         log.debug("%s: composed %d characters", session_id[:8], len(clean))
@@ -1552,6 +1587,10 @@ class SessionManager(threading.Thread):
         if not s.composing:
             return False
         self._require_tui(s)
+        if s.headless is not None:
+            text = s.composed_text
+            self._headless_send(s, text)
+            return True
         screen = s.prev_screen
         s.echo_signature = _signature(screen) if screen is not None else None
         s.echo_deadline = self.clock() + ECHO_TIMEOUT
@@ -1570,7 +1609,8 @@ class SessionManager(threading.Thread):
         if not s.composing:
             return False
         self._require_tui(s)
-        self.tmux.send_key(s.target, "C-u")
+        if s.headless is None:
+            self.tmux.send_key(s.target, "C-u")
         s.composing = False
         s.composed_text = ""
         s.submit_text = None
@@ -1588,6 +1628,10 @@ class SessionManager(threading.Thread):
     def _do_send_key(self, session_id: str, key: str) -> None:
         s = self._live(session_id)
         self._require_tui(s)
+        if s.headless is not None:
+            if key == "Escape":
+                s.headless.interrupt()
+            return
         self.tmux.send_key(s.target, key)
 
     def approve(self, session_id: str) -> bool:
@@ -1813,6 +1857,100 @@ class SessionManager(threading.Thread):
         self.tmux.send_enter(s.target)
         log.info("%s: answered inline prompt with %r", s.session_id[:8], answer)
 
+    # ---- headless sessions (decision 0020) -------------------------------------------------------
+
+    def _poll_headless(self, s: Session, now: float) -> None:
+        """One tick of a session that runs ``claude -p``: its stdout is the only source."""
+        from zordon.agents.headless import translate  # noqa: PLC0415
+
+        sess = s.headless
+        if sess is None:
+            return
+        got = translate(sess.drain(), s.session_id)
+        if got.permission_mode:
+            s.permission_mode = got.permission_mode
+        if got.session_id and got.session_id != s.session_id:
+            log.warning("%s: headless process reports session %s", s.session_id[:8], got.session_id[:8])
+        for line in got.lines:
+            self.bus.pane_lines.put(line)
+        if got.lines:
+            s.last_output_ts = now
+            s.last_active = time.time()
+        events: list[Any] = []
+        with self._lock:
+            pending = s.hook_prompt is not None and s.hook_prompt.pending
+            if got.turn_ended and not pending and s.state is not SessionState.IDLE:
+                s.state = SessionState.IDLE
+                s.detail = "turn finished" if not got.turn_error else f"turn ended with an error: {got.turn_error[:80]}"
+                events.append(StateChanged(s.session_id, SessionState.IDLE, s.detail))
+            elif got.lines and not got.turn_ended and not pending and s.state is SessionState.IDLE:
+                s.state = SessionState.WORKING
+                s.detail = "producing output"
+                events.append(StateChanged(s.session_id, SessionState.WORKING, s.detail))
+        for ev in events:
+            self.bus.publish(ev)
+        if got.exited is not None or not sess.alive:
+            log.info("%s: headless Claude Code exited (%s)", s.session_id[:8], got.exited if got.exited is not None else sess.exit_code)
+            sess.close()
+            self._mark_exited(s, now)
+
+    def _start_headless(self, directory: str, permission_mode: str | None, project: Project | None, resume_id: str | None = None) -> str:
+        """Launch Claude Code headless (decision 0020) for a project that runs that way."""
+        from zordon.agents.headless import HeadlessAdapter  # noqa: PLC0415
+        from zordon.daemon import zordon_argv  # noqa: PLC0415
+
+        adapter = self.adapters.get("claude-headless")
+        if not isinstance(adapter, HeadlessAdapter):
+            raise SessionError("the headless Claude Code adapter is not available")
+        if adapter.available() is None:
+            raise SessionError("Claude Code is not installed")
+        cwd = str(Path(directory).expanduser())
+        if not os.path.isdir(cwd):
+            raise SessionError(f"{directory} is not a directory")
+        bypass = project is not None and project.bypass
+        if bypass:
+            permission_mode = BYPASS_MODE
+        else:
+            permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
+        permission_mode = self._talk_first_mode(project, permission_mode)
+        sid = resume_id or str(uuid.uuid4())
+        scope = project is not None and project.scope_edits
+        hooks = self._hook_request(sid, scope=scope)
+        if hooks is None:
+            raise SessionError("headless Claude Code needs the hook port; start Zordon with serve")
+        log_path = self.zordon_home / "headless" / f"{sid[:8]}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            sess, paths_ = adapter.launch(
+                sid,
+                cwd,
+                permission_mode,
+                hooks,
+                resume=resume_id is not None,
+                allow_bypass=bypass,
+                system_prompt=self._system_prompt(adapter, project),
+                zordon_argv=zordon_argv(),
+                log_path=log_path,
+            )
+        except (OSError, ValueError, RuntimeError) as e:
+            raise SessionError(f"could not start headless Claude Code: {e}") from e
+        with self._lock:
+            existing = self.sessions.get(sid)
+            if existing is not None:
+                existing.headless = None
+        self._register(sid, cwd, f"headless:{sid[:8]}", None, adapter, owned=True, info=None, detail="starting (headless)", project=project)
+        with self._lock:
+            s = self.sessions[sid]
+            s.headless = sess
+            s.settings_paths = list(paths_)
+            s.settings_path = paths_[0] if paths_ else None
+            s.permission_mode = permission_mode  # known from the launch; the init record confirms it
+            s.state = SessionState.IDLE
+            s.detail = "ready (headless)"
+        self.bus.publish(StateChanged(sid, SessionState.IDLE, "ready (headless)"))
+        log.info("started headless claude-code session %s in %s", sid[:8], cwd)
+        return sid
+
     # ---- PermissionRequest hook (decision 0019) -------------------------------------------------
 
     def permission_request(self, payload: dict[str, Any], *, timeout_s: float = 870.0) -> dict[str, Any]:
@@ -1928,7 +2066,7 @@ class SessionManager(threading.Thread):
         for p in self.projects.list():
             s = live.get(p.id)
             running = s is not None and s.state is not SessionState.DETACHED
-            if not running and p.tmux_target:
+            if not running and p.tmux_target and p.runner != "headless":
                 try:
                     running = self.tmux.pane_exists(p.tmux_target)
                 except TmuxError:
@@ -1945,6 +2083,7 @@ class SessionManager(threading.Thread):
             "permission_mode": p.permission_mode,
             "scope_edits": p.scope_edits,
             "talk_first": p.talk_first,
+            "runner": p.runner,
             "running": running,
             "session_id": s.session_id if s is not None else None,
             "focused": s is not None and s.focused,
@@ -1963,12 +2102,21 @@ class SessionManager(threading.Thread):
         scope_edits: bool = True,
         existing: bool = False,
         talk_first: bool = True,
+        runner: str = "terminal",
     ) -> dict[str, Any]:
         """Make the folder (or take an existing one), record the project, open it, focus it."""
-        return self._call(self._do_create_project, parent, name, agent, permission_mode, scope_edits, existing, talk_first, timeout=15.0)
+        return self._call(self._do_create_project, parent, name, agent, permission_mode, scope_edits, existing, talk_first, runner, timeout=15.0)
 
     def _do_create_project(
-        self, parent: str, name: str, agent: str | None, permission_mode: str, scope_edits: bool, existing: bool, talk_first: bool = True
+        self,
+        parent: str,
+        name: str,
+        agent: str | None,
+        permission_mode: str,
+        scope_edits: bool,
+        existing: bool,
+        talk_first: bool = True,
+        runner: str = "terminal",
     ) -> dict[str, Any]:
         agent_key = (agent or self.default_agent).strip().lower()
         if agent_key not in self.adapters:
@@ -1990,9 +2138,17 @@ class SessionManager(threading.Thread):
             display = name.strip()
         if permission_mode == BYPASS_MODE and agent_key != "claude-code":
             raise SessionError(f"{self.adapters[agent_key].info.display_name} projects cannot run without approvals yet.")
+        if runner == "headless" and agent_key != "claude-code":
+            raise SessionError("Only Claude Code can run headless.")
         try:
             project = new_project(
-                directory, name=display, agent=agent_key, permission_mode=permission_mode, scope_edits=scope_edits, talk_first=talk_first
+                directory,
+                name=display,
+                agent=agent_key,
+                permission_mode=permission_mode,
+                scope_edits=scope_edits,
+                talk_first=talk_first,
+                runner=runner,
             )
         except ProjectError as e:
             raise SessionError(str(e)) from e
@@ -2025,6 +2181,11 @@ class SessionManager(threading.Thread):
                     self._set_focus(s.session_id)
                     self.projects.touch(project)
                     return self._project_row(project, s, True)
+        if project.runner == "headless":
+            # No pane to reconnect to: resume the last conversation in a fresh process, or start one.
+            resume_id = project.session_id if project.session_id and adapter.find_session(project.session_id) is not None else None
+            sid = self._start_headless(project.directory, project.permission_mode, project, resume_id=resume_id)
+            return self._project_row(project, self.sessions.get(sid), True)
         # 2. the pane it last ran in, still alive and still running the agent
         if project.tmux_target:
             alive = False

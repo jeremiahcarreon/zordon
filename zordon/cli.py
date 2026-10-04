@@ -189,6 +189,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sessions = sub.add_parser("sessions", help="list the Claude Code sessions Zordon can see")
     sessions.set_defaults(func=cmd_sessions)
+
+    mcp = sub.add_parser("mcp-permission", help="the MCP permission tool a headless Claude Code calls (launched by Claude Code, not by you)")
+    mcp.set_defaults(func=cmd_mcp_permission)
     return parser
 
 
@@ -227,6 +230,12 @@ def setup_logging(verbose: bool) -> None:
 
 
 # ---- commands ------------------------------------------------------------------------------
+
+
+def cmd_mcp_permission(args: argparse.Namespace) -> int:
+    from zordon.mcp_permission import main as mcp_main  # noqa: PLC0415
+
+    return mcp_main()
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:

@@ -694,10 +694,15 @@ class ClientConnection:
             return P.ErrorOut(message=f"permission_mode must be one of {', '.join(LAUNCH_MODES_WITH_BYPASS)}", code="bad_argument")
         scope = args.get("scope_edits", True) is not False
         talk_first = args.get("talk_first", True) is not False
+        runner = _str_arg(args, "runner") or "terminal"
+        if runner not in ("terminal", "headless"):
+            return P.ErrorOut(message="runner must be terminal or headless", code="bad_argument")
         creator = getattr(self.agent.sessions, "create_project", None)
         if not callable(creator):
             return P.ErrorOut(message="projects are not supported here", code="unsupported")
-        creator(parent, name, agent=_str_arg(args, "agent"), permission_mode=mode, scope_edits=scope, existing=existing, talk_first=talk_first)
+        creator(
+            parent, name, agent=_str_arg(args, "agent"), permission_mode=mode, scope_edits=scope, existing=existing, talk_first=talk_first, runner=runner
+        )
         self._after_focus_change()
         return self._after_project_change()
 
