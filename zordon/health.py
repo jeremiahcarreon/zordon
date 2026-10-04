@@ -53,7 +53,7 @@ LABELS = {
 FIX_DOWNLOAD = "zordon doctor --download"
 FIX_ROOT = "create a normal user with sudo and run Zordon there: useradd -m -s /bin/bash <name>; usermod -aG sudo <name>; passwd <name>; su - <name>"
 FIX_TMUX = "install tmux 3.2 or newer (or run `zordon setup`)"
-FIX_GPU = "install the CUDA libraries into Zordon's environment: zordon setup (it offers GPU support) or `uv tool install --force 'zordon[gpu] @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz'`, then restart"
+FIX_GPU = "install the CUDA libraries into Zordon's environment: zordon setup (it offers GPU support) or `uv tool install --force 'zordon[gpu] @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz'`; set providers.stt_device = \"auto\" in config.toml if it says cpu; then restart"
 FIX_CLAUDE = "install Claude Code and log in (or run `zordon setup`)"
 FIX_CURL = "install curl (or run `zordon setup`)"
 FIX_ANTHROPIC_KEY = "set providers.keys.anthropic in config.toml or export ANTHROPIC_API_KEY"
@@ -348,7 +348,7 @@ def check_stt(agent: Any) -> Item:
         return Item("stt", FAIL, f"voice input is unavailable: {reason}", fix)
     if name == "faster-whisper":
         device = str(getattr(stt, "device", "cpu") or "cpu")
-        if device == "cpu" and _gpu_without_libs():
+        if device == "cpu" and _gpu_unused(cfg):
             # Recognition is ~40x slower here than it could be: a sentence takes most of a
             # second instead of 20 ms, which is the whole wait before "Heard" appears.
             return Item("stt", WARN, "faster-whisper on the CPU although an NVIDIA GPU is present (~0.8 s per sentence; ~20 ms on the GPU)", FIX_GPU)
@@ -374,6 +374,21 @@ def _gpu_without_libs() -> bool:
         )
 
         return gpu_present() and not nvidia_libs_present()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _gpu_unused(cfg: Any) -> bool:
+    """A GPU is present and recognition is not on it: the libraries are missing, or the
+    config still pins stt_device = "cpu" (older installs wrote that as the default)."""
+    if _gpu_without_libs():
+        return True
+    if str(getattr(cfg, "stt_device", "") or "").lower() != "cpu":
+        return False
+    try:
+        from zordon.speech.stt.faster_whisper import gpu_present  # noqa: PLC0415
+
+        return gpu_present()
     except Exception:  # noqa: BLE001
         return False
 

@@ -108,6 +108,7 @@ def which_none(name: str) -> str | None:
 def agent(tmp_path: Path, monkeypatch) -> FakeAgent:
     # The host may or may not have an NVIDIA GPU; these tests describe a machine without one.
     monkeypatch.setattr(H, "_gpu_without_libs", lambda: False)
+    monkeypatch.setattr(H, "_gpu_unused", lambda cfg: False)
     return FakeAgent(tmp_path)
 
 
@@ -115,7 +116,7 @@ def test_stt_on_cpu_with_an_unused_gpu_warns(agent: FakeAgent, monkeypatch):
     from zordon.speech.stt.faster_whisper import FasterWhisperSTT
 
     agent.providers.stt = FasterWhisperSTT("small.en", device="cpu")
-    monkeypatch.setattr(H, "_gpu_without_libs", lambda: True)
+    monkeypatch.setattr(H, "_gpu_unused", lambda cfg: True)
     s = item(H.collect(agent, which=which_all), "stt")
     assert s.status == "warn" and "GPU is present" in s.detail and s.fix == H.FIX_GPU
     agent.providers.stt.device = "cuda"
