@@ -530,8 +530,15 @@ def validate_command(argv: Sequence[str], *, allow_bypass: bool = False) -> None
     argv = strip_env_prefix(argv)
     if not argv or argv[0] != "claude":
         raise ValueError("a claude command line must start with 'claude'")
+    skip_next = False
     for i, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue  # the free-text value of --append-system-prompt
         base = arg.split("=", 1)[0]
+        if base == "--append-system-prompt" and "=" not in arg:
+            skip_next = True
+            continue
         if base in REFUSED_FLAGS:
             raise ValueError(f"refused flag {base!r}")
         if base == "--permission-mode":
@@ -559,8 +566,12 @@ def _check_inline_settings(text: str) -> None:
         raise ValueError(f"refused permissions.defaultMode {mode!r}")
 
 
-def _base_command(settings_path: Path | None, permission_mode: str | None, *, allow_bypass: bool = False) -> list[str]:
+def _base_command(
+    settings_path: Path | None, permission_mode: str | None, *, allow_bypass: bool = False, system_prompt: str | None = None
+) -> list[str]:
     argv: list[str] = []
+    if system_prompt:
+        argv += ["--append-system-prompt", system_prompt]
     if settings_path is not None:
         if not isinstance(settings_path, Path):
             # Guards against the older architecture signature (session_id, permission_mode):
@@ -579,6 +590,7 @@ def resume_command(
     *,
     environ: Mapping[str, str] | None = None,
     allow_bypass: bool = False,
+    system_prompt: str | None = None,
 ) -> list[str]:
     """``env -u ... claude --resume <id> [--settings <file>] [--permission-mode <mode>]``.
 
@@ -590,7 +602,7 @@ def resume_command(
     """
     if not UUID_RE.match(session_id):
         raise ValueError(f"not a session id: {session_id!r}")
-    argv = ["claude", "--resume", session_id] + _base_command(settings_path, permission_mode, allow_bypass=allow_bypass)
+    argv = ["claude", "--resume", session_id] + _base_command(settings_path, permission_mode, allow_bypass=allow_bypass, system_prompt=system_prompt)
     argv = env_scrub_prefix(environ) + argv
     validate_command(argv, allow_bypass=allow_bypass)
     return argv
@@ -603,11 +615,14 @@ def new_session_command(
     *,
     environ: Mapping[str, str] | None = None,
     allow_bypass: bool = False,
+    system_prompt: str | None = None,
 ) -> list[str]:
-    """``env -u ... claude --session-id <uuid> [...]`` so the id is known before the first record."""
+    """``env -u ... claude --session-id <uuid> [...]`` so the id is known before the first record.
+
+    ``system_prompt`` goes to ``--append-system-prompt`` (the voice-mode text, decision 0019)."""
     if not UUID_RE.match(session_id):
         raise ValueError(f"not a session id: {session_id!r}")
-    argv = ["claude", "--session-id", session_id] + _base_command(settings_path, permission_mode, allow_bypass=allow_bypass)
+    argv = ["claude", "--session-id", session_id] + _base_command(settings_path, permission_mode, allow_bypass=allow_bypass, system_prompt=system_prompt)
     argv = env_scrub_prefix(environ) + argv
     validate_command(argv, allow_bypass=allow_bypass)
     return argv

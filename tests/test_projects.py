@@ -313,3 +313,36 @@ def test_compose_submit_and_clear(env):
     assert mgr.submit(sid) and ("enter", target) in tmux.calls and not mgr.is_composing(sid)
     mgr.compose(sid, "never mind this")
     assert mgr.clear_input(sid) and ("key", target, "C-u") in tmux.calls and not mgr.is_composing(sid)
+
+
+def test_launch_carries_the_voice_prompt_and_talk_first_plan_mode(env, tmp_path: Path, monkeypatch):
+    """Decision 0019: Claude Code sessions get the voice-mode system prompt; a talk-first
+    project that asks before acting starts in plan mode; the others keep their mode."""
+    from zordon.agents import voice_prompt
+
+    mgr, bus, tmux, clock, proj = env
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    row = mgr.create_project(str(home), "Talk")
+    command = claude_argv(tmux.windows[0][3])
+    assert command[command.index("--permission-mode") + 1] == "plan"
+    prompt = command[command.index("--append-system-prompt") + 1]
+    assert prompt == voice_prompt.system_prompt(talk_first=True) and "go ahead" in prompt and "two or three plain sentences" in prompt
+    assert mgr.projects.get(row["id"]).talk_first and row["talk_first"]
+
+    row2 = mgr.create_project(str(home), "Auto", permission_mode="auto")
+    command = claude_argv(tmux.windows[1][3])
+    assert command[command.index("--permission-mode") + 1] == "auto"  # prompt-only talk-first
+    assert "go ahead" in command[command.index("--append-system-prompt") + 1]
+
+    row3 = mgr.create_project(str(home), "Quick", talk_first=False)
+    command = claude_argv(tmux.windows[2][3])
+    assert command[command.index("--permission-mode") + 1] == "default"
+    assert command[command.index("--append-system-prompt") + 1] == voice_prompt.system_prompt(talk_first=False)
+    assert not mgr.projects.get(row3["id"]).talk_first and row2["talk_first"]
+
+    # A plain start (Advanced) gets the voice prompt too, with talk-first wording.
+    mgr.start(str(proj))
+    command = claude_argv(tmux.windows[3][3])
+    assert "--append-system-prompt" in command and command[command.index("--permission-mode") + 1] == "default"

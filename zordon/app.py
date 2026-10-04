@@ -271,6 +271,7 @@ def prompt_speech(
     target_file: str | None = None,
     agent_name: str = DEFAULT_AGENT_NAME,
     description: str | None = None,
+    plan: str | None = None,
 ) -> str:
     """The short sentence Zordon speaks when a prompt appears on the focused session.
 
@@ -294,6 +295,10 @@ def prompt_speech(
         return "This folder is not trusted yet. Say yes to trust it, or no."
     if k == PromptKind.PLAN.value:
         summary = _strip_prefix(title, "Plan ready:").strip() or "a plan"
+        if plan:
+            gist = plan_gist(plan)
+            if gist:
+                summary = gist
         return f"{who} has a plan ready: {_sentence(summary)} Approve, revise, or deny?"
     if k == PromptKind.QUESTION.value:
         question = _sentence(title or "a question")
@@ -320,6 +325,30 @@ def prompt_speech(
 
 
 SHORT_COMMAND_CHARS = 60  # a command this short is read out; longer ones are summarised
+PLAN_GIST_WORDS = 45  # how much of a plan is read with the approval question
+
+
+def plan_gist(plan: str) -> str:
+    """The first sentences of a plan as speech: headings and list markers dropped, cut at
+    about ``PLAN_GIST_WORDS`` words on a sentence boundary when possible."""
+    words: list[str] = []
+    for line in plan.splitlines():
+        t = line.strip().lstrip("#*-•").strip()
+        t = re.sub(r"^\d+[.)]\s*", "", t)
+        if not t or t.lower().startswith(("verification", "```")):
+            continue
+        words += t.split()
+        if len(words) >= PLAN_GIST_WORDS:
+            break
+    if not words:
+        return ""
+    text = " ".join(words[: PLAN_GIST_WORDS + 15])
+    cut = max(text.rfind(". "), text.rfind("? "), text.rfind("! "))
+    if len(words) > PLAN_GIST_WORDS and cut > 40:
+        text = text[: cut + 1]
+    elif len(words) > PLAN_GIST_WORDS:
+        text = " ".join(words[:PLAN_GIST_WORDS]) + "..."
+    return text
 _GIST_SKIP = frozenset({"sudo", "env", "exec", "time", "nohup", "nice", "command", "builtin", "then", "do", "else", "elif"})
 _GIST_MAX = 4
 
@@ -878,7 +907,7 @@ class Agent:
                 )
             )
             return
-        command = target_file = description = None
+        command = target_file = description = plan = None
         current_match = getattr(self.manager, "current_match", None)
         if callable(current_match):
             m = current_match(ev.session_id)
@@ -886,6 +915,7 @@ class Agent:
                 command = getattr(m, "command", None)
                 target_file = getattr(m, "target_file", None)
                 description = getattr(m, "description", None)
+                plan = (getattr(m, "extra", None) or {}).get("plan")
         text = prompt_speech(
             ev.kind,
             ev.title,
@@ -894,6 +924,7 @@ class Agent:
             target_file=target_file,
             agent_name=self._agent_name_of(ev.session_id),
             description=description,
+            plan=plan,
         )
         self.pipeline.speak_now(text, ev.session_id, PROMPT_LINE_KINDS.get(ev.kind, LineKind.PERMISSION_PROMPT))
 

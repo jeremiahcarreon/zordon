@@ -132,17 +132,17 @@ class ClaudeCodeAdapter(BaseAdapter):
 
     # ---- launching ----------------------------------------------------------------
 
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None) -> LaunchSpec:
         settings, paths_ = self._hook_files(hooks)
         command = discovery.new_session_command(
-            session_id, settings, permission_mode or self.default_launch_mode(), allow_bypass=allow_bypass
+            session_id, settings, permission_mode or self.default_launch_mode(), allow_bypass=allow_bypass, system_prompt=system_prompt
         )
         return LaunchSpec(command=command, cwd=cwd, settings_paths=paths_, env_scrub_names=tmux.scrub_names())
 
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False) -> LaunchSpec:
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None) -> LaunchSpec:
         settings, paths_ = self._hook_files(hooks)
         command = discovery.resume_command(
-            session_id, settings, permission_mode or self.default_launch_mode(), allow_bypass=allow_bypass
+            session_id, settings, permission_mode or self.default_launch_mode(), allow_bypass=allow_bypass, system_prompt=system_prompt
         )
         return LaunchSpec(command=command, cwd=cwd, settings_paths=paths_, env_scrub_names=tmux.scrub_names())
 

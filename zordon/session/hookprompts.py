@@ -10,7 +10,11 @@ resolves it with the user's yes, no, option or plan feedback:
 * allow: ``{"decision": {"behavior": "allow"}}``, with ``updatedInput`` carrying
   the answers for the question tool;
 * deny: ``{"decision": {"behavior": "deny", "message": ...}}``; the message is what
-  Claude sees ("The user said no", or the plan feedback).
+  Claude sees ("The user said no").
+
+The plan tool is the exception: Claude Code draws its plan menu whatever the hook
+answers (verified live), so for it the hook only hands over the plan text and
+says "no opinion"; approval happens on the menu as in decision 0007.
 
 An empty answer (``{}``) means "no opinion": Claude Code draws its own dialog and
 the screen reader of decision 0007 takes over, exactly as before this hook
@@ -90,6 +94,9 @@ def build(payload: dict[str, Any]) -> HookPrompt | None:
         hp = HookPrompt(sid, tool, tool_input, question_match(questions[0], 1, len(questions)), questions=questions)
         return hp
     if tool == PLAN_TOOL:
+        # Verified live: Claude Code draws its plan menu even after the hook allows, so
+        # the decision is made on screen (decision 0007). The payload still carries the
+        # plan text, which the manager keeps to read aloud with the on-screen prompt.
         return HookPrompt(sid, tool, tool_input, plan_match(tool_input))
     return HookPrompt(sid, tool, tool_input, permission_match(tool, tool_input))
 

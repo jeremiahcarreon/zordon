@@ -90,6 +90,7 @@ class Harness:
         self.bus = Bus()
         self.focused: str | None = kw.get("focused", SID)
         self.config = Config()
+        self.config.voice.normalize_conversational = True  # these tests watch the rewriter; send everything through it
         self.config.voice.verbosity = verbosity
         self.config.voice.prebuffer_sentences = prebuffer
         self.config.providers.normalizer_timeout_seconds = 0.5
@@ -842,3 +843,26 @@ def test_turn_mode_flushes_after_a_long_lull_without_turn_end(make):
     h.line("● Pane prose without a completion row.")
     assert h.wait_synth(1, timeout=3.0)
     assert h.tts.calls[0] == "Spoken one."
+
+
+def test_conversational_prose_skips_the_normalizer(make):
+    """Decision 0019: speech-shaped text is spoken as written; anything with code, paths,
+    identifiers or symbols still goes through the rewriter."""
+    from zordon.output.pipeline import conversational
+
+    assert conversational("I added the retry loop and the tests pass. Want a timeout as well?")
+    assert not conversational("I edited `auth.py`.")
+    assert not conversational("The uploadHandler now retries.")
+    assert not conversational("See /home/u/proj/src/ for details.")
+    assert not conversational("run pytest -q --maxfail=1")
+    h = make(verbosity="normal")
+    h.config.voice.normalize_conversational = False
+    h.jsonl("I added the retry loop and the tests pass.")
+    h.turn_end()
+    assert h.wait_synth(1)
+    assert h.tts.calls == ["I added the retry loop and the tests pass."]  # not uppercased: never normalized
+    assert h.pipeline.stats().get("conversational", 0) >= 1
+    h.jsonl("I edited `auth.py` as well.")
+    h.turn_end()
+    assert h.wait_synth(2)
+    assert h.tts.calls[-1] == "I EDITED AUTH.PY AS WELL."  # the prepass strips the backticks, the rewriter ran

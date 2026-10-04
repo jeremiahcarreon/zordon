@@ -70,7 +70,7 @@ class ProvidersConfig:
     stt_model: str = "small.en"
     stt_device: str = "cpu"  # cpu | cuda
     tts_voice: str = "af_heart"
-    tts_speed: float = 1.0
+    tts_speed: float = 1.15  # a little faster than Kokoro's default reads as natural speech
     normalizer_model: str = "claude-haiku-4-5"
     router_model: str = "claude-haiku-4-5"
     normalizer_timeout_seconds: float = 1.5
@@ -105,6 +105,9 @@ class VoiceConfig:
     # is transcribed and sent only after this much quiet with nothing more said, or on
     # "go ahead". 0 sends every utterance at once (the old behaviour).
     submit_quiet_ms: int = 2500
+    # Plain spoken-style prose (no code, paths, identifiers or symbols) is spoken as written
+    # instead of waiting for the rewriter (decision 0019). true sends everything through it.
+    normalize_conversational: bool = False
     # How many normalized sentences to buffer before playback starts.
     prebuffer_sentences: int = 3
 

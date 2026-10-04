@@ -197,6 +197,7 @@ class ProjectSummary(_Strict):
     agent: str = "claude-code"
     permission_mode: str = "default"
     scope_edits: bool = True
+    talk_first: bool = True
     running: bool = False
     session_id: str | None = None
     focused: bool = False

@@ -47,6 +47,7 @@ class Project:
     agent: str = "claude-code"
     permission_mode: str = "default"
     scope_edits: bool = True
+    talk_first: bool = True  # ask questions and state a plan before changing anything (decision 0019)
     session_id: str | None = None  # the agent's last session in this project (resumes it)
     tmux_target: str | None = None  # where it last ran; reconnected when still alive
     created_at: float = field(default_factory=time.time)
@@ -188,6 +189,7 @@ def new_project(
     agent: str = "claude-code",
     permission_mode: str = "default",
     scope_edits: bool = True,
+    talk_first: bool = True,
 ) -> Project:
     if permission_mode not in LAUNCH_MODES_WITH_BYPASS:
         raise ProjectError(f"permission mode {permission_mode!r} is not one of {LAUNCH_MODES_WITH_BYPASS}")
@@ -199,6 +201,7 @@ def new_project(
         agent=agent,
         permission_mode=permission_mode,
         scope_edits=bool(scope_edits),
+        talk_first=bool(talk_first),
     )
 
 

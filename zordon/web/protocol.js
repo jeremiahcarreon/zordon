@@ -195,6 +195,7 @@
           !optional(p.agent, isStr) ||
           !optional(p.permission_mode, isStr) ||
           !optional(p.scope_edits, isBool) ||
+          !optional(p.talk_first, isBool) ||
           !optional(p.running, isBool) ||
           !optional(p.session_id, isStr) ||
           !optional(p.focused, isBool) ||

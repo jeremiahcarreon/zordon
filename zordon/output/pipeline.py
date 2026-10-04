@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -609,7 +610,7 @@ class PipelineThread(threading.Thread):
             generation=self.bus.generation,
             enqueued_at=time.monotonic(),
         )
-        if not literal and kind is not LineKind.ERROR:
+        if not literal and kind is not LineKind.ERROR and not self._speak_as_is(text):
             context = [self._job_text(j) for j in ctx.context]
             job.submitted_at = time.monotonic()
             try:
@@ -617,11 +618,20 @@ class PipelineThread(threading.Thread):
             except RuntimeError:  # pool shut down
                 job.future = None
             ctx.context.append(job)
-        else:
+        elif literal or kind is LineKind.ERROR:
             self._bump("literal")
+        else:
+            # Plain spoken-style prose (decision 0019): nothing for a rewriter to fix, and
+            # waiting for one is the latency the listener notices most.
+            self._bump("conversational")
         with self._cv:
             self._jobs.append(job)
             self._cv.notify_all()
+
+    def _speak_as_is(self, text: str) -> bool:
+        if bool(getattr(self.config.voice, "normalize_conversational", False)):
+            return False
+        return conversational(text)
 
     def _normalize(self, text: str, context: list[str]) -> str:
         out = self.normalizer.normalize(text, context)
@@ -662,11 +672,15 @@ class PipelineThread(threading.Thread):
             timeout=float(getattr(self.normalizer, "timeout", 0) or 30.0),
         )
         job.submitted_at = time.monotonic()
-        try:
-            job.future = self._pool.submit(self._normalize_turn, joined)
-        except RuntimeError:
-            job.future = None
-        self._bump("turn_requests")
+        if self._speak_as_is(joined):
+            job.future = None  # spoken as is (decision 0019)
+            self._bump("conversational")
+        else:
+            try:
+                job.future = self._pool.submit(self._normalize_turn, joined)
+            except RuntimeError:
+                job.future = None
+            self._bump("turn_requests")
         with self._cv:
             self._jobs.append(job)
             self._cv.notify_all()
@@ -953,6 +967,32 @@ class PipelineThread(threading.Thread):
         with self._stats_lock:
             kinds = self._stats["kinds"]
             kinds[kind.value] = kinds.get(kind.value, 0) + 1
+
+
+# Signs that text came from a terminal rather than a conversation: code, paths,
+# identifiers, flags, symbols a reader would stumble over. Any one of them sends the
+# text to the normalizer; none means it is spoken as written.
+_TECHNICAL = re.compile(
+    r"`"  # inline code
+    r"|(?<![\w.])/[\w.-]+/"  # a path with at least two segments
+    r"|\b\w+\.(?:py|js|ts|tsx|jsx|json|md|toml|yaml|yml|sh|rs|go|java|rb|php|html|css|sql|txt|cfg|ini|lock)\b"  # file names
+    r"|\b[a-z]+_[a-z_]+\b"  # snake_case
+    r"|\b[a-z]+[A-Z][A-Za-z]+\b"  # camelCase
+    r"|(?<!\w)--?[a-z][\w-]*"  # flags
+    r"|[{}<>|\\^~#@$]"  # symbols that are not punctuation
+    r"|[=+*]{2}|->|=>|::"
+    r"|\b\d+\.\d+\.\d+\b"  # versions
+    r"|\b(?:HTTP|URL|API|JSON|SQL|CLI|TTY|PID|UUID)\b"
+)
+
+
+def conversational(text: str) -> bool:
+    """True when ``text`` reads like speech already (decision 0019): no code, paths,
+    identifiers, flags or symbols. Numbers and ordinary punctuation are fine."""
+    t = text.strip()
+    if not t or len(t) > 1200:
+        return False
+    return _TECHNICAL.search(t) is None
 
 
 def tool_call_raw_text(tagged: Tagged) -> str:

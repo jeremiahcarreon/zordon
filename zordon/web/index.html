@@ -178,6 +178,8 @@
         <div id="np-bypass-warn" class="np-warn" hidden>
           Runs every command without asking. Only for a folder you can afford to lose, ideally in a container or VM. Claude Code will show its own warning once; Zordon will read it to you and you confirm.
         </div>
+        <label class="opt np-scope"><input type="checkbox" id="np-talk" checked><span>Talk it through first</span></label>
+        <p class="muted small">The assistant asks its questions and says its plan before changing anything; you say "go ahead". With "Ask me before acting" it also starts in plan mode, which cannot edit until you approve a plan.</p>
         <label class="opt np-scope"><input type="checkbox" id="np-scope" checked><span>Keep file edits inside this folder</span></label>
         <p class="muted small">Zordon blocks edits outside the project folder. Shell commands are not restricted.</p>
       </div>

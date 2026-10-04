@@ -255,7 +255,8 @@ def test_start_without_hook_config_passes_no_settings(env):
     sid = mgr.start(str(proj))
     command = claude_argv(tmux.windows[0][3])
     assert "--settings" not in command
-    assert command == ["claude", "--session-id", sid, "--permission-mode", "default"]
+    assert command[:3] == ["claude", "--session-id", sid] and command[-2:] == ["--permission-mode", "default"]
+    assert "--append-system-prompt" in command  # the voice-mode instruction rides on every launch
 
 
 def test_configured_launch_mode_applies_when_the_client_names_none(env):

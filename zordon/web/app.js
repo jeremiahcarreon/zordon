@@ -1469,10 +1469,12 @@
     np.agent = S.defaultAgent;
     np.mode = 'default';
     np.scope = true;
+    np.talk = true;
     np.pending = null;
     np.listing = null;
     $('np-folder-name').value = '';
     $('np-scope').checked = true;
+    $('np-talk').checked = true;
     npError('');
     closeSheets();
     show($('new-project'), true);
@@ -1591,7 +1593,7 @@
       npSetStep('where');
       return;
     }
-    var args = { parent: np.folder.parent, name: np.folder.name || np.name, permission_mode: np.mode, scope_edits: !!np.scope };
+    var args = { parent: np.folder.parent, name: np.folder.name || np.name, permission_mode: np.mode, scope_edits: !!np.scope, talk_first: np.talk !== false };
     if (np.folder.existing) args.existing = true;
     if (np.agent && np.agent !== S.defaultAgent) args.agent = np.agent;
     np.pending = 'create_project';
@@ -1721,6 +1723,7 @@
     });
     show($('np-bypass-warn'), S.np.mode === 'bypassPermissions');
     $('np-scope').checked = !!S.np.scope;
+    $('np-talk').checked = S.np.talk !== false;
   }
 
   function renderNpSummary() {
@@ -1737,6 +1740,7 @@
     NP_MODES.forEach(function (x) { if (x.value === np.mode) m = x; });
     row('Permissions', m ? m.label : modeWord(np.mode));
     row('File edits', np.scope ? 'kept inside the folder' : 'anywhere the agent is allowed');
+    row('Before acting', np.talk !== false ? 'asks and says its plan first' : 'gets to work');
   }
 
   // ---- composer, uploads --------------------------------------------------------------------------
@@ -1958,6 +1962,9 @@
     $('np-use-folder').addEventListener('click', npUseFolder);
     $('np-scope').addEventListener('change', function (e) {
       S.np.scope = !!e.target.checked;
+    });
+    $('np-talk').addEventListener('change', function (e) {
+      S.np.talk = !!e.target.checked;
     });
     $('btn-settings').addEventListener('click', function () {
       openSheet('settings');

@@ -151,19 +151,17 @@ def test_deny_question_and_plan_through_the_hook(env):
     dec = out[0]["hookSpecificOutput"]["decision"]
     assert dec["behavior"] == "allow" and dec["updatedInput"]["answers"] == {"Which database should the app use?": "SQLite"}
 
-    t, out = _ask(mgr, with_sid(PLAN, sid))
-    assert s.state is SessionState.AWAITING_PLAN_APPROVAL and s.permission_mode == "plan"
-    assert mgr.plan_revise(sid, "add a timeout too")
-    t.join(2)
-    assert out[0]["hookSpecificOutput"]["decision"]["message"] == "The user wants changes to the plan: add a timeout too"
-    t, out = _ask(mgr, with_sid(PLAN, sid))
-    assert mgr.plan_approve(sid)
-    t.join(2)
-    assert out[0] == H.allow()
-    t, out = _ask(mgr, with_sid(PLAN, sid))
-    assert mgr.plan_deny(sid)
-    t.join(2)
-    assert out[0]["hookSpecificOutput"]["decision"]["message"] == "The user rejected the plan."
+    # The plan tool: Claude Code draws its menu whatever the hook says (verified live), so
+    # the hook gets no opinion at once and the plan text waits for the on-screen prompt.
+    assert mgr.permission_request(with_sid(PLAN, sid), timeout_s=1.0) == {}
+    assert s.hook_prompt is None and s.plan_text.startswith("# Add retries") and s.permission_mode == "plan"
+    from tests.test_manager import lines_of
+
+    tmux.set_screen(target, lines_of("plan_approval.txt"), alt=True)
+    mgr._poll_session(s)
+    assert s.current_prompt is not None and s.current_prompt.kind is PromptKind.PLAN
+    assert s.current_match.extra["plan"].startswith("# Add retries") and "retry loop" in " ".join(s.current_prompt.raw_lines)
+    assert s.plan_text is None  # handed over once
 
 
 def test_two_questions_are_asked_one_at_a_time(env):

@@ -76,6 +76,7 @@ from zordon.agents import (
     HookRequest,
     LaunchSpec,
     get_adapter,
+    voice_prompt,
 )
 from zordon.agents import SessionInfo as AgentSessionInfo
 from zordon.agents.base import TranscriptSource
@@ -265,6 +266,7 @@ class Session:
     bypass_allowed: bool = False  # launched for a project created in bypass mode: its warning may be accepted
     scope_dir: str | None = None  # file edits outside this directory (and ~/.claude) are denied by the hook
     hook_prompt: hookprompts.HookPrompt | None = None  # a PermissionRequest waiting for the user (decision 0019)
+    plan_text: str | None = None  # the plan the ExitPlanMode hook announced; read with the on-screen menu
     composing: bool = False  # text typed into the input box and not yet submitted (deferred submit)
 
     @property
@@ -775,12 +777,19 @@ class SessionManager(threading.Thread):
         events = self._clear_prompt(s)
         s.current_match = match
         s.prompt_key = key
+        raw_lines = list(match.raw_lines)
+        if match.kind is PromptKind.PLAN and s.plan_text:
+            # The hook's copy of the plan: the card shows it in full, the speech can use it.
+            match.extra["plan"] = s.plan_text
+            raw_lines = s.plan_text.splitlines()[:40] + raw_lines
+        if match.kind is PromptKind.PLAN:
+            s.plan_text = None
         s.current_prompt = PromptDetected(
             session_id=s.session_id,
             kind=match.kind,
             title=match.title,
             options=list(match.labels),
-            raw_lines=list(match.raw_lines),
+            raw_lines=raw_lines,
         )
         events.append(s.current_prompt)
         log.info("%s: %s prompt: %s", s.session_id[:8], match.kind.value, redact(match.title)[0])
@@ -1004,16 +1013,36 @@ class SessionManager(threading.Thread):
             permission_mode = BYPASS_MODE
         else:
             permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
+        permission_mode = self._talk_first_mode(project, permission_mode)
         sid = str(uuid.uuid4())
         scope = project is not None and project.scope_edits
         try:
-            spec = adapter.new_session(sid, cwd, permission_mode, self._hook_request(sid, scope=scope), allow_bypass=bypass)
+            spec = adapter.new_session(
+                sid, cwd, permission_mode, self._hook_request(sid, scope=scope), allow_bypass=bypass, system_prompt=self._system_prompt(adapter, project)
+            )
         except (NotImplementedError, ValueError) as e:
             raise SessionError(str(e)) from e
         target = self._open_pane(cwd, sid, spec)
         self._register(sid, cwd, target, spec, adapter, owned=True, info=None, detail="starting", project=project)
         log.info("started %s session %s in %s (%s)", adapter.info.key, sid[:8], cwd, target)
         return sid
+
+    def _system_prompt(self, adapter: AgentAdapter, project: Project | None) -> str | None:
+        """The voice-mode instruction for Claude Code (decision 0019); other agents get none."""
+        if adapter.info.key != "claude-code":
+            return None
+        talk_first = project.talk_first if project is not None else True
+        return voice_prompt.system_prompt(talk_first=talk_first)
+
+    @staticmethod
+    def _talk_first_mode(project: Project | None, permission_mode: str | None) -> str | None:
+        """A talk-first project that asks before acting starts in plan mode: Claude cannot
+        change anything until the user approves a plan, which drops it to default mode
+        (the "manually approve edits" choice). Auto, accept-edits and never-ask projects
+        keep their mode and get the talk-first instruction only."""
+        if project is not None and project.talk_first and permission_mode == "default":
+            return "plan"
+        return permission_mode
 
     def _launch_mode(self, adapter: AgentAdapter) -> str | None:
         """The mode for a session the client starts without naming one: the configured
@@ -1075,6 +1104,7 @@ class SessionManager(threading.Thread):
             permission_mode = BYPASS_MODE
         else:
             permission_mode = adapter.normalize_mode(permission_mode) if permission_mode else self._launch_mode(adapter)
+        permission_mode = self._talk_first_mode(project, permission_mode)
         scope = project is not None and project.scope_edits
         if existing is not None and existing.owned and existing.target:
             try:
@@ -1084,7 +1114,12 @@ class SessionManager(threading.Thread):
                 log.debug("old pane for %s not killed: %s", session_id[:8], e)
         try:
             spec = adapter.resume_session(
-                session_id, cwd, permission_mode, self._hook_request(session_id, scope=scope), allow_bypass=bypass
+                session_id,
+                cwd,
+                permission_mode,
+                self._hook_request(session_id, scope=scope),
+                allow_bypass=bypass,
+                system_prompt=self._system_prompt(adapter, project),
             )
         except (NotImplementedError, ValueError) as e:
             raise SessionError(str(e)) from e
@@ -1725,13 +1760,19 @@ class SessionManager(threading.Thread):
         hp = hookprompts.build(payload)
         if hp is None:
             return None
+        mode = payload.get("permission_mode")
+        if isinstance(mode, str) and mode:
+            s.permission_mode = mode
+        if hp.tool_name == hookprompts.PLAN_TOOL:
+            # The plan menu is drawn regardless of the hook's answer: keep the plan text for
+            # the spoken prompt and let the screen reader own the menu.
+            s.plan_text = hp.match.question or None
+            log.info("%s: plan announced through the hook (%d chars)", s.session_id[:8], len(s.plan_text or ""))
+            return None
         if s.hook_prompt is not None and s.hook_prompt.pending:
             # One at a time: a second request while the first waits gets no opinion.
             log.warning("%s: a second permission request arrived while one is pending; no opinion", s.session_id[:8])
             return None
-        mode = payload.get("permission_mode")
-        if isinstance(mode, str) and mode:
-            s.permission_mode = mode
         state = {
             PromptKind.PERMISSION: SessionState.AWAITING_PERMISSION,
             PromptKind.QUESTION: SessionState.AWAITING_QUESTION,
@@ -1810,6 +1851,7 @@ class SessionManager(threading.Thread):
             "agent": p.agent,
             "permission_mode": p.permission_mode,
             "scope_edits": p.scope_edits,
+            "talk_first": p.talk_first,
             "running": running,
             "session_id": s.session_id if s is not None else None,
             "focused": s is not None and s.focused,
@@ -1827,12 +1869,13 @@ class SessionManager(threading.Thread):
         permission_mode: str = "default",
         scope_edits: bool = True,
         existing: bool = False,
+        talk_first: bool = True,
     ) -> dict[str, Any]:
         """Make the folder (or take an existing one), record the project, open it, focus it."""
-        return self._call(self._do_create_project, parent, name, agent, permission_mode, scope_edits, existing, timeout=15.0)
+        return self._call(self._do_create_project, parent, name, agent, permission_mode, scope_edits, existing, talk_first, timeout=15.0)
 
     def _do_create_project(
-        self, parent: str, name: str, agent: str | None, permission_mode: str, scope_edits: bool, existing: bool
+        self, parent: str, name: str, agent: str | None, permission_mode: str, scope_edits: bool, existing: bool, talk_first: bool = True
     ) -> dict[str, Any]:
         agent_key = (agent or self.default_agent).strip().lower()
         if agent_key not in self.adapters:
@@ -1855,7 +1898,9 @@ class SessionManager(threading.Thread):
         if permission_mode == BYPASS_MODE and agent_key != "claude-code":
             raise SessionError(f"{self.adapters[agent_key].info.display_name} projects cannot run without approvals yet.")
         try:
-            project = new_project(directory, name=display, agent=agent_key, permission_mode=permission_mode, scope_edits=scope_edits)
+            project = new_project(
+                directory, name=display, agent=agent_key, permission_mode=permission_mode, scope_edits=scope_edits, talk_first=talk_first
+            )
         except ProjectError as e:
             raise SessionError(str(e)) from e
         self.projects.add(project)

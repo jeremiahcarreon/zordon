@@ -450,6 +450,7 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     $('np-start').click();
     const create = cmds('create_project')[cmds('create_project').length - 1];
     ok(create && create.args.parent === '/home/u/Code' && create.args.name === 'My App' && create.args.permission_mode === 'bypassPermissions' && create.args.scope_edits === true && create.args.existing === undefined && create.args.agent === undefined, 'Start sends create_project with the chosen folder, bypass mode and scope');
+    ok(create.args.talk_first === true, 'talk-first is on by default');
     // A server error lands inline, not as a toast.
     recv({ type: 'error', message: 'My App already exists.', code: 'command' });
     ok(!$('np-error').hasAttribute('hidden') && /already exists/.test($('np-error').textContent), 'a create error is shown inside the walkthrough');
