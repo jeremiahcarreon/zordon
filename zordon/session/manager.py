@@ -116,6 +116,7 @@ COMMAND_TIMEOUT = 3.0
 ECHO_TIMEOUT = 1.5  # seconds for the screen to change after send_text
 SUBMIT_CHECK_S = 1.2  # seconds for a sent message to leave the input box before Enter is pressed again
 SUBMIT_SETTLE_S = 0.8  # how long the TUI may take to draw the keystrokes at all
+SUBMIT_RETRY_WAIT_S = 3.0  # after the second Enter: time for the TUI to show it was taken before the user is told
 SUBMIT_HEAD_CHARS = 40
 HOOK_DIALOG_GRACE_S = 4.0  # the screen's copy of a hook-decided request is ignored this long
 REGISTRY_INTERVAL = 1.0  # seconds between registry status reads per session
@@ -1514,7 +1515,7 @@ class SessionManager(threading.Thread):
             return
         if not s.submit_retried:
             s.submit_retried = True
-            s.submit_deadline = now + SUBMIT_CHECK_S
+            s.submit_deadline = now + SUBMIT_RETRY_WAIT_S
             log.info("%s: message still in the input box; pressing Enter again", s.session_id[:8])
             self.tmux.send_enter(s.target)
             return
@@ -2251,6 +2252,10 @@ class SessionManager(threading.Thread):
             return
         with self._lock:
             s.hook_hint = hint
+            if payload.get("hook_event_name") == "UserPromptSubmit":
+                # Claude Code took a message: whatever the screen shows, the send went through.
+                s.submit_text = None
+                s.submit_deadline = None
         log.info("%s: hook %s/%s", sid[:8], payload.get("hook_event_name"), getattr(hint, "notification_type", ""))
         self.wake()
 

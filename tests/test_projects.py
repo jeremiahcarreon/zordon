@@ -370,7 +370,7 @@ def test_enter_is_pressed_again_when_the_message_stays_in_the_box(env):
     clock.advance(2.0)
     mgr._poll_session(s)
     assert len(enters()) == 2 and s.submit_retried
-    clock.advance(2.0)
+    clock.advance(4.0)
     mgr._poll_session(s)
     notices = [e for e in drain(bus) if isinstance(e, Notice)]
     assert notices and "did not take that message" in notices[-1].text and s.composing
@@ -394,3 +394,9 @@ def test_enter_is_pressed_again_when_the_message_stays_in_the_box(env):
     clock.advance(1.5)
     mgr._poll_session(s)
     assert len(enters()) == 6 and s.submit_retried
+    # The UserPromptSubmit hook says Claude Code took it: the watch ends, no notice.
+    mgr.hook_event({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "third message here"})
+    assert s.submit_deadline is None
+    clock.advance(5.0)
+    mgr._poll_session(s)
+    assert not [e for e in drain(bus) if isinstance(e, Notice) and "did not take" in e.text]
