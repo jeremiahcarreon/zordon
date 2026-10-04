@@ -154,7 +154,17 @@ const tick = (ms) => new Promise((r) => setTimeout(r, ms || 5));
 const recv = (frame) => FakeWS.last.receive(frame);
 const cmds = (name) => sent.filter((m) => m.type === 'command' && m.name === name);
 const rows = () => $('rows').children;
-const rowBySentence = (sid) => rows().find((r) => r.dataset.sentenceId === String(sid));
+// A sentence's own element: the bubble when it opened one, else its span inside the bubble
+// it joined (sentences of one answer share a bubble).
+const rowBySentence = (sid) => {
+  const li = rows().find((r) => r.dataset.sentenceId === String(sid));
+  if (li) return li;
+  for (const r of rows()) {
+    const span = r.querySelectorAll('span').find((x) => x.dataset && x.dataset.sentenceId === String(sid));
+    if (span) return span;
+  }
+  return undefined;
+};
 const pcm = Buffer.alloc(640).toString('base64');
 const now = () => Date.now() / 1000;
 
@@ -522,6 +532,25 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     ok($('work-status-text').textContent === 'waiting for you', 'a prompt shows "waiting for you"');
     recv({ type: 'state', session_id: 's1', state: 'idle', detail: '', ts: now() });
     ok($('work-status').hasAttribute('hidden'), 'idle hides it');
+  }
+
+  // ---- one bubble per answer: consecutive spoken sentences merge; a user row starts a new one ----
+  {
+    recv(hello());
+    recv(sessions('s1'));
+    const n0 = rows().length;
+    recv({ type: 'transcript', row_id: 900, session_id: 's1', kind: 'spoken', text: 'First sentence.', raw_lines: ['raw one'], ts: now(), sentence_id: 900 });
+    recv({ type: 'transcript', row_id: 901, session_id: 's1', kind: 'spoken', text: 'Second sentence.', raw_lines: ['raw two'], ts: now(), sentence_id: 901 });
+    recv({ type: 'transcript', row_id: 902, session_id: 's1', kind: 'spoken', text: 'Third sentence.', raw_lines: [], ts: now(), sentence_id: 902 });
+    ok(rows().length === n0 + 1, 'three sentences of one answer make one bubble');
+    const bubble = rows()[rows().length - 1];
+    ok(/First sentence\. Second sentence\. Third sentence\./.test(bubble.textContent), 'the bubble reads as one text');
+    ok(/raw one\nraw two/.test(bubble._parts.pre.textContent), 'the raw lines of every sentence are kept under it');
+    recv({ type: 'transcript', row_id: -50, session_id: 's1', kind: 'user', text: 'and then?', raw_lines: [], ts: now() });
+    recv({ type: 'transcript', row_id: 903, session_id: 's1', kind: 'spoken', text: 'Next answer.', raw_lines: [], ts: now(), sentence_id: 903 });
+    ok(rows().length === n0 + 3, 'a user message ends the bubble; the next answer starts a new one');
+    recv({ type: 'transcript', row_id: 901, session_id: 's1', kind: 'spoken', text: 'Second sentence.', raw_lines: ['raw two'], ts: now(), sentence_id: 901, spoken: false });
+    ok(rowBySentence(901).classList.contains('cut') && !bubble.classList.contains('cut'), 'a re-sent sentence row updates its own span, not the whole bubble');
   }
 
   console.log(`app_test: all passed (${passed} checks)`);

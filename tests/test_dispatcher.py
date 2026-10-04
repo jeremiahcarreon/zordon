@@ -920,3 +920,22 @@ def test_speak_kinds_are_line_kinds(h: Harness):
     h.say("what did it say")  # answer
     kinds = [k for _, _, k in h.spoken]
     assert kinds == [LineKind.QUESTION, LineKind.SUMMARY, LineKind.ERROR, LineKind.PROSE]
+
+
+def test_sent_text_appears_as_a_user_row(tmp_path: Path):
+    """What the user sends shows on the page as a user row, whether sent at once, on the cue,
+    or from the draft box; a transcript question also records what was asked."""
+    from zordon.bus import TranscriptRow
+
+    h = Harness(tmp_path)
+    h.config.voice.submit_mode = "immediate"
+    h.say("run the tests")
+    rows = [e for e in drain_events(h.bus) if isinstance(e, TranscriptRow) and e.kind == "user"]
+    assert rows and rows[-1].text == "run the tests" and rows[-1].session_id == "s1" and rows[-1].row_id < 0
+    h.config.voice.submit_mode = "keyphrase"
+    h.say("add a test")
+    assert not [e for e in drain_events(h.bus) if isinstance(e, TranscriptRow)]  # a draft is not a row
+    h.say("send it zordon")
+    rows = [e for e in drain_events(h.bus) if isinstance(e, TranscriptRow) and e.kind == "user"]
+    assert rows and rows[-1].text == "add a test"
+    h.store.close()

@@ -762,18 +762,24 @@
       dataset: { rowId: String(msg.row_id), sessionId: msg.session_id },
     });
     if (msg.sentence_id !== undefined && msg.sentence_id !== null) li.dataset.sentenceId = String(msg.sentence_id);
+    var timeEl = el('time', { text: clock(msg.ts) });
     var meta = el('span', { class: 'row-meta' }, [
       other ? el('span', { class: 'row-session', text: sessionTag(msg.session_id) }) : null,
-      el('time', { text: clock(msg.ts) }),
+      timeEl,
     ]);
+    var first = el('span', { class: 'sentence' + (msg.spoken === false ? ' cut' : ''), text: msg.text, dataset: { rowId: String(msg.row_id) } });
+    var textEl = el('span', { class: 'row-text' }, [first]);
     var main = el('div', { class: 'row-main' }, [
-      el('span', { class: 'row-text', text: msg.text }),
+      textEl,
       el('span', { class: 'cut-mark', text: 'cut off' }),
       meta,
     ]);
     li.appendChild(main);
-    if (msg.raw_lines && msg.raw_lines.length) {
-      var pre = el('pre', { class: 'raw', hidden: true, text: msg.raw_lines.join('\n') });
+    // Spoken rows always get a raw block so later sentences of the same answer can add
+    // theirs; it stays hidden until tapped.
+    var pre = null;
+    if ((msg.raw_lines && msg.raw_lines.length) || msg.kind === 'spoken') {
+      pre = el('pre', { class: 'raw', hidden: true, text: (msg.raw_lines || []).join('\n') });
       li.appendChild(pre);
       li.classList.add('expandable');
       main.addEventListener('click', function () {
@@ -782,6 +788,7 @@
         li.classList.toggle('open', open);
       });
     }
+    li._parts = { text: textEl, pre: pre, time: timeEl, first: first };
     return li;
   }
 
@@ -845,10 +852,43 @@
     cmd('set_draft', { text: $('draft-text').value });
   }
 
+  // Spoken sentences of one answer arrive one row at a time; on the page they belong in
+  // one bubble. A sentence joins the previous bubble when that bubble is spoken, from the
+  // same session, and nothing else (a user message, a notice) came between.
+  var MERGE_GAP_S = 120;
+  function mergeTarget(msg) {
+    if (msg.kind !== 'spoken' || !S.rowOrder.length) return null;
+    var last = S.rows[S.rowOrder[S.rowOrder.length - 1]];
+    if (!last || last.msg.kind !== 'spoken' || last.msg.session_id !== msg.session_id) return null;
+    if (typeof msg.ts === 'number' && typeof last.msg.ts === 'number' && msg.ts - last.msg.ts > MERGE_GAP_S) return null;
+    return last.el;
+  }
+
+  function appendSentence(li, msg) {
+    var parts = li._parts || {};
+    var span = el('span', { class: 'sentence' + (msg.spoken === false ? ' cut' : ''), text: msg.text, dataset: { rowId: String(msg.row_id) } });
+    if (msg.sentence_id !== undefined && msg.sentence_id !== null) span.dataset.sentenceId = String(msg.sentence_id);
+    if (parts.text) {
+      parts.text.appendChild(el('span', { class: 'gap', text: ' ' }));
+      parts.text.appendChild(span);
+    }
+    if (msg.raw_lines && msg.raw_lines.length && parts.pre) {
+      parts.pre.textContent += (parts.pre.textContent ? '\n' : '') + msg.raw_lines.join('\n');
+    }
+    if (parts.time) parts.time.textContent = clock(msg.ts);
+    return span;
+  }
+
   function onTranscript(msg) {
     var existing = S.rows[msg.row_id];
     var wasAtBottom = feedAtBottom();
     if (existing) {
+      if (existing.span) {
+        existing.span.textContent = msg.text;
+        existing.span.classList.toggle('cut', msg.spoken === false);
+        existing.msg = msg;
+        return;
+      }
       var fresh = buildRow(msg);
       existing.el.parentNode.replaceChild(fresh, existing.el);
       existing.el = fresh;
@@ -857,6 +897,14 @@
     }
     if (msg.kind === 'user') reconcileLocalEcho(msg);
     if (msg.kind === 'notice' && /^Start a new project:/.test(msg.text || '')) openNewProject();
+    var target = mergeTarget(msg);
+    if (target) {
+      var span = appendSentence(target, msg);
+      S.rows[msg.row_id] = { el: target, msg: msg, span: span };
+      S.rowOrder.push(msg.row_id);
+      if (wasAtBottom) scrollFeedToBottom();
+      return;
+    }
     var li = buildRow(msg);
     $('rows').appendChild(li);
     S.rows[msg.row_id] = { el: li, msg: msg };
@@ -886,7 +934,11 @@
       var r = S.rows[ids[i]];
       if (r.msg.sentence_id === sentenceId) {
         r.msg.spoken = false;
-        r.el.classList.add('cut');
+        // The sentence itself is marked (a bubble holds a whole answer); the bubble gets
+        // the class too only when its first sentence is the one cut.
+        var span = r.span || (r.el._parts && r.el._parts.first);
+        if (span) span.classList.add('cut');
+        if (!r.span) r.el.classList.add('cut');
       }
     }
   }

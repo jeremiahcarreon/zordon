@@ -33,7 +33,16 @@ from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import Any
 
-from zordon.bus import Bus, Draft, LineKind, Notice, PromptKind, SessionState, Utterance
+from zordon.bus import (
+    Bus,
+    Draft,
+    LineKind,
+    Notice,
+    PromptKind,
+    SessionState,
+    TranscriptRow,
+    Utterance,
+)
 from zordon.config import VERBOSITY_LEVELS, Config
 from zordon.routing import commands
 from zordon.routing.base import (
@@ -346,7 +355,7 @@ class DispatcherThread(threading.Thread):
             self._publish_draft("composing")
             return
         self.sessions.send_text(sid, text)
-        self.store.add_event(sid, "user", text)
+        self._user_row(sid, text)
 
     # ---- deferred submit -----------------------------------------------------------------
 
@@ -421,7 +430,7 @@ class DispatcherThread(threading.Thread):
             log.exception("submit failed")
             sent = False
         if sent:
-            self.store.add_event(d.session_id, "user", text)
+            self._user_row(d.session_id, text)
             log.info("submitted %d part(s) to %s", len(d.parts), d.session_id[:8])
             self._publish_draft("sent", d)
         return bool(sent)
@@ -448,9 +457,23 @@ class DispatcherThread(threading.Thread):
             self._publish_draft("cleared", d)
         self._speak("Cleared." if cleared or d is not None else "Nothing to clear.", sid, "ack")
 
+    def _user_row(self, sid: str, text: str) -> None:
+        """Record what the user sent and show it on the page: the transcript's "you" side.
+        (The audio thread used to write a row per utterance; since the draft, the row is
+        written when the text is actually sent.)"""
+        try:
+            event_id = self.store.add_event(sid, "user", text)
+        except Exception:  # noqa: BLE001
+            log.exception("transcript add_event failed")
+            event_id = 0
+        try:
+            self.bus.publish(TranscriptRow(row_id=-int(event_id or 0), session_id=sid, kind="user", text=text, raw_lines=[], ts=time.time()))
+        except Exception:  # noqa: BLE001
+            log.debug("could not publish the user row", exc_info=True)
+
     def _transcript(self, text: str, sid: str, tail: list[str], raw: list[str] | None = None) -> None:
         answer = self._answerer.answer(text, tail, raw=raw)
-        self.store.add_event(sid, "user", text)
+        self._user_row(sid, text)
         self.store.add_event(sid, "notice", answer)
         self._speak(answer, sid, "answer")
 

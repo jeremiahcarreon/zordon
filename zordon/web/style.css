@@ -1571,3 +1571,6 @@ body.view-projects #drop-hint {
 .work-status.is-waiting .pulse { background: var(--warn); animation: zpulse 0.7s ease-in-out infinite; }
 @keyframes zpulse { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }
 .heard.partial .heard-text { color: var(--fg-2); font-style: italic; }
+
+/* sentences merged into one bubble: a cut-off one is marked on its own */
+.row-text .sentence.cut { opacity: 0.55; text-decoration: line-through; }
