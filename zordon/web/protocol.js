@@ -72,6 +72,8 @@
     'tunnel',
     'update',
     'health',
+    'heard',
+    'draft',
   ];
   var INBOUND_TYPES = ['audio', 'command', 'text', 'call', 'flush_ack', 'ping'];
 
@@ -288,6 +290,12 @@
         optional(m.permission_mode, isStr) &&
         optional(m.launch_mode, isStr)
       );
+    },
+    heard: function (m) {
+      return isStr(m.text) && optional(m.confidence, isNum) && isNum(m.ts);
+    },
+    draft: function (m) {
+      return isStr(m.session_id) && isStr(m.text) && ['composing', 'sent', 'cleared'].indexOf(m.state) !== -1 && isNum(m.ts);
     },
     error: function (m) {
       return isStr(m.message) && optional(m.code, isStr);

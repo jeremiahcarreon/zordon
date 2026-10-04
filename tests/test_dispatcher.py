@@ -4,6 +4,7 @@ and a speak() recorder. Every branch of the dispatcher is exercised synchronousl
 
 from __future__ import annotations
 
+import queue
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -225,7 +226,8 @@ class Harness:
     def __init__(self, tmp_path: Path, router=None, focused: str | None = "s1") -> None:
         self.bus = Bus()
         self.config = Config()
-        self.config.voice.submit_quiet_ms = 0  # the routing tests want every utterance sent at once
+        self.config.voice.submit_mode = "immediate"  # the routing tests want every utterance sent at once
+        self.config.voice.submit_quiet_ms = 0
         self.router = router or FakeRouter()
         self.sessions = FakeSessions(
             [
@@ -264,6 +266,15 @@ class Harness:
 
     def events(self, sid: str = "s1") -> list[tuple[str, str]]:
         return [(r.kind, r.text) for r in self.store.tail(sid, 50) if r.kind != "spoken"]
+
+
+def drain_events(bus: Bus) -> list:
+    out = []
+    while True:
+        try:
+            out.append(bus.client_events.get_nowait())
+        except queue.Empty:
+            return out
 
 
 @pytest.fixture
@@ -520,6 +531,7 @@ def test_deferred_submit_types_now_and_sends_after_the_quiet(tmp_path: Path):
     """Speech goes into the input box as it arrives; Enter follows the quiet (or "go ahead");
     "scratch that" clears; a prompt pauses the send; typed text still sends at once."""
     h = Harness(tmp_path)
+    h.config.voice.submit_mode = "quiet"
     h.config.voice.submit_quiet_ms = 2500
     h.say("add retry logic to the upload handler")
     assert h.sessions.called("compose") == [("s1", "add retry logic to the upload handler")]
@@ -561,8 +573,37 @@ def test_deferred_submit_types_now_and_sends_after_the_quiet(tmp_path: Path):
     h.store.close()
 
 
+def test_keyphrase_mode_sends_only_on_the_cue(tmp_path: Path):
+    """Default mode: a pause never sends; "send it Zordon" (any spelling) does, and a cue at
+    the end of a sentence sends that sentence with the rest of the draft."""
+    from zordon.bus import Draft
+
+    h = Harness(tmp_path)
+    h.config.voice.submit_mode = "keyphrase"
+    h.config.voice.submit_quiet_ms = 1000
+    h.say("add retry logic to the upload handler")
+    h.say("um, and make the backoff exponential")
+    d = h.dispatcher._draft
+    assert d is not None and d.deadline == float("inf")
+    assert not h.dispatcher.check_submit(now=time.monotonic() + 600)  # a long pause sends nothing
+    drafts = [e for e in drain_events(h.bus) if isinstance(e, Draft)]
+    assert drafts and drafts[-1].state == "composing" and drafts[-1].text.endswith("backoff exponential")
+    h.say("also add a test for it, send it zoredon")
+    assert h.sessions.called("compose")[-1] == ("s1", "also add a test for it")
+    assert h.sessions.called("submit") == [("s1",)] and h.dispatcher._draft is None and h.said()[-1] == "Sent."
+    assert h.events()[-1][1] == "add retry logic to the upload handler um, and make the backoff exponential also add a test for it"
+    # Typed "send it" (the page's Send button) sends too; typed prose with a trailing cue does not.
+    h.say("one more thing")
+    h.say("send it", source="text")
+    assert h.sessions.called("submit") == [("s1",), ("s1",)]
+    h.say("please send it to the server", source="text")
+    assert h.sessions.called("send_text")[-1] == ("s1", "please send it to the server")
+    h.store.close()
+
+
 def test_deferred_submit_off_sends_every_utterance(tmp_path: Path):
     h = Harness(tmp_path)
+    h.config.voice.submit_mode = "immediate"
     h.config.voice.submit_quiet_ms = 0
     h.say("run the tests")
     assert h.sessions.called("send_text") == [("s1", "run the tests")] and h.sessions.called("compose") == []

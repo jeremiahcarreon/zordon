@@ -293,6 +293,25 @@ class SettingsOut(_Strict):
     launch_mode: str | None = None  # sessions.permission_mode: what "New session" preselects
 
 
+class HeardOut(_Strict):
+    """Speech recognition's text for an utterance, before routing: the live "you said" line."""
+
+    type: Literal["heard"] = "heard"
+    text: str
+    confidence: float | None = None
+    ts: float
+
+
+class DraftOut(_Strict):
+    """What has been composed by voice for a session and not sent yet (decision 0019)."""
+
+    type: Literal["draft"] = "draft"
+    session_id: str
+    text: str
+    state: Literal["composing", "sent", "cleared"]
+    ts: float
+
+
 class ErrorOut(_Strict):
     type: Literal["error"] = "error"
     message: str
@@ -352,6 +371,8 @@ OUTBOUND_TYPES = (
     "tunnel",
     "update",
     "health",
+    "heard",
+    "draft",
 )
 INBOUND_TYPES = ("audio", "command", "text", "call", "flush_ack", "ping")
 

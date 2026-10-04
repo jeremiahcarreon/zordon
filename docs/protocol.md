@@ -61,6 +61,8 @@ touches no files). Each answers with `sessions` then `projects`.
 | `tunnel` | `url`, `qr_svg` | Public URL when `--tunnel` is active. |
 | `update` | `current`, `latest`, `command`, `auto`, `notes_url` | A newer Zordon exists; `auto: true` means it was installed and a restart picks it up. |
 | `health` | `status` (`ok`/`warn`/`fail`), `items[]` of `{key, label, status, detail, fix}`, `ts` | Runtime health of every component; sent on connect, on change, and at least every 60 s. Also at `GET /health`. |
+| `heard` | `text`, `confidence`, `ts` | What speech recognition made of the last utterance, before routing: the page's live "Heard" line. |
+| `draft` | `session_id`, `text`, `state` (`composing`/`sent`/`cleared`), `ts` | What has been said for a session and not sent yet (decision 0019); `composing` carries the whole draft so far. |
 | `error` | `message`, `code` | Something the user should see. `code` is `timeout` when a command did not finish within 12 s (it may still complete). |
 | `pong` | `ts` | Reply to `ping`. |
 

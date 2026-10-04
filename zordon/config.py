@@ -101,13 +101,16 @@ class VoiceConfig:
     speech_onset_frames: int = 3  # 3 x 20 ms = 60 ms
     speech_end_ms: int = 700
     echo_guard_ms: int = 120
-    # Deferred submit (decision 0019): speech is typed into the agent's input box as it
-    # is transcribed and sent only after this much quiet with nothing more said, or on
-    # "go ahead". 0 sends every utterance at once (the old behaviour).
-    submit_quiet_ms: int = 2500
-    # Plain spoken-style prose (no code, paths, identifiers or symbols) is spoken as written
-    # instead of waiting for the rewriter (decision 0019). true sends everything through it.
-    normalize_conversational: bool = False
+    # Deferred submit (decision 0019). "keyphrase": what you say piles up until you end it
+    # with "send it", "go ahead" or "send it Zordon" (a pause never sends). "quiet": it is
+    # sent after submit_quiet_ms with nothing more said, or on the keyphrase.
+    # "immediate": every utterance is sent at once (the old behaviour).
+    submit_mode: str = "keyphrase"  # keyphrase | quiet | immediate
+    submit_quiet_ms: int = 4000
+    # When the rewriter (normalizer) is used for the agent's prose: "never" speaks it as
+    # written after the deterministic pre-pass (Claude is told it is talking, decision 0019),
+    # "technical" only for text with code, paths or symbols, "always" for everything.
+    normalize: str = "never"  # never | technical | always
     # How many normalized sentences to buffer before playback starts.
     prebuffer_sentences: int = 3
 
@@ -257,6 +260,10 @@ class Config:
             raise ConfigError("output.source must be auto, jsonl or pane")
         if self.tunnel.provider not in ("cloudflared", "ngrok"):
             raise ConfigError("tunnel.provider must be cloudflared or ngrok")
+        if self.voice.submit_mode not in ("keyphrase", "quiet", "immediate"):
+            raise ConfigError("voice.submit_mode must be keyphrase, quiet or immediate")
+        if self.voice.normalize not in ("never", "technical", "always"):
+            raise ConfigError("voice.normalize must be never, technical or always")
         if self.sessions.permission_mode not in LAUNCH_MODES:
             hint = " (Zordon never launches with permissions bypassed)" if "bypass" in self.sessions.permission_mode.lower() else ""
             raise ConfigError(f"sessions.permission_mode must be one of {LAUNCH_MODES}{hint}")

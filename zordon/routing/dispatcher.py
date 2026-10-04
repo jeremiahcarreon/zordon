@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import Any
 
-from zordon.bus import Bus, LineKind, Notice, PromptKind, SessionState, Utterance
+from zordon.bus import Bus, Draft, LineKind, Notice, PromptKind, SessionState, Utterance
 from zordon.config import VERBOSITY_LEVELS, Config
 from zordon.routing import commands
 from zordon.routing.base import (
@@ -260,6 +260,19 @@ class DispatcherThread(threading.Thread):
         if not text:
             return
         self._source = u.source or "voice"
+        if self._submit_mode() != "immediate":
+            # "... add the tests, send it Zordon": the tail is the send cue; what is in front
+            # of it is the last piece of the draft. Typed text only counts when it is nothing
+            # but the cue (the page's Send button sends "send it").
+            rest, cue = strip_send_cue(text)
+            if cue and self._source != "voice" and rest:
+                cue = False
+            if cue:
+                sid = self._focused()
+                if rest and sid is not None and not self._state(sid).startswith("awaiting_"):
+                    self._to_claude(rest, sid, self._state(sid), source="voice")
+                self._cmd_send(None, text, sid)
+                return
         sid = self._focused()
         if self._pending is not None and self._handle_pending(text, sid):
             return
@@ -311,24 +324,44 @@ class DispatcherThread(threading.Thread):
         if state == SessionState.DETACHED.value:
             self._speak("That session is detached. Resume it from the app first.", sid, "error")
             return
-        quiet_ms = int(getattr(self.config.voice, "submit_quiet_ms", 0) or 0)
+        mode = self._submit_mode()
         compose = getattr(self.sessions, "compose", None)
-        if source == "voice" and quiet_ms > 0 and callable(compose):
-            # Deferred submit: type now, send after a quiet or on "go ahead".
+        if source == "voice" and mode != "immediate" and callable(compose):
+            # Deferred submit: type now; send on the cue ("send it", "go ahead"), and in
+            # quiet mode also after submit_quiet_ms with nothing more said.
             if self._draft is not None and self._draft.session_id != sid:
                 self._flush_draft()
             compose(sid, text)
             now = time.monotonic()
+            quiet_s = int(getattr(self.config.voice, "submit_quiet_ms", 0) or 0) / 1000.0
+            deadline = now + quiet_s if mode == "quiet" and quiet_s > 0 else float("inf")
             if self._draft is None:
-                self._draft = _Draft(sid, [text], now + quiet_ms / 1000.0)
+                self._draft = _Draft(sid, [text], deadline)
             else:
                 self._draft.parts.append(text)
-                self._draft.deadline = now + quiet_ms / 1000.0
+                self._draft.deadline = deadline
+            self._publish_draft("composing")
             return
         self.sessions.send_text(sid, text)
         self.store.add_event(sid, "user", text)
 
     # ---- deferred submit -----------------------------------------------------------------
+
+    def _submit_mode(self) -> str:
+        mode = str(getattr(self.config.voice, "submit_mode", "") or "")
+        if mode in ("keyphrase", "quiet", "immediate"):
+            return mode
+        # Older configs: submit_quiet_ms alone decided.
+        return "quiet" if int(getattr(self.config.voice, "submit_quiet_ms", 0) or 0) > 0 else "immediate"
+
+    def _publish_draft(self, state: str, draft: _Draft | None = None) -> None:
+        d = draft or self._draft
+        if d is None:
+            return
+        try:
+            self.bus.publish(Draft(session_id=d.session_id, text=" ".join(p.strip() for p in d.parts), state=state))
+        except Exception:  # noqa: BLE001
+            pass
 
     def check_submit(self, now: float | None = None) -> bool:
         """Send the draft when its quiet period has passed. Not while a prompt is up: an
@@ -358,6 +391,7 @@ class DispatcherThread(threading.Thread):
         if sent:
             self.store.add_event(d.session_id, "user", text)
             log.info("submitted %d part(s) to %s", len(d.parts), d.session_id[:8])
+            self._publish_draft("sent", d)
         return bool(sent)
 
     def _cmd_send(self, argument: str | None, text: str, sid: str | None) -> None:
@@ -378,6 +412,8 @@ class DispatcherThread(threading.Thread):
                 cleared = bool(self.sessions.clear_input(target))
             except Exception:  # noqa: BLE001
                 log.exception("clear_input failed")
+        if d is not None:
+            self._publish_draft("cleared", d)
         self._speak("Cleared." if cleared or d is not None else "Nothing to clear.", sid, "ack")
 
     def _transcript(self, text: str, sid: str, tail: list[str], raw: list[str] | None = None) -> None:
@@ -835,6 +871,29 @@ def _option_label(option: Any) -> str:
 def _prompt_kind(prompt: Any) -> str:
     k = _get(prompt, "kind")
     return str(getattr(k, "value", k) or "")
+
+
+# The send cue at the end of an utterance (decision 0019). Speech recognition spells
+# "Zordon" many ways, so the name is matched loosely; the cue may stand alone or close a
+# longer sentence ("add the tests, send it Zordon").
+_ZORDON = r"z[oa]r+[aeiou]?[-' ]?d[aoe]+n?e?"
+_SEND_CUE = re.compile(
+    r"(?:^|[,.;!?\s])(?:(?:ok(?:ay)?|alright|please)[,\s]+)?"
+    r"(?:(?:" + _ZORDON + r")[,\s]+)?"
+    r"(?:send(?: it| that| this| the message)?|go ahead(?: and send(?: it)?)?|ship it|submit(?: it| that)?|that'?s (?:all|it)|done talking|end of message)"
+    r"(?:[,\s]+" + _ZORDON + r")?[\s.!?,]*$",
+    re.IGNORECASE,
+)
+
+
+def strip_send_cue(text: str) -> tuple[str, bool]:
+    """``("add the tests", True)`` for "add the tests, send it Zordon"; ``(text, False)``
+    when the utterance does not end with a send cue."""
+    m = _SEND_CUE.search(text)
+    if not m:
+        return text, False
+    rest = text[: m.start()].rstrip(" ,.;")
+    return rest, True
 
 
 def _names_sentence_from(names: list[str]) -> str:

@@ -122,6 +122,8 @@ const SAMPLES = {
     entries: [{ name: 'website', path: '/home/u/website', has_git: true, project_id: 'p1' }],
     can_create: true,
   },
+  heard: { type: 'heard', text: 'add retry logic', confidence: 0.9, ts: 1.0 },
+  draft: { type: 'draft', session_id: 'abc', text: 'add retry logic', state: 'composing', ts: 1.0 },
   speech: { type: 'speech', sentence_id: 1, seq: 2, generation: 3, sample_rate: 24000, pcm: 'AAAA', final: true },
   flush: { type: 'flush', generation: 4 },
   transcript: {
@@ -205,6 +207,8 @@ const BAD = [
   { type: 'state', session_id: 'a', state: 'idle' }, // ts missing
   { type: 'sessions', sessions: [{ session_id: 'x' }] },
   { type: 'projects', projects: [{ id: 'p' }] },
+  { type: 'heard', text: 5, ts: 1.0 },
+  { type: 'draft', session_id: 'abc', text: 'x', state: 'nope', ts: 1.0 },
   { type: 'browse', path: '/home/u', home: '/home/u', entries: 'nope', can_create: true },
   { type: 'sessions', sessions: 'none' },
   { type: 'hello', protocol: 1 },

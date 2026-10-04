@@ -152,6 +152,28 @@ class Utterance:
 
 
 @dataclass(slots=True)
+class Heard:
+    """What speech recognition made of the last utterance, before routing: shown live on
+    the page so the user sees what Zordon thinks it heard (decision 0019)."""
+
+    text: str
+    confidence: float | None = None
+    client_id: str = ""
+    ts: float = field(default_factory=now)
+
+
+@dataclass(slots=True)
+class Draft:
+    """The text composed by voice for a session and not yet sent: ``composing`` as it grows,
+    ``sent`` when it went to the agent, ``cleared`` when thrown away."""
+
+    session_id: str
+    text: str
+    state: str  # composing | sent | cleared
+    ts: float = field(default_factory=now)
+
+
+@dataclass(slots=True)
 class Notice:
     text: str
     level: str = "info"  # info | warning | error

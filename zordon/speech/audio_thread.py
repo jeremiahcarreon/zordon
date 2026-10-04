@@ -49,7 +49,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from zordon.bus import Bus, Flush, Notice, SpeechChunk, TranscriptRow, Utterance, drain
+from zordon.bus import Bus, Flush, Heard, Notice, SpeechChunk, TranscriptRow, Utterance, drain
 from zordon.providers import ProviderError, STTProvider
 from zordon.speech.resample import pcm16_to_float32
 from zordon.speech.vad import GateKind, SpeechGate
@@ -393,6 +393,7 @@ class AudioThread(threading.Thread):
         if not text:
             log.debug("empty transcription for %.2f s utterance", duration_s)
             return
+        self.bus.publish(Heard(text=text, confidence=result.confidence, client_id=client_id))
         self.bus.utterances.put(
             Utterance(text=text, confidence=result.confidence, source="voice", client_id=client_id)
         )

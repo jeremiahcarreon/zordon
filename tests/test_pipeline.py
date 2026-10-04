@@ -90,7 +90,7 @@ class Harness:
         self.bus = Bus()
         self.focused: str | None = kw.get("focused", SID)
         self.config = Config()
-        self.config.voice.normalize_conversational = True  # these tests watch the rewriter; send everything through it
+        self.config.voice.normalize = "always"  # these tests watch the rewriter; send everything through it
         self.config.voice.verbosity = verbosity
         self.config.voice.prebuffer_sentences = prebuffer
         self.config.providers.normalizer_timeout_seconds = 0.5
@@ -856,7 +856,7 @@ def test_conversational_prose_skips_the_normalizer(make):
     assert not conversational("See /home/u/proj/src/ for details.")
     assert not conversational("run pytest -q --maxfail=1")
     h = make(verbosity="normal")
-    h.config.voice.normalize_conversational = False
+    h.config.voice.normalize = "technical"
     h.jsonl("I added the retry loop and the tests pass.")
     h.turn_end()
     assert h.wait_synth(1)

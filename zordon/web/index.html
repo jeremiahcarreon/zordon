@@ -114,6 +114,23 @@
 
     <div id="drop-hint" class="drop-hint" hidden>Drop to upload into the project</div>
 
+    <!-- what Zordon heard, as it hears it, and what is waiting to be sent -->
+    <div id="heard" class="heard" hidden>
+      <span class="heard-label">Heard</span>
+      <span id="heard-text" class="heard-text"></span>
+    </div>
+    <div id="draft" class="draft" hidden>
+      <div class="draft-main">
+        <span class="draft-label">Not sent yet</span>
+        <span id="draft-text" class="draft-text"></span>
+      </div>
+      <div class="draft-actions">
+        <button type="button" id="draft-send" class="btn small primary">Send</button>
+        <button type="button" id="draft-clear" class="btn small">Clear</button>
+      </div>
+      <p class="muted small draft-hint">Say "send it" or "go ahead" to send, "scratch that" to clear.</p>
+    </div>
+
     <!-- (6) text input, (7) file drop -->
     <form id="composer" class="composer" autocomplete="off">
       <button type="button" id="btn-attach" class="icon-btn" aria-label="Attach file" title="Attach file"><svg><use href="#i-clip"/></svg></button>

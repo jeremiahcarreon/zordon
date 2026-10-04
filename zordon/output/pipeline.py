@@ -629,8 +629,11 @@ class PipelineThread(threading.Thread):
             self._cv.notify_all()
 
     def _speak_as_is(self, text: str) -> bool:
-        if bool(getattr(self.config.voice, "normalize_conversational", False)):
+        mode = str(getattr(self.config.voice, "normalize", "never") or "never")
+        if mode == "always":
             return False
+        if mode == "never":
+            return True
         return conversational(text)
 
     def _normalize(self, text: str, context: list[str]) -> str:

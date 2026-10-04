@@ -482,6 +482,25 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     $('np-close').click();
   }
 
+  // ---- heard line and the unsent draft (decision 0019) ----
+  {
+    recv({ type: 'heard', text: 'add retry logic to the uploader', confidence: 0.9, ts: now() });
+    ok(!$('heard').hasAttribute('hidden') && $('heard-text').textContent === 'add retry logic to the uploader', 'what Zordon heard shows at once');
+    recv({ type: 'draft', session_id: 's1', text: 'add retry logic to the uploader', state: 'composing', ts: now() });
+    ok(!$('draft').hasAttribute('hidden') && /retry logic/.test($('draft-text').textContent), 'the unsent draft is shown while composing');
+    const before = sent.length;
+    $('draft-send').click();
+    const last = sent[sent.length - 1];
+    ok(sent.length === before + 1 && last.type === 'text' && last.text === 'send it', 'the Send button sends the cue');
+    recv({ type: 'draft', session_id: 's1', text: 'add retry logic to the uploader', state: 'sent', ts: now() });
+    ok($('draft').hasAttribute('hidden'), 'a sent draft disappears');
+    recv({ type: 'draft', session_id: 's1', text: 'never mind this', state: 'composing', ts: now() });
+    $('draft-clear').click();
+    ok(sent[sent.length - 1].text === 'scratch that', 'the Clear button sends the cue');
+    recv({ type: 'draft', session_id: 's1', text: '', state: 'cleared', ts: now() });
+    ok($('draft').hasAttribute('hidden'), 'a cleared draft disappears');
+  }
+
   console.log(`app_test: all passed (${passed} checks)`);
   process.exit(0);
 })().catch((e) => { console.error('app_test failed:', e); process.exit(1); });

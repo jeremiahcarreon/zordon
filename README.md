@@ -297,8 +297,9 @@ page is sent immediately.
 
 **Claude is told it is in a conversation.** Every session Zordon launches carries a short
 system prompt: two or three plain sentences, no markdown or paths, one question at a time
-through the question tool, say the plan and wait for "go ahead". Plain spoken-style replies go
-straight to the voice without the rewriter in between. A project with **Talk it through first**
+through the question tool, say the plan and wait for "go ahead". Replies go straight to the
+voice: the rewriter is off by default now that Claude writes for the ear (`voice.normalize =
+"never"`); the deterministic pre-pass still strips markdown. A project with **Talk it through first**
 (the default) also starts in plan mode when it asks before acting: Claude cannot change anything
 until you approve its plan, and "go ahead" is the approval.
 

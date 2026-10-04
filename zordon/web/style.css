@@ -1543,3 +1543,20 @@ body.view-projects #drop-hint {
     transition: none !important;
   }
 }
+
+/* what Zordon heard, and the unsent draft (decision 0019) */
+.heard {
+  display: flex; gap: 8px; align-items: baseline; padding: 6px 16px; font-size: 14px;
+  color: var(--fg-2);
+}
+.heard-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; flex: none; }
+.heard-text { color: var(--fg); }
+.draft {
+  margin: 0 16px 8px; padding: 10px 12px; border: 1px solid var(--accent);
+  border-radius: 12px; background: var(--bg-2);
+}
+.draft-main { display: flex; gap: 8px; align-items: baseline; }
+.draft-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); flex: none; }
+.draft-text { font-size: 15px; }
+.draft-actions { display: flex; gap: 8px; margin-top: 8px; }
+.draft-hint { margin: 6px 0 0; }

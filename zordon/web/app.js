@@ -429,6 +429,10 @@
         return onProjects(msg);
       case 'browse':
         return onBrowse(msg);
+      case 'heard':
+        return onHeard(msg);
+      case 'draft':
+        return onDraft(msg);
       default:
         return undefined;
     }
@@ -767,6 +771,30 @@
       });
     }
     return li;
+  }
+
+  // ---- what Zordon heard / the unsent draft (decision 0019) ---------------------
+
+  var heardTimer = null;
+  function onHeard(msg) {
+    var box = $('heard');
+    if (!box) return;
+    $('heard-text').textContent = msg.text;
+    show(box, true);
+    if (heardTimer) clearTimeout(heardTimer);
+    heardTimer = setTimeout(function () { show(box, false); }, 8000);
+  }
+
+  function onDraft(msg) {
+    var box = $('draft');
+    if (!box) return;
+    if (msg.state === 'composing' && msg.text) {
+      $('draft-text').textContent = msg.text;
+      show(box, true);
+    } else {
+      show(box, false);
+      $('draft-text').textContent = '';
+    }
   }
 
   function onTranscript(msg) {
@@ -1973,6 +2001,12 @@
     });
     $('np-talk').addEventListener('change', function (e) {
       S.np.talk = !!e.target.checked;
+    });
+    $('draft-send').addEventListener('click', function () {
+      send({ type: 'text', text: 'send it' });  // routed like speech: the dispatcher sends the draft
+    });
+    $('draft-clear').addEventListener('click', function () {
+      send({ type: 'text', text: 'scratch that' });
     });
     $('np-headless').addEventListener('change', function (e) {
       S.np.headless = !!e.target.checked;
