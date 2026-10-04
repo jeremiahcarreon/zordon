@@ -553,6 +553,10 @@ class Agent:
             self._started = True
         if warm_up:
             self._warm_up()
+        try:
+            self.manager.sweep_orphan_headless()
+        except Exception:  # noqa: BLE001
+            log.debug("orphan sweep failed", exc_info=True)
         self.manager.start_thread()
         self.pipeline.start()
         self.audio.start()

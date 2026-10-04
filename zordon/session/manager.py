@@ -146,6 +146,38 @@ def no_tui_text(agent_name: str) -> str:
     return f"{agent_name} isn't on screen in that pane, so I won't type into it. Resume the session first."
 
 
+def _terminate_claude(pid: int, session_id: str | None) -> bool:
+    """Terminate ``pid`` when it is still a claude process (for ``session_id`` when given):
+    SIGTERM, a short wait, then SIGKILL. False when it was gone already or is something else."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return False
+    if "claude" not in cmdline or (session_id and session_id not in cmdline):
+        return False
+    import signal  # noqa: PLC0415
+
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return False
+    for _ in range(30):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.1)
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except OSError:
+        pass
+    return True
+
+
 def _prompt_gist(m: PromptMatch) -> str:
     """What a permission or question is about, loosely: enough to recognise the same request
     whether it came through the hook or was read off the screen."""
@@ -411,6 +443,41 @@ class SessionManager(threading.Thread):
         self._commands.put(None)
         if self.is_alive() and threading.current_thread() is not self:
             self.join(timeout)
+        self._close_headless_all()
+
+    def _close_headless_all(self) -> None:
+        """A headless process has no pane to live on in: it ends with the server. Left
+        running it would keep working on its last instruction with nobody listening, and
+        the next open of the project would resume the same conversation in a second
+        process (seen live: two agents on one session)."""
+        with self._lock:
+            sessions = [s for s in self.sessions.values() if s.headless is not None]
+        for s in sessions:
+            try:
+                s.headless.close()
+            except Exception:  # noqa: BLE001
+                log.debug("closing headless %s failed", s.session_id[:8], exc_info=True)
+            if s.project_id:
+                p = self.projects.get(s.project_id)
+                if p is not None and p.headless_pid:
+                    try:
+                        self.projects.update(p, headless_pid=None)
+                    except OSError:
+                        pass
+
+    def sweep_orphan_headless(self) -> int:
+        """At start: terminate claude -p processes a previous server left behind."""
+        n = 0
+        for p in self.projects.list():
+            if p.headless_pid and _terminate_claude(p.headless_pid, p.session_id):
+                n += 1
+                log.warning("terminated orphaned headless Claude Code (pid %d) of project %s", p.headless_pid, p.name)
+            if p.headless_pid:
+                try:
+                    self.projects.update(p, headless_pid=None)
+                except OSError:
+                    pass
+        return n
 
     def _drain_commands(self, deadline: float) -> None:
         """Run queued commands; block until the first arrives or ``deadline`` passes."""
@@ -1918,6 +1985,12 @@ class SessionManager(threading.Thread):
         hooks = self._hook_request(sid, scope=scope)
         if hooks is None:
             raise SessionError("headless Claude Code needs the hook port; start Zordon with serve")
+        if project is not None and project.headless_pid:
+            # A previous server's process for this project may still be alive; two
+            # processes on one conversation is the worst outcome, so it goes first.
+            if _terminate_claude(project.headless_pid, project.session_id):
+                log.warning("terminated the previous headless Claude Code (pid %d) of project %s", project.headless_pid, project.name)
+            self.projects.update(project, headless_pid=None)
         log_path = self.zordon_home / "headless" / f"{sid[:8]}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1947,6 +2020,13 @@ class SessionManager(threading.Thread):
             s.permission_mode = permission_mode  # known from the launch; the init record confirms it
             s.state = SessionState.IDLE
             s.detail = "ready (headless)"
+        if project is not None:
+            pid = getattr(getattr(sess, "proc", None), "pid", None)
+            if pid:
+                try:
+                    self.projects.update(project, headless_pid=int(pid))
+                except OSError:
+                    pass
         self.bus.publish(StateChanged(sid, SessionState.IDLE, "ready (headless)"))
         log.info("started headless claude-code session %s in %s", sid[:8], cwd)
         return sid

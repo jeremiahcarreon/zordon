@@ -51,6 +51,7 @@ class Project:
     talk_first: bool = True  # ask questions and state a plan before changing anything (decision 0019)
     runner: str = "terminal"  # terminal (a tmux pane you can look at) | headless (claude -p, decision 0020)
     session_id: str | None = None  # the agent's last session in this project (resumes it)
+    headless_pid: int | None = None  # the claude -p process of a headless project, while it runs
     tmux_target: str | None = None  # where it last ran; reconnected when still alive
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)

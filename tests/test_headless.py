@@ -306,3 +306,50 @@ def _drain_lines(bus: Bus):
             out.append(bus.pane_lines.get_nowait())
         except Exception:  # noqa: BLE001
             return out
+
+
+def test_headless_process_ends_with_the_server_and_orphans_are_terminated(headless_env):
+    """Seen live: zordon restart left the claude -p process running, and opening the project
+    resumed the same conversation in a second process. The pid is recorded on the project,
+    stop() closes the process, and a relaunch or a fresh server terminates a leftover first."""
+    import os
+
+    mgr, bus, proj = headless_env
+    row = mgr.create_project(str(proj.parent), "orphan", runner="headless", talk_first=False)
+    sid = row["session_id"]
+    s = mgr.sessions[sid]
+    pid = s.headless.proc.pid
+    project = mgr.projects.get(row["id"])
+    assert project.headless_pid == pid and s.headless.alive
+    # Stop the server: the process goes with it and the pid is cleared.
+    mgr.stop()
+    assert not s.headless.alive and mgr.projects.get(row["id"]).headless_pid is None
+
+    # A pid left behind by a previous server, still alive and still claude for this session:
+    # terminated on the next open (the fake claude carries the session id on its command line).
+    import subprocess
+    import sys
+
+    from tests.test_headless import FAKE
+
+    stray = subprocess.Popen([sys.executable, str(FAKE), "--session-id", sid, "--input-format", "stream-json"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, start_new_session=True)
+    try:
+        mgr.projects.update(project, headless_pid=stray.pid, session_id=sid)
+        assert mgr.sweep_orphan_headless() == 1
+        for _ in range(50):
+            if stray.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert stray.poll() is not None and mgr.projects.get(row["id"]).headless_pid is None
+        # A pid that is not a claude process is left alone.
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"], start_new_session=True)
+        try:
+            mgr.projects.update(project, headless_pid=other.pid)
+            assert mgr.sweep_orphan_headless() == 0 and other.poll() is None
+        finally:
+            other.kill()
+            other.wait()
+    finally:
+        if stray.poll() is None:
+            stray.kill()
+            stray.wait()
