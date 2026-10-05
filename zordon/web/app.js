@@ -788,7 +788,9 @@
         li.classList.toggle('open', open);
       });
     }
-    li._parts = { text: textEl, pre: pre, time: timeEl, first: first };
+    var rawSeen = {};
+    (msg.raw_lines || []).forEach(function (line) { rawSeen[line] = true; });
+    li._parts = { text: textEl, pre: pre, time: timeEl, first: first, rawSeen: rawSeen };
     return li;
   }
 
@@ -873,7 +875,17 @@
       parts.text.appendChild(span);
     }
     if (msg.raw_lines && msg.raw_lines.length && parts.pre) {
-      parts.pre.textContent += (parts.pre.textContent ? '\n' : '') + msg.raw_lines.join('\n');
+      // Sentences of one paragraph each carry the whole paragraph as their raw text; the
+      // bubble shows every raw line once, in order.
+      var fresh = [];
+      for (var i = 0; i < msg.raw_lines.length; i++) {
+        var line = msg.raw_lines[i];
+        if (!parts.rawSeen[line]) {
+          parts.rawSeen[line] = true;
+          fresh.push(line);
+        }
+      }
+      if (fresh.length) parts.pre.textContent += (parts.pre.textContent ? '\n' : '') + fresh.join('\n');
     }
     if (parts.time) parts.time.textContent = clock(msg.ts);
     return span;

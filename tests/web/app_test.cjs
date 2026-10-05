@@ -546,6 +546,10 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     const bubble = rows()[rows().length - 1];
     ok(/First sentence\. Second sentence\. Third sentence\./.test(bubble.textContent), 'the bubble reads as one text');
     ok(/raw one\nraw two/.test(bubble._parts.pre.textContent), 'the raw lines of every sentence are kept under it');
+    // Two sentences from the same paragraph both carry the paragraph: shown once.
+    recv({ type: 'transcript', row_id: 904, session_id: 's1', kind: 'spoken', text: 'Fourth.', raw_lines: ['raw two', 'raw three'], ts: now(), sentence_id: 904 });
+    recv({ type: 'transcript', row_id: 905, session_id: 's1', kind: 'spoken', text: 'Fifth.', raw_lines: ['raw two', 'raw three'], ts: now(), sentence_id: 905 });
+    ok(bubble._parts.pre.textContent === 'raw one\nraw two\nraw three', 'repeated raw paragraphs appear once, in order');
     recv({ type: 'transcript', row_id: -50, session_id: 's1', kind: 'user', text: 'and then?', raw_lines: [], ts: now() });
     recv({ type: 'transcript', row_id: 903, session_id: 's1', kind: 'spoken', text: 'Next answer.', raw_lines: [], ts: now(), sentence_id: 903 });
     ok(rows().length === n0 + 3, 'a user message ends the bubble; the next answer starts a new one');
