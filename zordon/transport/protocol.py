@@ -189,6 +189,8 @@ class SessionSummary(_Strict):
     permission_mode: str | None = None
     focused: bool = False
     agent: str = "claude-code"
+    model: str | None = None  # the agent's model id as its transcript reports it
+    effort: str | None = None  # the agent's effort level as its hooks report it
 
 
 class Sessions(_Strict):

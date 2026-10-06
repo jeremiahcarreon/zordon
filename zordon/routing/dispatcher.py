@@ -78,7 +78,7 @@ SAFE_IN_PROMPT = frozenset(
     {"mute", "unmute", "repeat", "status", "list_sessions", "set_verbosity", "set_tool_chatter", "scratch", "hush"}
 )
 # Shim commands that need a focused session.
-NEEDS_SESSION = frozenset({"stop", "repeat", "status", "set_permission_mode", "delete", "detach"})
+NEEDS_SESSION = frozenset({"stop", "repeat", "status", "set_permission_mode", "delete", "detach", "set_model", "set_effort"})
 # Permission modes voice may switch to when session.permissions is not importable.
 _DEFAULT_VOICE_SWITCHABLE = ("default", "acceptEdits", "plan")
 # Transcript-query context: raw transcript lines (every pre-passed line, kept or not).
@@ -620,6 +620,28 @@ class DispatcherThread(threading.Thread):
     def _cmd_unmute(self, argument: str | None, text: str, sid: str | None) -> None:
         self.settings.set_muted(False)
         self._speak("Unmuted.", sid, "ack")
+
+    def _cmd_set_model(self, argument: str | None, text: str, sid: str | None) -> None:
+        if not argument:
+            self._speak("Which model? Say sonnet, opus, fable or haiku.", sid, "question")
+            return
+        try:
+            ok = self.sessions.set_model(sid, argument)
+        except Exception as e:  # noqa: BLE001
+            self._speak(str(e), sid, "error")
+            return
+        self._speak(f"Switching to {argument}." if ok else "I couldn't switch the model.", sid, "ack")
+
+    def _cmd_set_effort(self, argument: str | None, text: str, sid: str | None) -> None:
+        if not argument:
+            self._speak("Which effort? Low, medium, high, x high or max.", sid, "question")
+            return
+        try:
+            ok = self.sessions.set_effort(sid, argument)
+        except Exception as e:  # noqa: BLE001
+            self._speak(str(e), sid, "error")
+            return
+        self._speak(f"Effort set to {argument}." if ok else "I couldn't change the effort.", sid, "ack")
 
     def _cmd_hush(self, argument: str | None, text: str, sid: str | None) -> None:
         """Stop the voice, not the agent: the rest of the answer is dropped, nothing is typed."""

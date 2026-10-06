@@ -99,3 +99,7 @@
 {"utterance": "never mind", "expected": "shim_command", "command": "scratch", "state": "working", "notes": ""}
 {"utterance": "got it", "expected": "shim_command", "command": "hush", "state": "working", "notes": "stop reading aloud; the agent keeps working"}
 {"utterance": "say no more", "expected": "shim_command", "command": "hush", "state": "idle", "notes": ""}
+{"utterance": "switch to sonnet", "expected": "shim_command", "command": "set_model", "argument": "sonnet", "state": "idle", "notes": "model for this session"}
+{"utterance": "use opus", "expected": "shim_command", "command": "set_model", "argument": "opus", "state": "working", "notes": ""}
+{"utterance": "set effort to high", "expected": "shim_command", "command": "set_effort", "argument": "high", "state": "idle", "notes": "effort level for this session"}
+{"utterance": "low effort", "expected": "shim_command", "command": "set_effort", "argument": "low", "state": "idle", "notes": ""}

@@ -843,7 +843,7 @@ class CodexAdapter(BaseAdapter):
 
     # ---- launching ----------------------------------------------------------------
 
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None) -> LaunchSpec:
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None, extra_args: Sequence[str] = ()) -> LaunchSpec:
         """``codex [approval args]``. Codex picks its own thread id (UUIDv7), so
         ``session_id`` is only Zordon's handle; ``transcript_source`` finds the
         rollout file by cwd and launch time. Hooks: Codex has lifecycle hooks in
@@ -854,7 +854,7 @@ class CodexAdapter(BaseAdapter):
         self._launched[session_id] = (time.time(), cwd)
         return LaunchSpec(command=argv, cwd=cwd)
 
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None) -> LaunchSpec:
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None, extra_args: Sequence[str] = ()) -> LaunchSpec:
         """``codex resume <thread id> [approval args]`` (live: `codex resume --help`)."""
         _refuse_bypass_for_codex(permission_mode)
         if not UUID_RE.match(session_id or ""):

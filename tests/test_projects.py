@@ -420,3 +420,55 @@ def test_voice_prompt_override_file(monkeypatch, tmp_path: Path):
     assert vp.system_prompt(talk_first=True) == "Say arr, then wait for go ahead."
     vp.set_custom_prompt("")
     assert vp.custom_prompt() is None and not (tmp_path / "voice_prompt.md").exists()
+
+
+def test_model_and_effort_tracking_and_switching(env, tmp_path: Path, monkeypatch):
+    """The model comes from the transcript, the effort from hook payloads; "switch to sonnet"
+    types /model in a pane and the project remembers it for the next launch."""
+    from zordon.bus import PaneLine
+    from zordon.session.manager import model_label, normalize_effort, normalize_model
+
+    assert normalize_model("Sonnet") == "sonnet" and normalize_model("claude-sonnet-5-5") == "claude-sonnet-5-5" and normalize_model("gpt") is None
+    assert normalize_effort("extra high") == "xhigh" and normalize_effort("maximum") == "max" and normalize_effort("turbo") is None
+    assert model_label("claude-opus-5-5") == "Opus 5.5" and model_label("sonnet") == "Sonnet"
+
+    mgr, bus, tmux, clock, proj = env
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    row = mgr.create_project(str(home), "Mod")
+    sid = row["session_id"]
+    s = mgr.sessions[sid]
+    from tests.test_manager import lines_of
+
+    tmux.set_screen(s.target, lines_of("idle.txt"), alt=True)
+    mgr.poll_once()  # the TUI is on screen: typing is allowed
+    # The transcript names the model on its assistant records.
+    class Src:
+        def __init__(self):
+            self.lines = [PaneLine(session_id=sid, text="hi", source="jsonl", block="text", meta={"model": "claude-opus-5-5"})]
+
+        def poll(self):
+            out, self.lines = self.lines, []
+            return out
+
+    s.transcript = Src()
+    mgr._poll_transcript(s)
+    assert s.model == "claude-opus-5-5" and mgr.list_sessions()[0].model == "claude-opus-5-5"
+    # Hooks carry the effort.
+    mgr.hook_event({"session_id": sid, "hook_event_name": "UserPromptSubmit", "effort": {"level": "medium"}})
+    assert s.effort == "medium"
+    # Switching by voice: a pane gets the slash command; the project remembers.
+    assert mgr.set_model(sid, "sonnet") and mgr.set_effort(sid, "x high")
+    typed = [c for c in tmux.calls if c[0] == "literal"]
+    assert typed[-2] == ("literal", s.target, "/model sonnet") and typed[-1] == ("literal", s.target, "/effort xhigh")
+    p = mgr.projects.get(row["id"])
+    assert p.model == "sonnet" and p.effort == "xhigh" and s.model == "sonnet" and s.effort == "xhigh"
+    with pytest.raises(SessionError):
+        mgr.set_model(sid, "gpt-9")
+    # A new launch carries them.
+    mgr.sessions.clear()
+    tmux.alive[p.tmux_target] = False
+    mgr.open_project(row["id"])
+    command = claude_argv(tmux.windows[-1][3])
+    assert command[command.index("--model") + 1] == "sonnet" and command[command.index("--effort") + 1] == "xhigh"

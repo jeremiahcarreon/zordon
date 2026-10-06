@@ -96,16 +96,17 @@ def parse_record(
     if rtype in ASSISTANT_TYPES and msg.get("role") == "assistant":
         if msg.get("model") == SYNTHETIC_MODEL:
             return []
+        model_meta = {"model": msg.get("model")} if isinstance(msg.get("model"), str) else {}
         for block in _blocks(msg.get("content")):
             btype = block.get("type")
             if btype == "text":
                 text = block.get("text")
                 if isinstance(text, str) and text.strip():
-                    out.append(ev("text", text=text))
+                    out.append(ev("text", text=text, meta=dict(model_meta)))
             elif btype == "tool_use":
                 name = block.get("name") if isinstance(block.get("name"), str) else ""
                 inp = block.get("input") if isinstance(block.get("input"), dict) else {}
-                out.append(ev("tool_use", name=name, input=inp, tool_use_id=str(block.get("id") or "")))
+                out.append(ev("tool_use", name=name, input=inp, tool_use_id=str(block.get("id") or ""), meta=dict(model_meta)))
             elif btype == "thinking" and include_thinking:
                 thought = block.get("thinking")
                 if isinstance(thought, str) and thought.strip():
@@ -319,9 +320,10 @@ def to_pane_lines(event: JsonlEvent, session_id: str) -> list[PaneLine]:
     meta: dict[str, Any] = {"record_type": event.record_type}
     if event.kind == "text":
         text = event.text
+        meta.update(event.meta)
     elif event.kind == "tool_use":
         text = event.name
-        meta.update({"name": event.name, "input": event.input, "tool_use_id": event.tool_use_id})
+        meta.update({"name": event.name, "input": event.input, "tool_use_id": event.tool_use_id, **event.meta})
     elif event.kind == "tool_result":
         text = event.text
         meta.update(

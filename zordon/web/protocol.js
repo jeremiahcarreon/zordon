@@ -240,7 +240,9 @@
           !isStr(s.state) ||
           !optional(s.permission_mode, isStr) ||
           !optional(s.focused, isBool) ||
-          !optional(s.agent, isStr)
+          !optional(s.agent, isStr) ||
+          !optional(s.model, isStr) ||
+          !optional(s.effort, isStr)
         ) {
           return false;
         }

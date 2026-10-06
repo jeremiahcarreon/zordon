@@ -146,6 +146,49 @@ def no_tui_text(agent_name: str) -> str:
     return f"{agent_name} isn't on screen in that pane, so I won't type into it. Resume the session first."
 
 
+def _launch_extra(project: Project | None) -> list[str]:
+    """``--model`` / ``--effort`` for a project that chose them."""
+    if project is None:
+        return []
+    out: list[str] = []
+    if project.model:
+        out += ["--model", project.model]
+    if project.effort:
+        out += ["--effort", project.effort]
+    return out
+
+
+MODEL_ALIASES = {"sonnet": "sonnet", "opus": "opus", "fable": "fable", "haiku": "haiku", "default": "default"}
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def normalize_model(model: str) -> str | None:
+    """A model alias ("sonnet") or a full id ("claude-sonnet-5-5"); None for anything else."""
+    raw = (model or "").strip().lower().replace(" ", "")
+    if raw in MODEL_ALIASES:
+        return MODEL_ALIASES[raw]
+    if re.fullmatch(r"claude-[a-z0-9-]{3,60}", raw):
+        return raw
+    return None
+
+
+def normalize_effort(level: str) -> str | None:
+    raw = (level or "").strip().lower().replace(" ", "").replace("-", "")
+    aliases = {"extrahigh": "xhigh", "veryhigh": "xhigh", "maximum": "max", "normal": "medium", "med": "medium"}
+    raw = aliases.get(raw, raw)
+    return raw if raw in EFFORT_LEVELS else None
+
+
+def model_label(model: str | None) -> str:
+    """"claude-opus-5-5" -> "Opus 5.5"; an alias as given."""
+    if not model:
+        return ""
+    m = re.fullmatch(r"claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?", model)
+    if m:
+        return f"{m.group(1).capitalize()} {m.group(2)}.{m.group(3)}"
+    return model.capitalize() if model.isalpha() else model
+
+
 def _terminate_claude(pid: int, session_id: str | None) -> bool:
     """Terminate ``pid`` when it is still a claude process (for ``session_id`` when given):
     SIGTERM, a short wait, then SIGKILL. False when it was gone already or is something else."""
@@ -264,6 +307,8 @@ class SessionSummary:
     permission_mode: str | None = None
     focused: bool = False
     agent: str = DEFAULT_AGENT
+    model: str | None = None
+    effort: str | None = None
 
 
 @dataclass
@@ -316,6 +361,8 @@ class Session:
     scope_dir: str | None = None  # file edits outside this directory (and ~/.claude) are denied by the hook
     hook_prompt: hookprompts.HookPrompt | None = None  # a PermissionRequest waiting for the user (decision 0019)
     plan_text: str | None = None  # the plan the ExitPlanMode hook announced; read with the on-screen menu
+    model: str | None = None  # the agent's model id, from its transcript records ("claude-opus-5-5")
+    effort: str | None = None  # the agent's effort level, from its hook payloads ("medium")
     composing: bool = False  # text typed into the input box and not yet submitted (deferred submit)
     # After Enter: the head of the text that should leave the input box, and when to retry.
     composed_text: str = ""
@@ -959,12 +1006,25 @@ class SessionManager(threading.Thread):
         if not lines:
             return 0
         publish = self._transcript_source_active(s)
+        changed = False
         for line in lines:
             if line.block == "permission_mode" and line.text:
                 s.permission_mode = line.text
+            model = line.meta.get("model") if isinstance(line.meta, dict) else None
+            if isinstance(model, str) and model and not model.startswith("<") and model != s.model:
+                s.model = model
+                changed = True
             if publish:
                 self.bus.pane_lines.put(line)
+        if changed:
+            self._publish_sessions_soon()
         return len(lines)
+
+    def _publish_sessions_soon(self) -> None:
+        """A field the picker shows (model, effort) changed: refresh every client's rows."""
+        with self._lock:
+            self._refocused = True
+        self._flush_refocus()
 
     def _remember_tail(self, s: Session, lines: list[str]) -> None:
         for line in lines:
@@ -1020,6 +1080,8 @@ class SessionManager(threading.Thread):
             permission_mode=s.permission_mode,
             focused=s.session_id == self._focused,
             agent=s.agent,
+            model=s.model,
+            effort=s.effort,
         )
 
     def focused(self) -> str | None:
@@ -1129,7 +1191,13 @@ class SessionManager(threading.Thread):
         scope = project is not None and project.scope_edits
         try:
             spec = adapter.new_session(
-                sid, cwd, permission_mode, self._hook_request(sid, scope=scope), allow_bypass=bypass, system_prompt=self._system_prompt(adapter, project)
+                sid,
+                cwd,
+                permission_mode,
+                self._hook_request(sid, scope=scope),
+                allow_bypass=bypass,
+                system_prompt=self._system_prompt(adapter, project),
+                extra_args=_launch_extra(project),
             )
         except (NotImplementedError, ValueError) as e:
             raise SessionError(str(e)) from e
@@ -1231,6 +1299,7 @@ class SessionManager(threading.Thread):
                 self._hook_request(session_id, scope=scope),
                 allow_bypass=bypass,
                 system_prompt=self._system_prompt(adapter, project),
+                extra_args=_launch_extra(project),
             )
         except (NotImplementedError, ValueError) as e:
             raise SessionError(str(e)) from e
@@ -2002,6 +2071,7 @@ class SessionManager(threading.Thread):
                 resume=resume_id is not None,
                 allow_bypass=bypass,
                 system_prompt=self._system_prompt(adapter, project),
+                extra_args=_launch_extra(project),
                 zordon_argv=zordon_argv(),
                 log_path=log_path,
             )
@@ -2046,6 +2116,74 @@ class SessionManager(threading.Thread):
             return hookprompts.NO_OPINION
         return hp.decision or hookprompts.NO_OPINION
 
+    def _note_effort(self, s: Session, payload: dict[str, Any]) -> None:
+        effort = payload.get("effort")
+        level = effort.get("level") if isinstance(effort, dict) else effort
+        if isinstance(level, str) and level and level != s.effort:
+            s.effort = level
+            self._publish_sessions_soon()
+
+    # ---- model and effort (voice: "switch to sonnet", "set effort to high") --------------
+
+    def set_model(self, session_id: str, model: str) -> bool:
+        return self._call(self._do_set_model, session_id, model)
+
+    def set_effort(self, session_id: str, level: str) -> bool:
+        return self._call(self._do_set_effort, session_id, level)
+
+    def _do_set_model(self, session_id: str, model: str) -> bool:
+        name = normalize_model(model)
+        if name is None:
+            raise SessionError("Say a model alias like sonnet, opus or fable, or a full model id.")
+        return self._apply_launch_setting(session_id, model=name)
+
+    def _do_set_effort(self, session_id: str, level: str) -> bool:
+        lvl = normalize_effort(level)
+        if lvl is None:
+            raise SessionError("Effort is low, medium, high, x high or max.")
+        return self._apply_launch_setting(session_id, effort=lvl)
+
+    def _apply_launch_setting(self, session_id: str, *, model: str | None = None, effort: str | None = None) -> bool:
+        """In a pane: Claude Code's own /model or /effort command, typed. Headless: the
+        process is relaunched (resumed) with --model / --effort, since -p has no slash
+        commands. Either way the project remembers the choice for next time."""
+        s = self._live(session_id)
+        project = self.projects.get(s.project_id) if s.project_id else None
+        if project is not None:
+            self.projects.update(project, **({"model": model} if model else {}), **({"effort": effort} if effort else {}))
+        if s.headless is not None:
+            if project is None:
+                raise SessionError("A headless session without a project cannot change its model.")
+            if model:
+                s.model = model
+            if effort:
+                s.effort = effort
+            self._relaunch_headless(s, project)
+            return True
+        self._require_tui(s)
+        command = f"/model {model}" if model else f"/effort {effort}"
+        self.tmux.send_literal(s.target, command)
+        self.tmux.send_enter(s.target)
+        if model:
+            s.model = model
+        if effort:
+            s.effort = effort
+        self._publish_sessions_soon()
+        return True
+
+    def _relaunch_headless(self, s: Session, project: Project) -> None:
+        """Close the process and start it again on the same conversation with the project's
+        current launch settings."""
+        try:
+            s.headless.close()
+        except Exception:  # noqa: BLE001
+            log.debug("closing headless %s failed", s.session_id[:8], exc_info=True)
+        with self._lock:
+            s.attached = False
+            s.state = SessionState.DETACHED
+        resume_id = s.session_id
+        self._start_headless(project.directory, project.permission_mode, project, resume_id=resume_id)
+
     def _hook_session(self, payload: dict[str, Any]) -> Session | None:
         sid = str(payload.get("session_id") or "")
         cwd = str(payload.get("cwd") or "")
@@ -2072,6 +2210,7 @@ class SessionManager(threading.Thread):
         mode = payload.get("permission_mode")
         if isinstance(mode, str) and mode:
             s.permission_mode = mode
+        self._note_effort(s, payload)
         if hp.tool_name == hookprompts.PLAN_TOOL:
             # The plan menu is drawn regardless of the hook's answer: keep the plan text for
             # the spoken prompt and let the screen reader own the menu.
@@ -2491,6 +2630,7 @@ class SessionManager(threading.Thread):
         if hint is None:
             log.debug("%s: hook payload ignored by the %s adapter", sid[:8], s.agent)
             return
+        self._note_effort(s, payload)
         with self._lock:
             s.hook_hint = hint
             if payload.get("hook_event_name") == "UserPromptSubmit":

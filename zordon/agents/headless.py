@@ -215,10 +215,10 @@ class HeadlessAdapter(ClaudeCodeAdapter):
     def transcript_source(self, session_id: str, cwd: str, info: SessionInfo | None) -> TranscriptSource | None:
         return None  # the process's own stdout is the transcript
 
-    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None) -> LaunchSpec:
+    def new_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None, extra_args: Sequence[str] = ()) -> LaunchSpec:
         raise NotImplementedError("headless sessions are started with launch(), not in a pane")
 
-    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None) -> LaunchSpec:
+    def resume_session(self, session_id: str, cwd: str, permission_mode: str | None, hooks: HookRequest | None, *, allow_bypass: bool = False, system_prompt: str | None = None, extra_args: Sequence[str] = ()) -> LaunchSpec:
         raise NotImplementedError("headless sessions are started with launch(), not in a pane")
 
     # ---- launching -----------------------------------------------------------------------
@@ -233,6 +233,7 @@ class HeadlessAdapter(ClaudeCodeAdapter):
         mcp_config: Path,
         allow_bypass: bool = False,
         system_prompt: str | None = None,
+        extra_args: Sequence[str] = (),
     ) -> list[str]:
         """The ``claude -p`` argv. ``validate_command`` keeps the same refusals as the pane."""
         argv = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
@@ -244,6 +245,11 @@ class HeadlessAdapter(ClaudeCodeAdapter):
             argv += ["--permission-mode", discovery.normalize_mode(permission_mode, allow_bypass=allow_bypass)]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
+        if extra_args:
+            pairs = list(extra_args)
+            if len(pairs) % 2 or any(flag not in discovery.LAUNCH_EXTRA_FLAGS for flag in pairs[::2]):
+                raise ValueError(f"extra launch args must be pairs of {discovery.LAUNCH_EXTRA_FLAGS}")
+            argv += pairs
         discovery.validate_command(argv, allow_bypass=allow_bypass)
         return argv
 
@@ -257,6 +263,7 @@ class HeadlessAdapter(ClaudeCodeAdapter):
         resume: bool = False,
         allow_bypass: bool = False,
         system_prompt: str | None = None,
+        extra_args: Sequence[str] = (),
         zordon_argv: Sequence[str] = ("zordon",),
         log_path: Path | None = None,
         popen: Any = subprocess.Popen,
@@ -289,6 +296,7 @@ class HeadlessAdapter(ClaudeCodeAdapter):
             mcp_config=mcp_path,
             allow_bypass=allow_bypass,
             system_prompt=system_prompt,
+            extra_args=extra_args,
         )
         # Same environment as a pane would get: provider keys and nesting markers scrubbed.
         # CLAUDE_CONFIG_DIR is left as the user has it: pointing Claude Code at ~/.claude

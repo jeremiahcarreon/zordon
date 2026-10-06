@@ -841,6 +841,24 @@
     } catch (_) {}
   }
 
+  function modelLabel(id) {
+    if (!id) return '';
+    var m = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(id);
+    if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' ' + m[2] + '.' + m[3];
+    return id.charAt(0).toUpperCase() + id.slice(1);
+  }
+
+  function renderWorkModel() {
+    var el = $('work-model');
+    if (!el) return;
+    var s = S.focused ? S.sessionsById[S.focused] : null;
+    var parts = [];
+    if (s && s.model) parts.push(modelLabel(s.model));
+    if (s && s.effort) parts.push(s.effort + ' effort');
+    el.textContent = parts.join(' · ');
+    show(el, parts.length > 0);
+  }
+
   function renderWorkStatus() {
     var el = $('work-status');
     if (!el) return;
@@ -1342,6 +1360,7 @@
     }
     document.body.dataset.state = st || 'none';
     renderWorkStatus();
+    renderWorkModel();
     renderView();
     // Rows from the focused session are no longer "other"; cheap to recompute.
     Object.keys(S.rows).forEach(function (id) {

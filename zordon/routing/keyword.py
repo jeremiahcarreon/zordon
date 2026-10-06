@@ -261,6 +261,13 @@ _FOCUS_PATTERN = re.compile(
     r"^(?:focus|select)(?: on)?(?: the)? (?P<name2>.+?)(?P<cue2> session| project)?$"
 )
 _FOCUS_NOISE = frozenset({"next", "previous", "other", "last", "first"})
+_MODEL_PATTERN = re.compile(
+    r"^(?:(?:switch|change|set|go)(?: the)?(?: model)?(?: over)? to|use|try)(?: the)? (?P<model>sonnet|opus|fable|haiku|claude-[a-z0-9-]+)(?: model)?$"
+)
+_EFFORT_PATTERN = re.compile(
+    r"^(?:(?:set|change|put)(?: the)? effort(?: level)? to|effort(?: level)?(?: to)?|use) (?P<level>low|medium|normal|high|x ?high|extra high|very high|max|maximum)(?: effort)?$"
+    r"|^(?P<level2>low|medium|high|x ?high|extra high|max|maximum) effort$"
+)
 # "open the api project", "continue zordon", "work on the website project": a saved
 # project by name. Checked before the focus pattern so a project that is not running
 # is started rather than "not found".
@@ -448,6 +455,12 @@ class KeywordRouter:
                 return self._shim("set_permission_mode", PATTERN_CONFIDENCE, None)
             return self._shim("set_permission_mode", PATTERN_CONFIDENCE if arg else WEAK_CONFIDENCE, arg)
 
+        m = _MODEL_PATTERN.match(sq)
+        if m:
+            return self._shim("set_model", PATTERN_CONFIDENCE, m.group("model"))
+        m = _EFFORT_PATTERN.match(sq)
+        if m:
+            return self._shim("set_effort", PATTERN_CONFIDENCE, (m.group("level") or m.group("level2")).replace(" ", ""))
         project = self._match_project(sq, ctx)
         if project is not None:
             return project

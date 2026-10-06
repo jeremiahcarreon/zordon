@@ -955,3 +955,16 @@ def test_hush_stops_the_voice_without_touching_the_agent(tmp_path: Path):
     assert any(isinstance(e, Flush) for e in drain_events(h.bus))
     assert h.sessions.called("compose") == [] and h.sessions.called("send_escape") == [] and h.said() == []
     h.store.close()
+
+
+def test_model_and_effort_by_voice(tmp_path: Path):
+    h = Harness(tmp_path)
+    h.sessions.set_model = lambda sid, m: h.sessions._rec("set_model", sid, m) or True
+    h.sessions.set_effort = lambda sid, e: h.sessions._rec("set_effort", sid, e) or True
+    h.router.routes["switch to sonnet"] = RouteResult("shim_command", 0.99, command="set_model", argument="sonnet")
+    h.router.routes["set effort to high"] = RouteResult("shim_command", 0.99, command="set_effort", argument="high")
+    h.say("switch to sonnet")
+    assert h.sessions.called("set_model") == [("s1", "sonnet")] and h.said()[-1] == "Switching to sonnet."
+    h.say("set effort to high")
+    assert h.sessions.called("set_effort") == [("s1", "high")] and h.said()[-1] == "Effort set to high."
+    h.store.close()

@@ -295,6 +295,12 @@ transcribed, but not sent. It goes when you have been quiet for 2.5 seconds (`vo
 or at once when you say "go ahead" or "send it". "Scratch that" clears the box. Text typed on the
 page is sent immediately.
 
+**Model and effort in plain view.** The project header shows the model Claude is answering with
+and its effort level, as Claude reports them. Say "switch to sonnet" (or opus, fable, haiku) or
+"set effort to high" (low, medium, high, x high, max). In a terminal pane that types Claude
+Code's own `/model` or `/effort` command; a headless session is relaunched on the same
+conversation with the new flags. The project remembers both for its next launch.
+
 **Cut it off, or speed it up.** "Got it", "say no more" or the Hush button stop reading the
 current answer and drop the rest; the agent keeps working and nothing is sent. Settings has a
 speech speed slider (0.6x to 2x, saved), and picking a voice plays a short sample of it at once

@@ -216,6 +216,8 @@ def to_session_summary(obj: Any, focused: str | None) -> P.SessionSummary:
         permission_mode=get("permission_mode"),
         focused=bool(sid) and sid == focused,
         agent=str(get("agent", "") or "claude-code"),
+        model=get("model"),
+        effort=get("effort"),
     )
 
 

@@ -561,6 +561,14 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     ok(rowBySentence(901).classList.contains('cut') && !bubble.classList.contains('cut'), 'a re-sent sentence row updates its own span, not the whole bubble');
   }
 
+  // ---- model and effort indicator ----
+  {
+    recv({ type: 'sessions', sessions: [{ session_id: 's1', directory: '/home/u/Code/site', title: 'site', last_active: now(), attached: true, running: true, state: 'idle', focused: true, model: 'claude-opus-5-5', effort: 'medium' }] });
+    ok(!$('work-model').hasAttribute('hidden') && $('work-model').textContent === 'Opus 5.5 · medium effort', 'the work head shows the model and effort');
+    recv({ type: 'sessions', sessions: [{ session_id: 's1', directory: '/home/u/Code/site', title: 'site', last_active: now(), attached: true, running: true, state: 'idle', focused: true }] });
+    ok($('work-model').hasAttribute('hidden'), 'nothing known: nothing shown');
+  }
+
   // ---- speed slider and Hush ----
   {
     recv({ type: 'settings', verbosity: 'normal', tool_chatter: false, muted: false, providers: {}, tts_speed: 1.3 });

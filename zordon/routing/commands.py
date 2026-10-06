@@ -83,6 +83,18 @@ SHIM_COMMANDS: tuple[ShimCommand, ...] = (
         "stop reading the current answer aloud; the agent keeps working and nothing is sent",
         ("got it", "say no more", "that's enough", "okay okay", "shut up"),
     ),
+    ShimCommand(
+        "set_model",
+        "switch the agent's model for this session: sonnet, opus, fable, haiku or a full model id",
+        ("switch to <model>", "use <model>", "change the model to <model>"),
+        takes_argument="model",
+    ),
+    ShimCommand(
+        "set_effort",
+        "set the agent's effort level for this session: low, medium, high, x high or max",
+        ("set effort to <level>", "effort <level>", "<level> effort"),
+        takes_argument="effort",
+    ),
     # deferred submit (decision 0019)
     ShimCommand(
         "send",
