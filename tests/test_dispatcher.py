@@ -939,3 +939,19 @@ def test_sent_text_appears_as_a_user_row(tmp_path: Path):
     rows = [e for e in drain_events(h.bus) if isinstance(e, TranscriptRow) and e.kind == "user"]
     assert rows and rows[-1].text == "add a test"
     h.store.close()
+
+
+def test_hush_stops_the_voice_without_touching_the_agent(tmp_path: Path):
+    """"Got it" / "say no more": the current answer stops, the rest is dropped (a new
+    generation), nothing is typed and nothing is spoken back."""
+    from zordon.bus import Flush
+
+    h = Harness(tmp_path)
+    h.config.voice.submit_mode = "keyphrase"
+    h.router.routes["got it"] = RouteResult("shim_command", 0.99, command="hush")
+    gen = h.bus.generation
+    h.say("got it")
+    assert h.bus.generation == gen + 1
+    assert any(isinstance(e, Flush) for e in drain_events(h.bus))
+    assert h.sessions.called("compose") == [] and h.sessions.called("send_escape") == [] and h.said() == []
+    h.store.close()

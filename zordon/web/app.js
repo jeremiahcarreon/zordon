@@ -561,6 +561,12 @@
   }
 
   function onSettings(msg) {
+    if (typeof msg.tts_speed === 'number') {
+      var sl = $('set-speed');
+      if (sl && document.activeElement !== sl) sl.value = String(msg.tts_speed);
+      var sv = $('set-speed-value');
+      if (sv) sv.textContent = msg.tts_speed.toFixed(2) + 'x';
+    }
     if (typeof msg.system_prompt === 'string') {
       var pt = $('set-prompt');
       if (pt && document.activeElement !== pt) pt.value = msg.system_prompt;
@@ -767,19 +773,31 @@
       other ? el('span', { class: 'row-session', text: sessionTag(msg.session_id) }) : null,
       timeEl,
     ]);
+    // A spoken row shows Claude's own text (the raw lines, as written) up front; the
+    // sentences as spoken sit in the hidden block the bubble opens on tap, each marked
+    // when cut off. Rows without raw text (user, notices) show their text.
+    var showRaw = msg.kind === 'spoken' && msg.raw_lines && msg.raw_lines.length;
     var first = el('span', { class: 'sentence' + (msg.spoken === false ? ' cut' : ''), text: msg.text, dataset: { rowId: String(msg.row_id) } });
-    var textEl = el('span', { class: 'row-text' }, [first]);
+    var rawEl = el('div', { class: 'row-raw', text: showRaw ? msg.raw_lines.join('\n') : '' });
+    var textEl = el('span', { class: 'row-text' + (showRaw ? ' spoken-list' : '') }, [first]);
     var main = el('div', { class: 'row-main' }, [
-      textEl,
+      showRaw ? rawEl : textEl,
       el('span', { class: 'cut-mark', text: 'cut off' }),
       meta,
     ]);
     li.appendChild(main);
-    // Spoken rows always get a raw block so later sentences of the same answer can add
-    // theirs; it stays hidden until tapped.
+    // The block the bubble opens on tap: the spoken sentences for a spoken row (Claude's
+    // text is up front), the raw lines for anything else that has them.
     var pre = null;
-    if ((msg.raw_lines && msg.raw_lines.length) || msg.kind === 'spoken') {
-      pre = el('pre', { class: 'raw', hidden: true, text: (msg.raw_lines || []).join('\n') });
+    if (msg.kind === 'spoken' || (msg.raw_lines && msg.raw_lines.length)) {
+      pre = el('pre', { class: 'raw', hidden: true });
+      if (showRaw) {
+        pre.classList.add('spoken-block');
+        pre.appendChild(el('span', { class: 'muted small', text: 'As spoken: ' }));
+        pre.appendChild(textEl);
+      } else {
+        pre.textContent = (msg.raw_lines || []).join('\n');
+      }
       li.appendChild(pre);
       li.classList.add('expandable');
       main.addEventListener('click', function () {
@@ -790,7 +808,7 @@
     }
     var rawSeen = {};
     (msg.raw_lines || []).forEach(function (line) { rawSeen[line] = true; });
-    li._parts = { text: textEl, pre: pre, time: timeEl, first: first, rawSeen: rawSeen };
+    li._parts = { text: textEl, pre: pre, raw: showRaw ? rawEl : null, time: timeEl, first: first, rawSeen: rawSeen };
     return li;
   }
 
@@ -874,7 +892,7 @@
       parts.text.appendChild(el('span', { class: 'gap', text: ' ' }));
       parts.text.appendChild(span);
     }
-    if (msg.raw_lines && msg.raw_lines.length && parts.pre) {
+    if (msg.raw_lines && msg.raw_lines.length) {
       // Sentences of one paragraph each carry the whole paragraph as their raw text; the
       // bubble shows every raw line once, in order.
       var fresh = [];
@@ -885,7 +903,10 @@
           fresh.push(line);
         }
       }
-      if (fresh.length) parts.pre.textContent += (parts.pre.textContent ? '\n' : '') + fresh.join('\n');
+      if (fresh.length) {
+        if (parts.raw) parts.raw.textContent += (parts.raw.textContent ? '\n' : '') + fresh.join('\n');
+        else if (parts.pre) parts.pre.textContent += (parts.pre.textContent ? '\n' : '') + fresh.join('\n');
+      }
     }
     if (parts.time) parts.time.textContent = clock(msg.ts);
     return span;
@@ -2202,6 +2223,19 @@
       audio.setMicMuted(S.micMuted);
       if (!S.micMuted) $('mic-level').style.width = '0%';
       updateCallUI();
+    });
+    $('btn-hush').addEventListener('click', function () {
+      var res = audio.stopLocal();
+      markInterrupted(res.interrupted, null);
+      cmd('hush');
+    });
+    var speedTimer = null;
+    $('set-speed').addEventListener('input', function (e) {
+      $('set-speed-value').textContent = Number(e.target.value).toFixed(2) + 'x';
+      if (speedTimer) clearTimeout(speedTimer);
+      speedTimer = setTimeout(function () {
+        cmd('set_speed', { speed: Number(e.target.value) });
+      }, 250);
     });
     $('btn-stop').addEventListener('click', function () {
       // Silence right away and keep dropping speech of this generation until the

@@ -1574,3 +1574,9 @@ body.view-projects #drop-hint {
 
 /* sentences merged into one bubble: a cut-off one is marked on its own */
 .row-text .sentence.cut { opacity: 0.55; text-decoration: line-through; }
+
+/* Claude's own text up front; the spoken sentences on tap */
+.row-raw { white-space: pre-wrap; word-break: break-word; font: inherit; line-height: 1.45; }
+pre.raw.spoken-block { white-space: normal; font: inherit; color: var(--fg-2); }
+pre.raw.spoken-block .sentence.cut { text-decoration: line-through; opacity: 0.6; }
+input[type="range"]#set-speed { width: 100%; }

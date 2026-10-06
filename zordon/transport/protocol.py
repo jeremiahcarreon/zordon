@@ -54,6 +54,8 @@ COMMANDS = (
     "set_system_prompt",
     "set_draft",
     "send_draft",
+    "set_speed",
+    "hush",
 )
 
 
@@ -294,6 +296,7 @@ class SettingsOut(_Strict):
     providers: dict[str, str]
     permission_mode: str | None = None
     launch_mode: str | None = None  # sessions.permission_mode: what "New session" preselects
+    tts_speed: float | None = None  # speech rate, 0.5 to 2.0
     system_prompt: str | None = None  # what Claude is told about talking (the voice-mode instruction)
     system_prompt_custom: bool = False  # the user edited it (false: Zordon's default text)
 

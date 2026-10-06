@@ -233,6 +233,7 @@ def settings_out(settings: dict[str, Any]) -> P.SettingsOut:
         providers=clean,
         permission_mode=settings.get("permission_mode"),
         launch_mode=settings.get("launch_mode"),
+        tts_speed=settings.get("tts_speed"),
         system_prompt=settings.get("system_prompt"),
         system_prompt_custom=bool(settings.get("system_prompt_custom", False)),
     )
@@ -653,9 +654,29 @@ class ClientConnection:
             "admin": self._cmd_admin,
             "forget_project": self._cmd_forget_project,
             "set_system_prompt": self._cmd_set_system_prompt,
+            "set_speed": self._cmd_set_speed,
+            "hush": self._cmd_hush,
             "set_draft": lambda a: self._cmd_draft(a, "draft"),
             "send_draft": lambda a: self._cmd_draft(a, "draft_send"),
         }
+
+    def _cmd_set_speed(self, args: dict[str, Any]) -> BaseModel:
+        speed = args.get("speed")
+        if not isinstance(speed, (int, float)) or isinstance(speed, bool):
+            return _bad_argument("speed")
+        setter = getattr(self.agent, "set_speed", None)
+        if not callable(setter):
+            return P.ErrorOut(message="not supported here", code="unsupported")
+        setter(float(speed))
+        return self._settings()
+
+    def _cmd_hush(self, args: dict[str, Any]) -> BaseModel | None:
+        hush = getattr(self.agent, "hush", None)
+        if callable(hush):
+            hush()
+        else:
+            self._flush_speech()
+        return None
 
     def _cmd_set_system_prompt(self, args: dict[str, Any]) -> BaseModel:
         text = args.get("text")

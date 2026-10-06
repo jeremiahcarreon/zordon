@@ -36,6 +36,7 @@ from typing import Any
 from zordon.bus import (
     Bus,
     Draft,
+    Flush,
     LineKind,
     Notice,
     PromptKind,
@@ -74,7 +75,7 @@ SPEAK_KINDS: dict[str, LineKind] = {
 
 # Shim commands that may run while a prompt is waiting: none of them moves the session.
 SAFE_IN_PROMPT = frozenset(
-    {"mute", "unmute", "repeat", "status", "list_sessions", "set_verbosity", "set_tool_chatter", "scratch"}
+    {"mute", "unmute", "repeat", "status", "list_sessions", "set_verbosity", "set_tool_chatter", "scratch", "hush"}
 )
 # Shim commands that need a focused session.
 NEEDS_SESSION = frozenset({"stop", "repeat", "status", "set_permission_mode", "delete", "detach"})
@@ -619,6 +620,15 @@ class DispatcherThread(threading.Thread):
     def _cmd_unmute(self, argument: str | None, text: str, sid: str | None) -> None:
         self.settings.set_muted(False)
         self._speak("Unmuted.", sid, "ack")
+
+    def _cmd_hush(self, argument: str | None, text: str, sid: str | None) -> None:
+        """Stop the voice, not the agent: the rest of the answer is dropped, nothing is typed."""
+        hush = getattr(self.settings, "hush", None)
+        if callable(hush):
+            hush()
+            return
+        generation = self.bus.next_generation()
+        self.bus.publish(Flush(generation=generation))
 
     def _cmd_stop(self, argument: str | None, text: str, sid: str | None) -> None:
         self.sessions.send_escape(sid)

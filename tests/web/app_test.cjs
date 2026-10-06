@@ -544,17 +544,30 @@ function ok(cond, what) { assert.ok(cond, what); passed++; console.log('ok ' + w
     recv({ type: 'transcript', row_id: 902, session_id: 's1', kind: 'spoken', text: 'Third sentence.', raw_lines: [], ts: now(), sentence_id: 902 });
     ok(rows().length === n0 + 1, 'three sentences of one answer make one bubble');
     const bubble = rows()[rows().length - 1];
-    ok(/First sentence\. Second sentence\. Third sentence\./.test(bubble.textContent), 'the bubble reads as one text');
-    ok(/raw one\nraw two/.test(bubble._parts.pre.textContent), 'the raw lines of every sentence are kept under it');
+    // Claude's own text is what the bubble shows; the spoken sentences sit in the block it opens.
+    ok(/raw one\nraw two/.test(bubble._parts.raw.textContent), "the bubble shows Claude's text as written");
+    ok(/First sentence\. Second sentence\. Third sentence\./.test(bubble._parts.pre.textContent), 'the spoken sentences are under it, as one text');
     // Two sentences from the same paragraph both carry the paragraph: shown once.
     recv({ type: 'transcript', row_id: 904, session_id: 's1', kind: 'spoken', text: 'Fourth.', raw_lines: ['raw two', 'raw three'], ts: now(), sentence_id: 904 });
     recv({ type: 'transcript', row_id: 905, session_id: 's1', kind: 'spoken', text: 'Fifth.', raw_lines: ['raw two', 'raw three'], ts: now(), sentence_id: 905 });
-    ok(bubble._parts.pre.textContent === 'raw one\nraw two\nraw three', 'repeated raw paragraphs appear once, in order');
+    ok(bubble._parts.raw.textContent === 'raw one\nraw two\nraw three', 'repeated raw paragraphs appear once, in order');
+    // A sentence with no raw text of its own (an intent line) still joins and is spoken-listed.
+    recv({ type: 'transcript', row_id: 906, session_id: 's1', kind: 'spoken', text: 'Sixth.', raw_lines: [], ts: now(), sentence_id: 906 });
+    ok(/Sixth\./.test(bubble._parts.pre.textContent) && bubble._parts.raw.textContent === 'raw one\nraw two\nraw three', 'a raw-less sentence adds nothing to the written text');
     recv({ type: 'transcript', row_id: -50, session_id: 's1', kind: 'user', text: 'and then?', raw_lines: [], ts: now() });
     recv({ type: 'transcript', row_id: 903, session_id: 's1', kind: 'spoken', text: 'Next answer.', raw_lines: [], ts: now(), sentence_id: 903 });
     ok(rows().length === n0 + 3, 'a user message ends the bubble; the next answer starts a new one');
     recv({ type: 'transcript', row_id: 901, session_id: 's1', kind: 'spoken', text: 'Second sentence.', raw_lines: ['raw two'], ts: now(), sentence_id: 901, spoken: false });
     ok(rowBySentence(901).classList.contains('cut') && !bubble.classList.contains('cut'), 'a re-sent sentence row updates its own span, not the whole bubble');
+  }
+
+  // ---- speed slider and Hush ----
+  {
+    recv({ type: 'settings', verbosity: 'normal', tool_chatter: false, muted: false, providers: {}, tts_speed: 1.3 });
+    ok($('set-speed').value === '1.3' && $('set-speed-value').textContent === '1.30x', 'the speed slider follows settings');
+    const before = cmds('hush').length;
+    $('btn-hush').click();
+    ok(cmds('hush').length === before + 1, 'Hush sends the hush command');
   }
 
   console.log(`app_test: all passed (${passed} checks)`);

@@ -787,3 +787,15 @@ def test_hook_secret_survives_restarts(tmp_path: Path):
     first = A.load_or_create_hook_secret(home)
     assert len(first) >= 32 and (home / "hook.secret").stat().st_mode & 0o777 == 0o600
     assert A.load_or_create_hook_secret(home) == first
+
+
+def test_set_speed_changes_the_voice_and_persists(agent: A.Agent, parts: dict[str, Any]):
+    tts = parts["tts"]
+    tts.speed = 1.0
+    agent.set_speed(1.45)
+    assert agent.config.providers.tts_speed == 1.45 and tts.speed == 1.45
+    assert agent.settings()["tts_speed"] == 1.45
+    agent.set_speed(9)  # clamped
+    assert agent.config.providers.tts_speed == 2.0
+    with pytest.raises(ValueError):
+        agent.set_speed("fast")

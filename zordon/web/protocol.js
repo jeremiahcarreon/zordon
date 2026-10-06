@@ -57,6 +57,8 @@
     'set_system_prompt',
     'set_draft',
     'send_draft',
+    'set_speed',
+    'hush',
   ];
 
   var OUTBOUND_TYPES = [
@@ -292,6 +294,7 @@
         isStrDict(m.providers) &&
         optional(m.permission_mode, isStr) &&
         optional(m.launch_mode, isStr) &&
+        optional(m.tts_speed, isNum) &&
         optional(m.system_prompt, isStr) &&
         optional(m.system_prompt_custom, isBool)
       );

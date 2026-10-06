@@ -97,3 +97,5 @@
 {"utterance": "send it", "expected": "shim_command", "command": "send", "state": "working", "notes": ""}
 {"utterance": "scratch that", "expected": "shim_command", "command": "scratch", "state": "idle", "notes": "deferred submit: throw the draft away"}
 {"utterance": "never mind", "expected": "shim_command", "command": "scratch", "state": "working", "notes": ""}
+{"utterance": "got it", "expected": "shim_command", "command": "hush", "state": "working", "notes": "stop reading aloud; the agent keeps working"}
+{"utterance": "say no more", "expected": "shim_command", "command": "hush", "state": "idle", "notes": ""}

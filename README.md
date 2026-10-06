@@ -295,6 +295,11 @@ transcribed, but not sent. It goes when you have been quiet for 2.5 seconds (`vo
 or at once when you say "go ahead" or "send it". "Scratch that" clears the box. Text typed on the
 page is sent immediately.
 
+**Cut it off, or speed it up.** "Got it", "say no more" or the Hush button stop reading the
+current answer and drop the rest; the agent keeps working and nothing is sent. Settings has a
+speech speed slider (0.6x to 2x, saved). Each bubble shows Claude's text as written; tap it to
+see the sentences as spoken.
+
 **You can tell when it is working.** The project header shows a pulsing "working" indicator,
 "waiting for you" when it needs an answer, and the page plays a short two-note tone when the
 agent starts and when it is done (Settings > Sounds to turn it off). Failed tool calls are not

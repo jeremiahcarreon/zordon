@@ -78,6 +78,11 @@ SHIM_COMMANDS: tuple[ShimCommand, ...] = (
         "stop following the focused session but leave it running",
         ("detach", "leave this session running"),
     ),
+    ShimCommand(
+        "hush",
+        "stop reading the current answer aloud; the agent keeps working and nothing is sent",
+        ("got it", "say no more", "that's enough", "okay okay", "shut up"),
+    ),
     # deferred submit (decision 0019)
     ShimCommand(
         "send",

@@ -684,6 +684,7 @@ class Agent:
             "providers": self.providers.names(),
             "permission_mode": mode,
             "launch_mode": self.config.sessions.permission_mode,
+            "tts_speed": float(self.config.providers.tts_speed or 1.0),
             "system_prompt": _voice_prompt_text(),
             "system_prompt_custom": _voice_prompt_custom(),
             "tts_sample_rate": self.tts_sample_rate,
@@ -759,6 +760,33 @@ class Agent:
             raise
         log.info("provider %s -> %s", kind, getattr(new, "name", name))
         self._publish_settings()
+
+    def set_speed(self, speed: float) -> None:
+        """Speech rate for sentences synthesised from now on (Kokoro's own speed, so the
+        pitch stays natural). Saved to config.toml so it survives a restart."""
+        try:
+            value = float(speed)
+        except (TypeError, ValueError) as e:
+            raise ValueError("speed must be a number") from e
+        value = max(0.5, min(2.0, round(value, 2)))
+        self.config.providers.tts_speed = value
+        tts = getattr(self.providers, "tts", None)
+        if tts is not None and hasattr(tts, "speed"):
+            tts.speed = value
+        try:
+            self.config.save()
+        except OSError:
+            log.warning("could not save tts_speed to config.toml")
+        log.info("speech speed -> %.2f", value)
+        self._publish_settings()
+
+    def hush(self) -> None:
+        """Stop speaking the current answer and drop what is queued, without touching the
+        agent: "got it", "say no more". A new generation makes the pipeline skip the rest."""
+        generation = self.bus.next_generation()
+        drain(self.bus.playback)
+        self.bus.publish(Flush(generation=generation))
+        log.info("hushed (generation %d)", generation)
 
     def set_voice(self, name: str) -> None:
         """Change the TTS voice at runtime by rebuilding the TTS provider."""
