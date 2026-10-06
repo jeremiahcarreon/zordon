@@ -47,6 +47,7 @@ from zordon.bus import (
     PromptDetected,
     PromptKind,
     SessionState,
+    SpeechChunk,
     StateChanged,
     TranscriptRow,
     Utterance,
@@ -787,6 +788,39 @@ class Agent:
         drain(self.bus.playback)
         self.bus.publish(Flush(generation=generation))
         log.info("hushed (generation %d)", generation)
+
+    PREVIEW_TEXT = "Hi, this is how I sound. Pick me if you like what you hear."
+    _preview_seq = 0
+
+    def preview_voice(self, name: str) -> None:
+        """Say a short sample in ``name`` right now, without changing the configured voice:
+        the Settings voice list plays one per choice. Synthesised off the pipeline on a
+        copy of the config; the chunks ride the normal playback queue under the current
+        generation, so a barge-in or hush cuts them like any speech."""
+        import copy  # noqa: PLC0415
+
+        name = (name or "").strip()
+        if not name or len(name) > 64 or not re.fullmatch(r"[A-Za-z0-9_\-]+", name):
+            raise ValueError("voice name is invalid")
+        cfg = copy.deepcopy(self.config)
+        cfg.providers.tts_voice = name
+        tts = make_tts(cfg)
+        gen = self.bus.generation
+        Agent._preview_seq += 1
+        sentence_id = -(10_000 + Agent._preview_seq)  # negative: never a transcript sentence
+        rate = int(getattr(tts, "sample_rate", 24000))
+        chunks = [bytes(pcm) for pcm in tts.synthesize(self.PREVIEW_TEXT) if pcm]
+        for i, pcm in enumerate(chunks):
+            if self.bus.generation != gen:
+                return
+            self.bus.playback.put(SpeechChunk(sentence_id, i, gen, pcm, rate, final=i == len(chunks) - 1))
+        close = getattr(tts, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+        log.info("voice preview: %s (%d chunks)", name, len(chunks))
 
     def set_voice(self, name: str) -> None:
         """Change the TTS voice at runtime by rebuilding the TTS provider."""

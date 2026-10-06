@@ -799,3 +799,29 @@ def test_set_speed_changes_the_voice_and_persists(agent: A.Agent, parts: dict[st
     assert agent.config.providers.tts_speed == 2.0
     with pytest.raises(ValueError):
         agent.set_speed("fast")
+
+
+def test_preview_voice_plays_a_sample_without_changing_the_voice(agent: A.Agent, parts: dict[str, Any], monkeypatch):
+    from zordon.bus import SpeechChunk
+
+    made: list[str] = []
+
+    class SampleTTS:
+        sample_rate = 16000
+
+        def synthesize(self, text):
+            made.append(text)
+            yield b"\x00\x01" * 160
+            yield b"\x00\x02" * 160
+
+    monkeypatch.setattr(A, "make_tts", lambda cfg: (made.append(cfg.providers.tts_voice), SampleTTS())[1])
+    before = agent.config.providers.tts_voice
+    agent.preview_voice("bf_emma")
+    assert made[0] == "bf_emma" and "how I sound" in made[1]
+    assert agent.config.providers.tts_voice == before  # a preview is not a change
+    chunks: list[SpeechChunk] = []
+    while not agent.bus.playback.empty():
+        chunks.append(agent.bus.playback.get_nowait())
+    assert len(chunks) == 2 and chunks[-1].final and chunks[0].sentence_id < 0 and chunks[0].sample_rate == 16000
+    with pytest.raises(ValueError):
+        agent.preview_voice("../etc")

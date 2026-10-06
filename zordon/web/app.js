@@ -2349,6 +2349,10 @@
     });
     $('set-voice').addEventListener('change', function (e) {
       cmd('set_provider', { kind: 'voice', name: e.target.value });
+      cmd('preview_voice', { name: e.target.value });  // hear it as you pick it
+    });
+    $('btn-preview-voice').addEventListener('click', function () {
+      cmd('preview_voice', { name: $('set-voice').value });
     });
     $('set-mode').addEventListener('change', function (e) {
       var mode = e.target.value;

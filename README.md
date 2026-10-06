@@ -297,7 +297,8 @@ page is sent immediately.
 
 **Cut it off, or speed it up.** "Got it", "say no more" or the Hush button stop reading the
 current answer and drop the rest; the agent keeps working and nothing is sent. Settings has a
-speech speed slider (0.6x to 2x, saved). Each bubble shows Claude's text as written; tap it to
+speech speed slider (0.6x to 2x, saved), and picking a voice plays a short sample of it at once
+(**Hear this voice** repeats it). Each bubble shows Claude's text as written; tap it to
 see the sentences as spoken.
 
 **You can tell when it is working.** The project header shows a pulsing "working" indicator,

@@ -45,7 +45,7 @@ every pane keeps running); `forget_project {project_id, confirm}` (drops the rec
 touches no files). Each answers with `sessions` then `projects`.
 
 The draft box: `set_draft {text}` replaces what is waiting to be sent (an empty text clears),
-`send_draft {text}` replaces it and sends. `set_speed {speed}` sets the speech rate (0.5 to 2.0, saved to config); `hush` stops reading
+`send_draft {text}` replaces it and sends. `set_speed {speed}` sets the speech rate (0.5 to 2.0, saved to config); `preview_voice {name}` says a short sample in that voice without changing the setting; `hush` stops reading
 the current answer and drops the rest without touching the agent. `set_system_prompt {text}` stores the user's own
 voice-mode instruction for new sessions (empty resets to Zordon's default); `settings` carries
 `system_prompt` and `system_prompt_custom`.

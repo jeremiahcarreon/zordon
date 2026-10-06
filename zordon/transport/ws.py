@@ -655,10 +655,21 @@ class ClientConnection:
             "forget_project": self._cmd_forget_project,
             "set_system_prompt": self._cmd_set_system_prompt,
             "set_speed": self._cmd_set_speed,
+            "preview_voice": self._cmd_preview_voice,
             "hush": self._cmd_hush,
             "set_draft": lambda a: self._cmd_draft(a, "draft"),
             "send_draft": lambda a: self._cmd_draft(a, "draft_send"),
         }
+
+    def _cmd_preview_voice(self, args: dict[str, Any]) -> BaseModel | None:
+        name = _str_arg(args, "name")
+        if name is None:
+            return _bad_argument("name")
+        preview = getattr(self.agent, "preview_voice", None)
+        if not callable(preview):
+            return P.ErrorOut(message="not supported here", code="unsupported")
+        preview(name)
+        return None
 
     def _cmd_set_speed(self, args: dict[str, Any]) -> BaseModel:
         speed = args.get("speed")

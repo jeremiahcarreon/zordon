@@ -56,6 +56,7 @@ COMMANDS = (
     "send_draft",
     "set_speed",
     "hush",
+    "preview_voice",
 )
 
 

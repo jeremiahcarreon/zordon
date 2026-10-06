@@ -59,6 +59,7 @@
     'send_draft',
     'set_speed',
     'hush',
+    'preview_voice',
   ];
 
   var OUTBOUND_TYPES = [
