@@ -53,6 +53,7 @@ LABELS = {
 FIX_DOWNLOAD = "zordon doctor --download"
 FIX_ROOT = "create a normal user with sudo and run Zordon there: useradd -m -s /bin/bash <name>; usermod -aG sudo <name>; passwd <name>; su - <name>"
 FIX_TMUX = "install tmux 3.2 or newer (or run `zordon setup`)"
+FIX_GPU_BUSY = "nothing to do now; once the GPU is free again, `zordon restart` moves recognition back onto it"
 FIX_GPU = "install the CUDA libraries into Zordon's environment: zordon setup (it offers GPU support) or `uv tool install --force 'zordon[gpu] @ https://github.com/jeremiahcarreon/zordon/archive/refs/heads/main.tar.gz'`; set providers.stt_device = \"auto\" in config.toml if it says cpu; then restart"
 FIX_CLAUDE = "install Claude Code and log in (or run `zordon setup`)"
 FIX_CURL = "install curl (or run `zordon setup`)"
@@ -348,6 +349,11 @@ def check_stt(agent: Any) -> Item:
         return Item("stt", FAIL, f"voice input is unavailable: {reason}", fix)
     if name == "faster-whisper":
         device = str(getattr(stt, "device", "cpu") or "cpu")
+        fell_back = str(getattr(stt, "fallback_reason", "") or "")
+        if device == "cpu" and fell_back:
+            # Asked for the GPU, got the CPU: usually another program (Ollama, a game) holds
+            # the memory. Everything keeps working, "Heard" is just slower to appear.
+            return Item("stt", WARN, f"faster-whisper on the CPU because {fell_back}; voice still works, about 0.8 s per sentence", FIX_GPU_BUSY)
         if device == "cpu" and _gpu_unused(cfg):
             # Recognition is ~40x slower here than it could be: a sentence takes most of a
             # second instead of 20 ms, which is the whole wait before "Heard" appears.

@@ -112,6 +112,17 @@ def agent(tmp_path: Path, monkeypatch) -> FakeAgent:
     return FakeAgent(tmp_path)
 
 
+def test_stt_that_fell_back_from_a_full_gpu_says_so(agent: FakeAgent):
+    from zordon.speech.stt.faster_whisper import FasterWhisperSTT, cuda_failure_reason
+
+    stt = FasterWhisperSTT("small.en", device="cpu")
+    stt.fallback_reason = cuda_failure_reason(RuntimeError("CUDA failed with error out of memory"))
+    agent.providers.stt = stt
+    s = item(H.collect(agent, which=which_all), "stt")
+    assert s.status == "warn" and "memory is full" in s.detail and s.fix == H.FIX_GPU_BUSY
+    assert "libraries are missing" in cuda_failure_reason(RuntimeError("libcublas.so.12: cannot open shared object file"))
+
+
 def test_stt_on_cpu_with_an_unused_gpu_warns(agent: FakeAgent, monkeypatch):
     from zordon.speech.stt.faster_whisper import FasterWhisperSTT
 

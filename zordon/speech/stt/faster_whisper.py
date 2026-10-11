@@ -137,6 +137,16 @@ def preload_nvidia_libs() -> int:
     return loaded
 
 
+def cuda_failure_reason(error: BaseException) -> str:
+    """Why the model did not load on the GPU, in words a health line can show."""
+    text = str(error)
+    if "out of memory" in text.lower():
+        return "the GPU's memory is full (another program is using it)"
+    if "libcublas" in text or "libcudnn" in text or "cannot open shared object" in text:
+        return "the CUDA libraries are missing (install the gpu extra)"
+    return f"CUDA failed: {text}"[:160]
+
+
 def _not_installed() -> ProviderNotConfigured:
     return ProviderNotConfigured(
         "faster-whisper is not installed; install the local speech stack with `pip install 'zordon[local]'`"
@@ -166,6 +176,8 @@ class FasterWhisperSTT:
         self.models_dir = Path(models_dir) if models_dir is not None else None
         self._model: Any | None = None
         self._lock = threading.Lock()
+        # Set when the GPU was asked for but the model ended up on the CPU; health shows it.
+        self.fallback_reason: str | None = None
 
     # ---- loading ------------------------------------------------------------------
 
@@ -214,6 +226,7 @@ class FasterWhisperSTT:
                     e,
                     CPU_COMPUTE_TYPE,
                 )
+                self.fallback_reason = cuda_failure_reason(e)
                 self.device, self.compute_type = "cpu", CPU_COMPUTE_TYPE
         try:
             model = WhisperModel(

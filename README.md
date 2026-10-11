@@ -317,6 +317,17 @@ read out any more; Claude explains them in its own words.
 second, and the Heard line updates while you are still talking. The health strip warns when a
 GPU is present but unused.
 
+**When the GPU is busy, Zordon keeps going on the CPU.** If another program holds the GPU's
+memory (an Ollama model, a game), recognition loads on the CPU instead and the health strip says
+why. Everything still works; "Heard" takes most of a second to appear and the live partial text
+is off until the next restart with a free GPU. Speech output (Kokoro) and Claude Code itself
+never needed the GPU. If you would rather not wait on the CPU, `providers.stt = "groq"` or
+`"openai"` sends the audio to that service instead (an API key for it goes under
+`[providers.keys]`). There is no speech-to-text or text-to-speech in the Claude API; an
+Anthropic key is useful in Zordon only for the command router (`providers.router =
+"anthropic"`) and the optional normalizer, never for the voice itself, and the Claude Code
+sessions Zordon launches keep using your Claude login, not that key.
+
 **Claude is told it is on a call.** Every session Zordon launches carries a short system
 prompt: short turns, keep the listener in the loop like a colleague on a phone call, one
 question at a time through the question tool, no overview or detail unless asked, say the plan
