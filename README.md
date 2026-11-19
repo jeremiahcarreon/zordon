@@ -9,6 +9,19 @@ Claude Code stays in charge of everything that plans and executes work. Zordon i
 speech in, keystrokes to the pane, pane output back out as speech. Its permission prompts are
 always spoken, answered only with a clear yes or no, and never widened.
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/projects.png" width="250" alt="The projects page: Start a new project, Continue a previous project, and a list of saved projects"></td>
+    <td align="center"><img src="docs/screenshots/session.png" width="250" alt="A live call: the transcript of a spoken conversation with Claude Code, the Heard line and the End call button"></td>
+    <td align="center"><img src="docs/screenshots/permission.png" width="250" alt="A permission card asking to run a git commit, with Yes and No buttons"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Pick a project</sub></td>
+    <td align="center"><sub>Talk to it</sub></td>
+    <td align="center"><sub>Answer its permission prompts</sub></td>
+  </tr>
+</table>
+
 ## What it does
 
 - **Projects, not panes.** Two buttons: *Start a new project* walks you through picking or
@@ -286,6 +299,8 @@ Everything you say goes to a router first. It decides between three destinations
 | "what file did it just change?", "did the tests pass?" | Answered from the transcript; Claude Code is not touched |
 | "mute", "stop", "switch to the API session", "set verbosity to technical" | Zordon itself |
 
+<p align="center"><img src="docs/screenshots/session-desktop.png" width="820" alt="The same call in a desktop browser, with the health strip open"></p>
+
 When Claude Code is waiting on a permission, routing is replaced by a strict yes/no gate. Anything
 else is read back to you. "Stop" sends Escape to the pane and interrupts Claude Code itself;
 simply starting to talk only interrupts playback.
@@ -350,6 +365,17 @@ asks a question, or has a plan ready, it tells Zordon directly (its `PermissionR
 the exact command description, every option, or the plan text, and waits. You hear it in full and
 your yes, no, choice or feedback is the answer; nothing is drawn in the terminal unless you do not
 answer, in which case Claude Code shows its usual dialog and Zordon reads that instead.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/question.png" width="250" alt="A question card from Claude Code with one button per option"></td>
+    <td align="center"><img src="docs/screenshots/settings.png" width="250" alt="The settings drawer: status, verbosity and speech providers"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A question from Claude, one button per option</sub></td>
+    <td align="center"><sub>Settings: status, verbosity, voices</sub></td>
+  </tr>
+</table>
 
 ### Projects and how much the agent asks
 
